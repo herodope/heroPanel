@@ -12,15 +12,18 @@ protected frames while the player is in combat.
 
 ## Status
 
-**Phase 1 — foundation.** Move, lock and rescale work. Visual skinning, the
-options panel and per-line text/colour handling are not implemented yet.
+**Phases 1–3 — the quest tracker is skinned.** Move, lock and rescale work, and
+`WatchFrame` gets the panel, header row and text treatment. The Mythic+ tracker
+is discovered and movable but not yet skinned; the options panel is still to
+come, so colours and sizes are read from `HEROPANEL_DB` rather than edited in a
+UI.
 
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Addon skeleton, frame discovery, conflict detection, move/lock/scale, shared helpers | done |
-| 2 | Panel skin — background, border, radius, backdrop texture | planned |
-| 3 | Text — fonts, per-state colours, header chrome, collapse caret | planned |
-| 4 | Options panel, M+ chest tiers and timer chrome | planned |
+| 2 | Panel skin — background, border, radius, backdrop texture | done (quest tracker) |
+| 3 | Text — fonts, per-state colours, header chrome, collapse caret | done (quest tracker) |
+| 4 | Options panel, LibSharedMedia fonts, M+ chest tiers and timer chrome | planned |
 
 ## Installation
 
@@ -37,11 +40,59 @@ exists. Restart the client or `/reload`.
 | `/hp scale <watch\|mplus> <0.5-1.5>` | Set a tracker's scale |
 | `/hp reset [watch\|mplus]` | Clear saved position and scale |
 | `/hp mode <auto\|own\|holder\|yield>` | Who positions the trackers — see Compatibility |
+| `/hp skin [on\|off]` | Skin the trackers, or hand them back to Blizzard |
 | `/hp status` | Report which frames were found and hooked |
 | `/hp debug` | Toggle debug chat output (off by default) |
 
 Unlock, drag a tracker with the left mouse button, and the position is saved.
 Scale is 0.5–1.5 in 0.1 steps; it moves into the options panel in Phase 4.
+
+`/hp skin off` sets `HEROPANEL_DB.enabled = false` and puts the tracker back the
+way Blizzard had it — fonts, colours, header art and all — rather than hiding
+heroPanel's own chrome over the top of a still-skinned frame. It is the escape
+hatch when something looks wrong.
+
+## The skin
+
+The quest tracker gets a panel behind it, a header row over its own, and its
+lines recoloured:
+
+* **Panel** — solid `bg.color` at `bg.opacity`, a 1px `border.color` hairline,
+  an approximated `radius`, and a dark contour for elevation.
+* **Header** — a lock toggle, an `OBJECTIVES` label, a badge with the number of
+  tracked quests, and a caret drawn over the tracker's own collapse button.
+  Clicking the caret collapses the tracker; so does clicking the header, while
+  the tracker is locked. `header.show = false` turns the row off and gives
+  Blizzard's header back.
+* **Lines** — quest titles in gold, objectives in the normal colour with their
+  counter picked out brighter, completed objectives in green with a check where
+  their dash was, and text objectives keeping their leading dash.
+* **Hover** — the quest block under the cursor gets an 8% accent tint and an
+  accent strip down its left edge; the collapse button gets an accent square.
+
+### What the skin deliberately does not do
+
+The tracker pools and lays out its own lines, and heroPanel has to stay out of
+that. So:
+
+* **No line is moved, resized, shown, hidden or given a script.** Only colour,
+  font and the counter highlight change.
+* **Fonts only ever get smaller.** The tracker measures each line and places the
+  next one before heroPanel sees it, so a larger font would wrap a line into its
+  neighbour — and the fix for that would be moving lines. A configured
+  `font.size` larger than the tracker's own is clamped down per line.
+* **Counters are not right-aligned.** The design right-aligns them; that needs
+  the number in its own anchored region on a pooled line, so the brighter colour
+  carries the distinction instead and the alignment stays Blizzard's.
+* **The panel is as wide as the tracker**, not a fixed 288px, so the header's
+  caret still lands on the tracker's collapse button. 288px is the fallback for
+  a tracker that has not reported a usable width yet.
+* **Corners are chamfered, not rounded.** 3.3.5a has no rounded corners and
+  heroPanel ships no art, so `radius` steps the background and border in at each
+  corner — at the default 8px that is a 2px cut.
+* **Collapsing goes through the tracker's own button.** heroPanel reads the
+  collapse state and re-skins the button; it never drives `WatchFrame`'s state
+  itself, and it refuses to collapse in combat rather than force it.
 
 ## Compatibility
 
@@ -78,10 +129,13 @@ with `/hp status`. heroPanel never disables another addon on your behalf.
 ```
 heroPanel/
   heroPanel.toc   addon manifest, declares SavedVariables HEROPANEL_DB
-  Core.lua        namespace, defaults, event dispatch, slash commands
-  Util.lua        timers, combat-safe deferral, colours, throttled tree scanner
+  Core.lua        namespace, defaults, design tokens, event dispatch, slash commands
+  Util.lua        timers, tickers, combat-safe deferral, colours, fonts,
+                  cursor hit testing, throttled tree scanner
   Trackers.lua    frame discovery and the collapse-aware height helper
   Move.lua        drag, lock and scale, with saved geometry
+  Skin.lua        the panel plate, the header row and the refresh triggers
+  Lines.lua       line styling, quest blocks and the hover state
   Compat.lua      conflict detection
 ```
 
@@ -106,4 +160,28 @@ heroPanel/
   not as whatever anchor the frame happened to be using.
 * **Frame-tree walks are throttled.** `ns.NewTreeScanner(frame, callback, opts)`
   drives passes from a shared `OnUpdate` accumulator, capped at ~10 per second.
-  Use it instead of writing per-frame `OnUpdate` handlers.
+  Use it instead of writing per-frame `OnUpdate` handlers. `ns.NewTicker` is the
+  same idea for work that is not a tree walk.
+* **The skin is trigger-driven, never per-tick.** It re-applies on show, on
+  size change, on `WatchFrame_Update` / `_Collapse` / `_Expand`, and on
+  `QUEST_WATCH_UPDATE`; every trigger is coalesced onto the next frame, so a
+  quest turn-in costs one pass rather than one per event. The only `OnUpdate`
+  the skin runs is a 10Hz hover sample.
+* **Hover does not enable the mouse.** A mouse-enabled overlay would sit between
+  the player and the tracker's clickable quest lines, so hover is sampled with
+  `ns.MouseIsOver` — pure geometry — and the wrapper's own `OnEnter`/`OnLeave`
+  are called from there. Nothing heroPanel draws can swallow a click.
+* **Frame levels matter.** The plate sits two levels below the tracker: the
+  hover tint needs a level above the plate's background and below every line the
+  tracker draws. The only thing above the tracker is the lock button, which has
+  to take its own clicks even while the tracker is mouse-enabled for dragging.
+* **Nothing on a Blizzard region is destroyed.** The tracker's title and
+  collapse-button art are faded with `SetAlpha`, not hidden — `Show`/`Hide` on a
+  frame the game manages is what gets refused in combat — and every font,
+  colour, alpha and rewritten string is remembered so `/hp skin off` can put it
+  back exactly.
+* **Texture paths are candidate lists.** heroPanel ships no art, and which
+  client textures exist varies between 3.3.5a builds, so `ns.SetTextureFile`
+  tries each path and falls back to a plain square. It probes once whether the
+  client reports texture load failures at all, because believing a client that
+  always answers `nil` would reject every path.

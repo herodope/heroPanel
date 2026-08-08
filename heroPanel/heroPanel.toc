@@ -13,4 +13,6 @@ Core.lua
 Util.lua
 Trackers.lua
 Move.lua
+Skin.lua
+Lines.lua
 Compat.lua

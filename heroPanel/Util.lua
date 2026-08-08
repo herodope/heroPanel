@@ -112,6 +112,169 @@ function ns.HookScript(frame, script, fn)
 end
 
 --------------------------------------------------------------------------------
+-- Throttled tickers
+--
+-- Same idea as the tree scanner below, for work that is not a tree walk: one
+-- shared OnUpdate drives every active ticker off its own accumulator. Used by
+-- the skin's hover watcher, which has to sample the cursor but must not do so
+-- once per frame.
+--------------------------------------------------------------------------------
+
+local TICK_MIN_INTERVAL = 0.05
+
+local activeTickers = {}
+local tickDriver
+
+local function TickDriverOnUpdate(_, elapsed)
+    local anyActive = false
+    for ticker in pairs(activeTickers) do
+        anyActive = true
+        ticker.accumulator = ticker.accumulator + elapsed
+        if ticker.accumulator >= ticker.interval then
+            ticker.accumulator = 0
+            local ok, err = pcall(ticker.fn)
+            if not ok then ns.Debug("ticker error: %s", tostring(err)) end
+        end
+    end
+    if not anyActive then tickDriver:Hide() end
+end
+
+local tickerMethods = {}
+local tickerMeta = { __index = tickerMethods }
+
+function tickerMethods:Start()
+    activeTickers[self] = true
+    self.accumulator = self.interval
+    tickDriver:Show()
+    return self
+end
+
+function tickerMethods:Stop()
+    activeTickers[self] = nil
+    return self
+end
+
+function tickerMethods:IsRunning()
+    return activeTickers[self] and true or false
+end
+
+function ns.NewTicker(interval, fn)
+    if type(fn) ~= "function" then return nil end
+
+    if not tickDriver then
+        tickDriver = CreateFrame("Frame", "HeroPanelTickDriver")
+        tickDriver:Hide()
+        tickDriver:SetScript("OnUpdate", TickDriverOnUpdate)
+    end
+
+    return setmetatable({
+        fn          = fn,
+        interval    = math.max(tonumber(interval) or TICK_MIN_INTERVAL, TICK_MIN_INTERVAL),
+        accumulator = 0,
+    }, tickerMeta)
+end
+
+--------------------------------------------------------------------------------
+-- Cursor hit testing
+--
+-- MouseIsOver is pure geometry - it does not need the frame to have the mouse
+-- enabled, which is exactly what the skin's hover state wants: tinting a quest
+-- block must never put a mouse-catching frame over Blizzard's clickable quest
+-- lines. It is a FrameXML function rather than an API one, so fall back to the
+-- same maths if a client does not ship it.
+--------------------------------------------------------------------------------
+
+function ns.MouseIsOver(frame)
+    if not frame or not frame.GetLeft then return false end
+
+    if type(_G.MouseIsOver) == "function" then
+        local ok, result = pcall(_G.MouseIsOver, frame)
+        if ok then return result and true or false end
+    end
+
+    local scale = frame:GetEffectiveScale()
+    if not scale or scale == 0 then return false end
+
+    local left, right   = frame:GetLeft(), frame:GetRight()
+    local top, bottom   = frame:GetTop(), frame:GetBottom()
+    if not (left and right and top and bottom) then return false end
+
+    local x, y = GetCursorPosition()
+    x, y = x / scale, y / scale
+    return x >= left and x <= right and y >= bottom and y <= top
+end
+
+--------------------------------------------------------------------------------
+-- Texture files
+--
+-- heroPanel ships no art, so every glyph is a client texture. Which ones exist
+-- varies between 3.3.5a builds, so paths are given as a candidate list and the
+-- first one that loads wins.
+--
+-- Texture:SetTexture reports success on most clients of this vintage but not
+-- all. Probe once against a texture that is certainly present: if the client
+-- answers meaningfully, trust the return value; if it always answers nil,
+-- believing it would reject every path, so take the first candidate on faith.
+--------------------------------------------------------------------------------
+
+ns.SOLID = "Interface\\Buttons\\WHITE8X8"
+
+local reportsTextureResult
+
+local function ClientReportsTextureResult()
+    if reportsTextureResult == nil then
+        local probeFrame = CreateFrame("Frame")
+        local probe      = probeFrame:CreateTexture()
+        reportsTextureResult = (probe:SetTexture(ns.SOLID) and true) or false
+        probeFrame:Hide()
+        ns.Debug("client %s texture load results.",
+            reportsTextureResult and "reports" or "does not report")
+    end
+    return reportsTextureResult
+end
+
+-- ns.SetTextureFile(texture, "path", "fallback path", ...) -> path used
+function ns.SetTextureFile(texture, ...)
+    if not texture then return nil end
+    local checked = ClientReportsTextureResult()
+
+    for i = 1, select("#", ...) do
+        local path = select(i, ...)
+        if path then
+            local ok, loaded = pcall(texture.SetTexture, texture, path)
+            if ok and (loaded or not checked) then return path end
+        end
+    end
+
+    pcall(texture.SetTexture, texture, ns.SOLID)
+    return ns.SOLID
+end
+
+--------------------------------------------------------------------------------
+-- Fonts
+--
+-- Phase 4 swaps this for LibSharedMedia. Until then the configured face is
+-- ignored and the client's own normal face - Friz Quadrata TT - is used, read
+-- off GameFontNormal so no asset path is written down here.
+--------------------------------------------------------------------------------
+
+function ns.GetFontFile()
+    if GameFontNormal and GameFontNormal.GetFont then
+        local path = GameFontNormal:GetFont()
+        if path then return path end
+    end
+    return "Fonts\\FRIZQT__.TTF"
+end
+
+-- Font sizes in the design are expressed relative to the configured base size
+-- (12 by default): the quest title is half a point up from it, objectives half
+-- a point down, and so on.
+function ns.GetFontSize(delta)
+    local base = (ns.db and tonumber(ns.db.font.size)) or 12
+    return math.max(6, base + (delta or 0))
+end
+
+--------------------------------------------------------------------------------
 -- Colour helpers
 --
 -- The config stores colours as "#RRGGBB" strings; the WoW API wants 0-1 floats.

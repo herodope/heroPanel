@@ -98,6 +98,32 @@ ns.defaults = {
     },
 }
 
+--------------------------------------------------------------------------------
+-- Design tokens
+--
+-- Colours the design fixes but the options panel does not expose. The
+-- configurable subset lives in ns.defaults above and is read from ns.db; these
+-- are literals on purpose, so a token used in two files cannot drift.
+--------------------------------------------------------------------------------
+
+ns.PALETTE = {
+    headerLabel = "#9AA0B6",   -- "OBJECTIVES"
+    icon        = "#75798C",   -- lock, caret
+    muted       = "#8B8FA3",   -- count badge, leading dash
+    count       = "#E9E9ED",   -- objective counters
+    accent      = "#9184D9",   -- hover tint, left strip
+    accentLight = "#B5ABFC",   -- hovered caret
+    hairline    = "#E9E9ED",   -- divider / badge fill, used at low alpha
+}
+
+-- Alphas that go with the tokens above.
+ns.ALPHA = {
+    divider     = 0.12,
+    badgeFill   = 0.07,
+    hoverTint   = 0.08,
+    hoverButton = 0.16,
+}
+
 -- Recursively fill missing keys from the defaults tree without clobbering
 -- anything the user has already changed.
 local function ApplyDefaults(target, defaults)
@@ -210,6 +236,7 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp scale <watch|mplus> <0.5-1.5>|r - set tracker scale")
     ns.Print("  |cFFC2C6D8/hp reset [watch|mplus]|r - clear saved position and scale")
     ns.Print("  |cFFC2C6D8/hp mode <auto|own|holder|yield>|r - who positions the trackers")
+    ns.Print("  |cFFC2C6D8/hp skin [on|off]|r - skin the trackers, or hand them back to Blizzard")
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
     ns.Print("  |cFFC2C6D8/hp debug|r - toggle debug output (currently %s)",
         ns.DEBUG and "|cFF79C68DON|r" or "|cFF8B8FA3OFF|r")
@@ -247,6 +274,16 @@ SlashCmdList["HEROPANEL"] = function(input)
             ns.Print("  |cFF8B8FA3own|r    - always position the trackers yourself")
             ns.Print("  |cFF8B8FA3holder|r - move the other addon's holder frame instead")
             ns.Print("  |cFF8B8FA3yield|r  - never position; skin only")
+        end
+    elseif cmd == "skin" then
+        local wanted
+        if rest == "on" then wanted = true
+        elseif rest == "off" then wanted = false
+        else wanted = not (ns.db and ns.db.enabled) end
+
+        if ns.Skin and ns.Skin.SetEnabled then
+            ns.Skin.SetEnabled(wanted)
+            ns.Print("skin %s.", wanted and "|cFF79C68Don|r" or "|cFF8B8FA3off - Blizzard's tracker restored|r")
         end
     elseif cmd == "status" then
         ns.PrintStatus()

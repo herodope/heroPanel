@@ -277,8 +277,9 @@ function ns.PrintStatus()
             ns.Print("  |cFF8B8FA3%s not found|r", record.label)
         end
     end
-    ns.Print("  frames are |cFFC2C6D8%s|r, mode |cFFC2C6D8%s|r. Debug output is %s.",
+    ns.Print("  frames are |cFFC2C6D8%s|r, mode |cFFC2C6D8%s|r, skin |cFFC2C6D8%s|r. Debug output is %s.",
         (ns.db and ns.db.frame.locked) and "locked" or "unlocked",
         (ns.db and ns.db.frame.ownership) or "auto",
+        (ns.Skin and ns.Skin.enabled) and "on" or "off",
         ns.DEBUG and "|cFF79C68DON|r" or "|cFF8B8FA3OFF|r")
 end
