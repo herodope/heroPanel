@@ -780,11 +780,13 @@ end
 -- changed: fonts, colours, faded regions and rewritten counters.
 --------------------------------------------------------------------------------
 
+-- Returns false plus a reason, so a caller can say why the skin is not there
+-- rather than leaving the player looking at an unchanged tracker.
 function skin.Enable()
-    if not ns.db then return false end
+    if not ns.db then return false, "SavedVariables are not loaded yet" end
 
     local watch = ns.GetTrackerFrame("watch")
-    if not watch then return false end
+    if not watch then return false, "the objective tracker has not been found" end
 
     if not plate then
         blizz.collapse = FindCollapseButton(watch)
@@ -835,6 +837,44 @@ function skin.SetEnabled(enabled)
 end
 
 --------------------------------------------------------------------------------
+-- Status
+--
+-- What /hp status reports about the skin. A panel that is built but not visible
+-- and a panel that was never built are the same thing on screen and completely
+-- different problems, so say which one it is.
+--------------------------------------------------------------------------------
+
+function skin.PrintStatus()
+    if not ns.db then return end
+
+    ns.Print("  skin is |cFFC2C6D8%s|r", ns.db.enabled and "on" or "off")
+
+    if not plate then
+        ns.Print("    |cFFFFAA00panel not built|r - the tracker was not available when the skin ran")
+        return
+    end
+
+    local watch = ns.GetTrackerFrame("watch")
+    ns.Print("    panel %s, %.0f x %.0f, level %.0f",
+        plate:IsVisible() and "|cFF79C68Dvisible|r" or "|cFFFFAA00not visible|r",
+        plate:GetWidth() or 0, plate:GetHeight() or 0, plate:GetFrameLevel() or 0)
+
+    if watch then
+        ns.Print("    tracker %s, %s, %.0f quest block(s) styled",
+            watch:IsVisible() and "visible" or "|cFFFFAA00hidden|r",
+            ns.IsCollapsed("watch") and "collapsed" or "expanded",
+            lastBlockCount)
+    end
+
+    ns.Print("    header chrome: collapse button %s, title %s",
+        blizz.collapse and "found" or "|cFFFFAA00not found|r",
+        blizz.title and "found" or "|cFFFFAA00not found|r")
+    ns.Print("    glyphs: lock |cFF8B8FA3%s|r, caret |cFF8B8FA3%s|r",
+        tostring(header.lockIcon and header.lockIcon:GetTexture()),
+        tostring(header.caret and header.caret:GetTexture()))
+end
+
+--------------------------------------------------------------------------------
 -- Wiring
 --------------------------------------------------------------------------------
 
@@ -849,7 +889,12 @@ ns:On("HEROPANEL_LOCK_CHANGED", function()
 end)
 
 ns:On("PLAYER_LOGIN", function()
-    if ns.db and ns.db.enabled and not skin.enabled then skin.Enable() end
+    if ns.db and ns.db.enabled and not skin.enabled then
+        local ok, reason = skin.Enable()
+        -- By login the tracker exists on any client heroPanel can skin, so a
+        -- failure here is worth saying out loud rather than logging quietly.
+        if not ok then ns.Warn("the skin was not applied: %s.", tostring(reason)) end
+    end
     Refresh("login")
 end)
 

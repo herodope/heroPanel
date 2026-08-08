@@ -277,9 +277,17 @@ function ns.PrintStatus()
             ns.Print("  |cFF8B8FA3%s not found|r", record.label)
         end
     end
-    ns.Print("  frames are |cFFC2C6D8%s|r, mode |cFFC2C6D8%s|r, skin |cFFC2C6D8%s|r. Debug output is %s.",
+    ns.Print("  frames are |cFFC2C6D8%s|r, mode |cFFC2C6D8%s|r. Debug output is %s.",
         (ns.db and ns.db.frame.locked) and "locked" or "unlocked",
         (ns.db and ns.db.frame.ownership) or "auto",
-        (ns.Skin and ns.Skin.enabled) and "on" or "off",
         ns.DEBUG and "|cFF79C68DON|r" or "|cFF8B8FA3OFF|r")
+
+    if ns.Skin and ns.Skin.PrintStatus then
+        ns.Skin.PrintStatus()
+    else
+        -- Skin.lua threw while loading, so its half of the addon is simply not
+        -- there. Worth naming: it looks identical to a skin that is switched off.
+        ns.Print("  |cFFFFAA00skin module not loaded|r - check for a Lua error at login "
+            .. "(|cFFC2C6D8/console scriptErrors 1|r, then /reload)")
+    end
 end

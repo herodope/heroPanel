@@ -31,7 +31,7 @@ local function TimerOnUpdate(_, elapsed)
         if entry.remaining <= 0 then
             table.remove(pending, i)
             local ok, err = pcall(entry.fn)
-            if not ok then ns.Debug("timer error: %s", tostring(err)) end
+            if not ok then ns.ReportError("timer", err) end
         end
     end
     if #pending == 0 then timerFrame:Hide() end
@@ -41,8 +41,15 @@ function ns.After(delay, fn)
     if type(fn) ~= "function" then return end
     delay = tonumber(delay) or 0
 
+    -- Wrapped on both routes, so a fault in a deferred call is reported the same
+    -- way whether or not the client has C_Timer. Most of the skin runs from
+    -- here, and an unwrapped error would only reach the client's error handler,
+    -- which is off by default on 3.3.5a.
     if C_Timer and C_Timer.After then
-        C_Timer.After(delay, fn)
+        C_Timer.After(delay, function()
+            local ok, err = pcall(fn)
+            if not ok then ns.ReportError("timer", err) end
+        end)
         return
     end
 
@@ -69,7 +76,7 @@ function ns.RunWhenSafe(fn, tag)
     if type(fn) ~= "function" then return end
     if not InCombatLockdown() then
         local ok, err = pcall(fn)
-        if not ok then ns.Debug("deferred call error (%s): %s", tostring(tag), tostring(err)) end
+        if not ok then ns.ReportError("deferred call " .. tostring(tag), err) end
         return true
     end
     table.insert(combatQueue, { fn = fn, tag = tag })
@@ -84,7 +91,7 @@ ns:On("PLAYER_REGEN_ENABLED", function()
     ns.Debug("combat over, flushing %d deferred call(s).", #queued)
     for i = 1, #queued do
         local ok, err = pcall(queued[i].fn)
-        if not ok then ns.Debug("deferred call error (%s): %s", tostring(queued[i].tag), tostring(err)) end
+        if not ok then ns.ReportError("deferred call " .. tostring(queued[i].tag), err) end
     end
 end)
 
@@ -133,7 +140,7 @@ local function TickDriverOnUpdate(_, elapsed)
         if ticker.accumulator >= ticker.interval then
             ticker.accumulator = 0
             local ok, err = pcall(ticker.fn)
-            if not ok then ns.Debug("ticker error: %s", tostring(err)) end
+            if not ok then ns.ReportError("ticker", err) end
         end
     end
     if not anyActive then tickDriver:Hide() end

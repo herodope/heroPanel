@@ -440,7 +440,11 @@ local function check(condition, message)
 end
 
 for _, line in ipairs(log) do
-    if string.find(line, "error", 1, true) then fail("runtime: " .. line) end
+    -- the deliberate one below is the point of the reporter test
+    if string.find(line, "error", 1, true)
+       and not string.find(line, "HEROPANEL_TEST_EXPLODE", 1, true) then
+        fail("runtime: " .. line)
+    end
 end
 
 local plate = HeroPanelWatchPlate
@@ -607,11 +611,41 @@ end
 check(notched == 8, "an 8px radius should be a 2px step at each of the four corners, got " .. notched)
 
 --------------------------------------------------------------------------------
+-- Diagnostics
+--
+-- /hp status has to survive being run when the skin is broken, which is the
+-- only time anybody runs it.
+--------------------------------------------------------------------------------
+
+local before = #log
+SlashCmdList["HEROPANEL"]("status")
+check(#log > before, "/hp status should print something")
+
+local reported = table.concat(log, "\n", before + 1)
+check(string.find(reported, "skin is", 1, true) ~= nil, "/hp status should report the skin state")
+check(string.find(reported, "quest block", 1, true) ~= nil, "/hp status should report styled blocks")
+
+-- An error anywhere in the addon must reach the player, not just the debug log.
+ns.DEBUG = false
+local exploded = false
+ns:On("HEROPANEL_TEST_EXPLODE", function() exploded = true; error("boom") end)
+before = #log
+ns:Fire("HEROPANEL_TEST_EXPLODE")
+check(exploded, "the test handler should have run")
+local loud = table.concat(log, "\n", before + 1)
+check(string.find(loud, "boom", 1, true) ~= nil, "a handler error must be reported with debug off")
+ns.DEBUG = true
+
+--------------------------------------------------------------------------------
 -- Report
 --------------------------------------------------------------------------------
 
 for _, line in ipairs(log) do
-    if string.find(line, "error", 1, true) then fail("runtime: " .. line) end
+    -- the deliberate one below is the point of the reporter test
+    if string.find(line, "error", 1, true)
+       and not string.find(line, "HEROPANEL_TEST_EXPLODE", 1, true) then
+        fail("runtime: " .. line)
+    end
 end
 
 if #failures > 0 then

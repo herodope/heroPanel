@@ -45,6 +45,28 @@ function ns.Debug(msg, ...)
     DEFAULT_CHAT_FRAME:AddMessage("|cFF5D5294heroPanel dbg:|r " .. tostring(msg))
 end
 
+-- Errors are reported whether or not debug output is on.
+--
+-- heroPanel pcalls everything that runs off an event, a timer or a hook, so one
+-- fault cannot take the addon down with it. The cost of that is silence: an
+-- error inside a pcall produces no client error either, so a broken addon looks
+-- exactly like an addon that decided to do nothing. Reporting is capped at one
+-- message per distinct error so a fault on a repeating event cannot flood chat.
+local reportedErrors = {}
+local reportedHint   = false
+
+function ns.ReportError(context, err)
+    local key = tostring(context) .. "\0" .. tostring(err)
+    if reportedErrors[key] then return end
+    reportedErrors[key] = true
+
+    ns.Warn("error in %s: %s", tostring(context), tostring(err))
+    if not reportedHint then
+        reportedHint = true
+        ns.Warn("that is a bug. |cFFC2C6D8/hp status|r shows what heroPanel did manage to set up.")
+    end
+end
+
 --------------------------------------------------------------------------------
 -- SavedVariables defaults
 --
@@ -193,7 +215,7 @@ function ns:Fire(event, ...)
     for i = 1, #list do
         -- pcall so one broken handler cannot take down the rest of the addon.
         local ok, err = pcall(list[i], ...)
-        if not ok then ns.Debug("handler error on %s: %s", tostring(event), tostring(err)) end
+        if not ok then ns.ReportError("handler for " .. tostring(event), err) end
     end
 end
 
