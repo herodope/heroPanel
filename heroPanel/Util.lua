@@ -95,16 +95,20 @@ end)
 -- something to hook, SetScript only when the slot is genuinely empty.
 --------------------------------------------------------------------------------
 
+-- Returns "hook" when an existing handler was extended, "set" when the slot was
+-- empty, or false when the script could not be attached. The distinction
+-- matters: a handler that was already there runs *before* ours and may have
+-- moved the frame under us.
 function ns.HookScript(frame, script, fn)
     if not frame or type(frame.GetScript) ~= "function" then return false end
     local ok, existing = pcall(frame.GetScript, frame, script)
     if not ok then return false end
     if existing then
         frame:HookScript(script, fn)
-    else
-        frame:SetScript(script, fn)
+        return "hook"
     end
-    return true
+    frame:SetScript(script, fn)
+    return "set"
 end
 
 --------------------------------------------------------------------------------

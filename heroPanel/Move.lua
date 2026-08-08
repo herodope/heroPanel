@@ -86,6 +86,13 @@ local function ApplyUIOffsets(frame, x, y)
 
     frame:ClearAllPoints()
     frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", x * uiScale / frameScale, y * uiScale / frameScale)
+
+    -- Tells the client the frame is where the player wants it. Blizzard's
+    -- layout code skips user-placed frames, so this is what stops the tracker
+    -- being dragged back to its docked spot on the next layout pass.
+    if frame.SetUserPlaced and frame.IsUserPlaced and not frame:IsUserPlaced() then
+        pcall(frame.SetUserPlaced, frame, true)
+    end
     return true
 end
 
@@ -270,6 +277,8 @@ local function OnDragStart(frame)
         return
     end
 
+    local x, y = GetUIOffsets(frame)
+    ns.Debug("drag start %s at %.0f, %.0f", record.key, x or -1, y or -1)
     frame:StartMoving()
     record.isMoving = true
 end
@@ -285,6 +294,8 @@ local function OnDragStop(frame)
         ns.Debug("could not stop moving %s.", record.key)
         return
     end
+    local x, y = GetUIOffsets(frame)
+    ns.Debug("drag stop %s, frame now at %.0f, %.0f", record.key, x or -1, y or -1)
     ns.SavePosition(record.key)
 end
 
@@ -297,16 +308,19 @@ local function ApplyLockState(key)
 
     local locked = ns.IsLocked()
     return ns.RunWhenSafe(function()
+        -- Movable stays on in both states. It is what makes SetUserPlaced legal,
+        -- and it does not by itself let the player drag anything - that needs
+        -- RegisterForDrag, which is what the lock actually controls.
+        frame:SetMovable(true)
+
         if locked then
             frame:RegisterForDrag()
-            frame:SetMovable(false)
             -- Only give the mouse back if we were the ones who took it.
             if record.mouseEnabledByUs then
                 frame:EnableMouse(false)
                 record.mouseEnabledByUs = nil
             end
         else
-            frame:SetMovable(true)
             frame:SetClampedToScreen(true)
             if frame.IsMouseEnabled and not frame:IsMouseEnabled() then
                 frame:EnableMouse(true)
@@ -325,8 +339,12 @@ local function HookTracker(key)
     local frame = record.mover
     if not frame then return false end
 
-    ns.HookScript(frame, "OnDragStart", OnDragStart)
-    ns.HookScript(frame, "OnDragStop",  OnDragStop)
+    -- "hook" here means the frame already had a handler of its own, which runs
+    -- before ours and may reposition the frame under us. Worth knowing about.
+    local startMode = ns.HookScript(frame, "OnDragStart", OnDragStart)
+    local stopMode  = ns.HookScript(frame, "OnDragStop",  OnDragStop)
+    ns.Debug("%s drag scripts: OnDragStart=%s OnDragStop=%s (%s = pre-existing handler)",
+        key, tostring(startMode), tostring(stopMode), "hook")
 
     -- Re-assert our geometry whenever the frame comes back into view; the game
     -- and other addons both like to reposition trackers on show.
@@ -339,10 +357,13 @@ local function HookTracker(key)
     -- tracker code, another addon - is corrected on the next frame.
     if not record.setPointHooked then
         record.setPointHooked = true
-        hooksecurefunc(frame, "SetPoint", function()
+        hooksecurefunc(frame, "SetPoint", function(_, point, _, relPoint, ox, oy)
             if applying[key] then return end
             local saved = GetSaved(key)
-            if saved and saved.point then ReapplyGeometry() end
+            if not (saved and saved.point) then return end
+            ns.Debug("%s re-anchored by something else (%s/%s at %s, %s) - correcting.",
+                key, tostring(point), tostring(relPoint), tostring(ox), tostring(oy))
+            ReapplyGeometry()
         end)
     end
 
@@ -415,7 +436,10 @@ ns:On("PLAYER_LOGIN", function()
     -- A full layout pass re-places every frame the game thinks it owns, and it
     -- runs well after login. Re-apply ours afterwards rather than fighting it.
     if type(_G.UIParent_ManageFramePositions) == "function" then
-        hooksecurefunc("UIParent_ManageFramePositions", ReapplyGeometry)
+        hooksecurefunc("UIParent_ManageFramePositions", function()
+            ns.Debug("layout pass ran.")
+            ReapplyGeometry()
+        end)
         ns.Debug("hooked UIParent_ManageFramePositions.")
     end
 end)
