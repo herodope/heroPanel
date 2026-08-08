@@ -54,9 +54,18 @@ tracker frames. heroPanel adapts instead of fighting them, per tracker:
 | `holder` | another addon docks the tracker into a holder frame; heroPanel leaves the tracker alone and moves that holder instead |
 | `yield` | another addon owns the frame outright; heroPanel stops positioning it and only skins it |
 
-The default, `auto`, starts at `own` and steps down to `holder` then `yield`
-when it detects the tracker being repeatedly re-anchored by something else.
-The holder is found by **observing** which frame the tracker gets docked into,
+The default, `auto`, uses `own` until it sees the tracker docked into a named
+holder frame, at which point it switches to `holder` straight away — an addon
+that docks the tracker somewhere has already said where it wants it, so there
+is nothing to fight about. If contention persists with no usable holder, it
+steps down to `yield`.
+
+In `holder` mode heroPanel stops correcting the tracker's own anchor entirely;
+that anchor belongs to the other addon. It only places the holder, and the
+tracker comes along with it.
+
+The holder is found by **observing** which frame the tracker gets docked into
+(plus a check of known holder names at login, since addons load in any order),
 so this works with any addon that behaves this way — heroPanel hardcodes no
 other addon's frame names and never reads or writes another addon's saved
 variables.

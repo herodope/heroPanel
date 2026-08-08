@@ -509,21 +509,106 @@ local function NameOf(object)
     return (ok and objectName) or "unnamed"
 end
 
+-- Forward declaration: adopting a holder installs the same anchor hooks on it.
+local InstallAnchorHooks
+
 local function NoteHolder(key, candidate)
     if type(candidate) ~= "table" or candidate == UIParent then return end
+    if type(candidate.SetPoint) ~= "function" then return end
 
     local record = ns.trackers[key]
     if not record or candidate == record.frame or candidate == record.mover then return end
     if record.holderFrame == candidate then return end
 
-    -- An unnamed frame cannot be reported to the user or matched again later,
-    -- but it is still a usable move target, so accept it with a placeholder.
     local candidateName = NameOf(candidate)
-    if type(candidate.SetPoint) ~= "function" then return end
-
     record.holderFrame = candidate
     record.holderName  = candidateName
     ns.Debug("%s holder observed: %s", key, candidateName)
+
+    -- An addon that docks the tracker into a holder of its own is not really
+    -- competing - it has told us where it wants the tracker to live. Move the
+    -- holder and the tracker comes with it. Adopt immediately rather than
+    -- waiting for the contention detector: a tug-of-war is not a prerequisite
+    -- for cooperating, and fighting first only makes the frame flicker.
+    --
+    -- Only named holders are adopted. An unnamed frame is recorded for
+    -- reference but is too weak a signal to hand positioning over to.
+    local configured = ns.db and ns.db.frame.ownership or "auto"
+    if configured ~= "auto" then return end
+    if record.mode == "holder" or record.mode == "yield" then return end
+    if not candidateName or candidateName == "unnamed" then return end
+
+    record.mode = "holder"
+    ns.ClearFightState(key)
+    InstallAnchorHooks(key, candidate, "holder")
+
+    ns.Print("the %s is docked into |cFFC2C6D8%s|r by another addon. heroPanel will "
+        .. "move that holder instead, so both can coexist.",
+        string.lower(record.label), candidateName)
+
+    ns.RestoreScale(key)
+    ns.RestorePosition(key)
+end
+
+--------------------------------------------------------------------------------
+-- Anchor hooks
+--
+-- Installed on the tracker itself, and on any holder heroPanel adopts. The two
+-- roles behave differently:
+--
+--   tracker  watch for holders. Correct re-anchors only while heroPanel is the
+--            one placing this frame - in holder mode the tracker's own anchor
+--            belongs to the other addon and must be left alone, which is what
+--            stops the two addons fighting.
+--   holder   this is heroPanel's move target, so re-anchors are corrected.
+--
+-- The set of frames hooked is tracked separately from the tracker records, so
+-- a frame is never double-hooked.
+--------------------------------------------------------------------------------
+
+local anchorHookedFrames = {}
+
+function InstallAnchorHooks(key, frame, role)
+    if not frame or anchorHookedFrames[frame] then return false end
+    anchorHookedFrames[frame] = true
+
+    local function ExternalAnchor(how, candidate, detail)
+        if applying[key] then return end
+
+        if role == "tracker" then
+            NoteHolder(key, candidate)
+            -- Once a holder is in play the other addon owns this frame's
+            -- anchor. Correcting it here is exactly the tug-of-war to avoid.
+            if ns.GetMode(key) == "holder" then return end
+        end
+
+        if ns.GetMode(key) == "yield" then return end
+
+        local saved = GetSaved(key)
+        if not (saved and saved.point) then return end
+        ns.Debug("%s %s re-anchored via %s %s", key, role, how, detail or "")
+        ReapplyGeometry()
+    end
+
+    -- SetPoint is the obvious route, but not the only one: SetAllPoints
+    -- repositions a frame without ever calling SetPoint, and reparenting moves
+    -- it along with its new parent. Watch all three.
+    hooksecurefunc(frame, "SetPoint", function(_, point, relativeTo, relPoint, ox, oy)
+        ExternalAnchor("SetPoint", relativeTo, string.format("(%s -> %s %s at %s, %s)",
+            tostring(point), NameOf(relativeTo), tostring(relPoint), tostring(ox), tostring(oy)))
+    end)
+
+    hooksecurefunc(frame, "SetAllPoints", function(_, relativeTo)
+        ExternalAnchor("SetAllPoints", relativeTo, "(" .. NameOf(relativeTo) .. ")")
+    end)
+
+    hooksecurefunc(frame, "SetParent", function(_, parent)
+        ns.Debug("%s %s reparented to %s", key, role, NameOf(parent))
+        ExternalAnchor("SetParent", parent, "(" .. NameOf(parent) .. ")")
+    end)
+
+    ns.Debug("anchor hooks installed on %s (%s, role %s)", NameOf(frame), key, role)
+    return true
 end
 
 --------------------------------------------------------------------------------
@@ -551,36 +636,7 @@ local function HookTracker(key)
         ns.RestorePosition(key)
     end)
 
-    if not record.anchorHooksInstalled then
-        record.anchorHooksInstalled = true
-
-        local function ExternalAnchor(how, holderCandidate, detail)
-            if applying[key] then return end
-            NoteHolder(key, holderCandidate)
-
-            local saved = GetSaved(key)
-            if not (saved and saved.point) then return end
-            ns.Debug("%s re-anchored via %s %s", key, how, detail or "")
-            ReapplyGeometry()
-        end
-
-        -- SetPoint is the obvious route, but not the only one: SetAllPoints
-        -- repositions a frame without ever calling SetPoint, and reparenting
-        -- moves it along with its new parent. Watch all three.
-        hooksecurefunc(frame, "SetPoint", function(_, point, relativeTo, relPoint, ox, oy)
-            ExternalAnchor("SetPoint", relativeTo, string.format("(%s -> %s %s at %s, %s)",
-                tostring(point), NameOf(relativeTo), tostring(relPoint), tostring(ox), tostring(oy)))
-        end)
-
-        hooksecurefunc(frame, "SetAllPoints", function(_, relativeTo)
-            ExternalAnchor("SetAllPoints", relativeTo, "(" .. NameOf(relativeTo) .. ")")
-        end)
-
-        hooksecurefunc(frame, "SetParent", function(_, parent)
-            ns.Debug("%s reparented to %s", key, NameOf(parent))
-            ExternalAnchor("SetParent", parent, "(" .. NameOf(parent) .. ")")
-        end)
-    end
+    InstallAnchorHooks(key, frame, "tracker")
 
     record.hooked = true
     ns.Debug("hooked %s (%s).", record.label, tostring(record.moverName))
@@ -643,11 +699,31 @@ ns:On("HEROPANEL_TRACKER_FOUND", function(key)
     HookTracker(key)
 end)
 
+-- A holder is often created after heroPanel resolved its move target, because
+-- addons load in whatever order the client picks. Re-check the known candidate
+-- names once everything has loaded rather than waiting to observe a re-anchor.
+function ns.RecheckHolders()
+    for i = 1, #ns.TRACKER_KEYS do
+        local key    = ns.TRACKER_KEYS[i]
+        local record = ns.trackers[key]
+        if record and record.found and not record.holderFrame and record.moverFirst then
+            for c = 1, #record.moverFirst do
+                local candidate = _G[record.moverFirst[c]]
+                if candidate and candidate ~= record.mover then
+                    NoteHolder(key, candidate)
+                    break
+                end
+            end
+        end
+    end
+end
+
 ns:On("PLAYER_LOGIN", function()
     for i = 1, #ns.TRACKER_KEYS do
         local key = ns.TRACKER_KEYS[i]
         if ns.trackers[key].found then HookTracker(key) end
     end
+    ns.RecheckHolders()
 
     -- A full layout pass re-places every frame the game thinks it owns, and it
     -- runs well after login. Re-apply ours afterwards rather than fighting it.
@@ -662,5 +738,6 @@ end)
 
 ns:On("PLAYER_ENTERING_WORLD", function()
     -- Zoning triggers a layout pass of its own.
+    ns.RecheckHolders()
     ReapplyGeometry()
 end)
