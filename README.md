@@ -36,6 +36,7 @@ exists. Restart the client or `/reload`.
 | `/hp unlock` | Unlock both trackers — drag with the left mouse button |
 | `/hp scale <watch\|mplus> <0.5-1.5>` | Set a tracker's scale |
 | `/hp reset [watch\|mplus]` | Clear saved position and scale |
+| `/hp mode <auto\|own\|holder\|yield>` | Who positions the trackers — see Compatibility |
 | `/hp status` | Report which frames were found and hooked |
 | `/hp debug` | Toggle debug chat output (off by default) |
 
@@ -44,10 +45,24 @@ Scale is 0.5–1.5 in 0.1 steps; it moves into the options panel in Phase 4.
 
 ## Compatibility
 
-heroPanel installs its own hooks regardless of what else is loaded. If **DeModal**
-or **ElvUI** is detected it prints a single warning at login, because both of
-those also want to control the tracker frames — running two of them at once
-produces fighting hooks. heroPanel does not disable anything on your behalf.
+Other addons — **ElvUI** and **DeModal** among them — also want to place the
+tracker frames. heroPanel adapts instead of fighting them, per tracker:
+
+| Mode | Behaviour |
+|---|---|
+| `own` | heroPanel anchors the tracker to `UIParent` itself |
+| `holder` | another addon docks the tracker into a holder frame; heroPanel leaves the tracker alone and moves that holder instead |
+| `yield` | another addon owns the frame outright; heroPanel stops positioning it and only skins it |
+
+The default, `auto`, starts at `own` and steps down to `holder` then `yield`
+when it detects the tracker being repeatedly re-anchored by something else.
+The holder is found by **observing** which frame the tracker gets docked into,
+so this works with any addon that behaves this way — heroPanel hardcodes no
+other addon's frame names and never reads or writes another addon's saved
+variables.
+
+Force a mode with `/hp mode <auto|own|holder|yield>`, and check what resolved
+with `/hp status`. heroPanel never disables another addon on your behalf.
 
 ## Files
 

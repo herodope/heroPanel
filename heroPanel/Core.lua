@@ -58,6 +58,8 @@ ns.defaults = {
 
     frame = {
         locked = true,
+        -- auto | own | holder | yield. See the ownership notes in Move.lua.
+        ownership = "auto",
         watch  = { point = nil, x = 0, y = 0, scale = 1.0 },
         mplus  = { point = nil, x = 0, y = 0, scale = 1.0 },
     },
@@ -208,6 +210,7 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp unlock|r - unlock both trackers for dragging")
     ns.Print("  |cFFC2C6D8/hp scale <watch|mplus> <0.5-1.5>|r - set tracker scale")
     ns.Print("  |cFFC2C6D8/hp reset [watch|mplus]|r - clear saved position and scale")
+    ns.Print("  |cFFC2C6D8/hp mode <auto|own|holder|yield>|r - who positions the trackers")
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
     ns.Print("  |cFFC2C6D8/hp debug|r - toggle debug output (currently %s)",
         ns.DEBUG and "|cFF79C68DON|r" or "|cFF8B8FA3OFF|r")
@@ -233,6 +236,19 @@ SlashCmdList["HEROPANEL"] = function(input)
         end
     elseif cmd == "reset" then
         ns.ResetPosition(rest ~= "" and rest or nil)
+    elseif cmd == "mode" then
+        local mode, which = string.match(rest, "^(%S+)%s*(%S*)$")
+        if mode and ns.SetOwnership(mode, which ~= "" and which or nil) then
+            ns.Print("positioning mode set to |cFFC2C6D8%s|r.%s", mode,
+                mode == "auto" and " heroPanel will adapt if another addon contends." or "")
+            ns.ReapplyGeometry()
+        else
+            ns.Print("usage: /hp mode <auto|own|holder|yield>")
+            ns.Print("  |cFF8B8FA3auto|r   - take over, then cooperate if another addon contends")
+            ns.Print("  |cFF8B8FA3own|r    - always position the trackers yourself")
+            ns.Print("  |cFF8B8FA3holder|r - move the other addon's holder frame instead")
+            ns.Print("  |cFF8B8FA3yield|r  - never position; skin only")
+        end
     elseif cmd == "status" then
         ns.PrintStatus()
     elseif cmd == "debug" then

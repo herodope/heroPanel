@@ -251,18 +251,34 @@ function ns.PrintStatus()
         local record = ns.trackers[ns.TRACKER_KEYS[i]]
         if record.found then
             local saved = ns.db and ns.db.frame and ns.db.frame[record.key]
-            ns.Print("  |cFF79C68D%s|r found (%s)%s - %s, scale %.1f%s",
+            local mode = ns.GetMode and ns.GetMode(record.key) or "own"
+
+            ns.Print("  |cFF79C68D%s|r found (%s) - %s, scale %.1f%s",
                 record.label,
                 tostring(record.frameName),
-                record.moverName ~= record.frameName and (", moving " .. tostring(record.moverName)) or "",
                 record.hooked and "|cFF79C68Dhooked|r" or "|cFFFFAA00not hooked|r",
                 (saved and saved.scale) or 1,
-                (saved and saved.point) and (", saved at " .. saved.point) or ", no saved position")
+                (saved and saved.point) and ", position saved" or ", no saved position")
+
+            if mode == "yield" then
+                ns.Print("    positioning: |cFFFFAA00yielded|r to another addon%s",
+                    record.holderName and (" (" .. tostring(record.holderName) .. ")") or "")
+            elseif mode == "holder" then
+                ns.Print("    positioning: moving holder |cFFC2C6D8%s|r", tostring(record.holderName))
+            else
+                ns.Print("    positioning: heroPanel, moving |cFFC2C6D8%s|r",
+                    tostring(record.moverName))
+            end
+
+            if record.holderName and mode == "own" then
+                ns.Print("    another addon docks it into |cFF8B8FA3%s|r", tostring(record.holderName))
+            end
         else
             ns.Print("  |cFF8B8FA3%s not found|r", record.label)
         end
     end
-    ns.Print("  frames are |cFFC2C6D8%s|r. Debug output is %s.",
+    ns.Print("  frames are |cFFC2C6D8%s|r, mode |cFFC2C6D8%s|r. Debug output is %s.",
         (ns.db and ns.db.frame.locked) and "locked" or "unlocked",
+        (ns.db and ns.db.frame.ownership) or "auto",
         ns.DEBUG and "|cFF79C68DON|r" or "|cFF8B8FA3OFF|r")
 end

@@ -10,18 +10,26 @@
       * Scripts are attached with ns.HookScript, which hooks rather than
         replaces anything the game already installed.
       * Global functions are extended with hooksecurefunc, never overwritten.
+      * No other addon's SavedVariables are read or written, ever.
 
-    Holding a position on WatchFrame takes three separate measures, because on
-    a 3.3.5a client the game re-anchors it from more than one place:
-      1. it is removed from UIPARENT_MANAGED_FRAME_POSITIONS,
-      2. UIParent_ManageFramePositions is hooked so our anchor is re-applied
-         after any full layout pass,
-      3. the frame's own SetPoint is hooked, so an anchor change from anywhere
-         else - including client code we cannot see - is corrected on the next
-         frame.
-    Positions are stored as UIParent-space offsets from TOPLEFT rather than
-    whatever anchor the frame happened to be using, so restoring is exact and
-    survives a scale change.
+    Ownership
+    ---------
+    heroPanel is not always the only addon that wants to place these frames.
+    Rather than assume, each tracker resolves an ownership mode:
+
+      own     heroPanel anchors the tracker to UIParent itself. Used when
+              nothing else contends for the frame.
+      holder  another addon docks the tracker into a holder frame of its own.
+              heroPanel leaves the tracker alone and moves that holder instead,
+              so both addons stay happy.
+      yield   another addon owns the frame and no usable holder was found.
+              heroPanel stops positioning it - the other addon's mover places
+              it, and heroPanel still skins it.
+
+    "auto" (the default) starts at own and degrades own -> holder -> yield as
+    contention is detected. The holder is discovered by observation, not by
+    hardcoding another addon's frame names, so this works for any addon that
+    behaves this way rather than only the ones known today.
 ----------------------------------------------------------------------------]]
 
 local ADDON_NAME, ns = ...
@@ -31,6 +39,8 @@ local SCALE_MIN, SCALE_MAX, SCALE_STEP = 0.5, 1.5, 0.1
 -- Bumped when the meaning of the stored geometry changes. Anything older is
 -- dropped rather than misinterpreted.
 local GEOMETRY_VERSION = 2
+
+ns.OWNERSHIP_MODES = { auto = true, own = true, holder = true, yield = true }
 
 --------------------------------------------------------------------------------
 -- Saved geometry access
@@ -59,6 +69,53 @@ function ns.IsLocked()
 end
 
 --------------------------------------------------------------------------------
+-- Ownership
+--------------------------------------------------------------------------------
+
+-- The mode actually in force for a tracker. An explicit setting always wins;
+-- "auto" uses whatever the degrade cascade has settled on so far.
+function ns.GetMode(key)
+    local record = ns.trackers[key]
+    if not record then return "own" end
+
+    local configured = ns.db and ns.db.frame.ownership or "auto"
+    if configured ~= "auto" and ns.OWNERSHIP_MODES[configured] then return configured end
+
+    return record.mode or "own"
+end
+
+function ns.SetOwnership(mode, key)
+    if not ns.OWNERSHIP_MODES[mode] then return false end
+    if ns.db then ns.db.frame.ownership = mode end
+
+    local keys = key and { key } or ns.TRACKER_KEYS
+    for i = 1, #keys do
+        local record = ns.trackers[keys[i]]
+        if record then
+            record.mode = (mode ~= "auto") and mode or "own"
+            ns.ClearFightState(record.key)
+        end
+    end
+    return true
+end
+
+-- The frame heroPanel moves for a tracker, which is not always the tracker.
+local function ActiveMover(key)
+    local record = ns.trackers[key]
+    if not record then return nil end
+    if ns.GetMode(key) == "holder" and record.holderFrame then return record.holderFrame end
+    return record.mover
+end
+ns.GetActiveMover = ActiveMover
+
+local function ActiveMoverName(key)
+    local record = ns.trackers[key]
+    if not record then return nil end
+    if ns.GetMode(key) == "holder" and record.holderFrame then return record.holderName end
+    return record.moverName
+end
+
+--------------------------------------------------------------------------------
 -- Coordinate helpers
 --
 -- SetPoint offsets are measured in the moved frame's own coordinate space, so
@@ -67,6 +124,7 @@ end
 --------------------------------------------------------------------------------
 
 local function GetUIOffsets(frame)
+    if not frame then return nil end
     local frameScale = frame:GetEffectiveScale()
     local uiScale    = UIParent:GetEffectiveScale()
     if not frameScale or frameScale == 0 or not uiScale or uiScale == 0 then return nil end
@@ -113,8 +171,8 @@ local function ReleaseFromUIParent(frameName)
     end
 end
 
--- True while heroPanel is the one moving a frame, so the SetPoint hook can
--- tell our own anchor changes apart from everyone else's.
+-- True while heroPanel is the one moving a frame, so the anchor hooks can tell
+-- our own changes apart from everyone else's.
 local applying = {}
 
 --------------------------------------------------------------------------------
@@ -122,8 +180,10 @@ local applying = {}
 --------------------------------------------------------------------------------
 
 function ns.SavePosition(key)
+    if ns.GetMode(key) == "yield" then return false end
+
     local record = ns.trackers[key]
-    local frame  = record and record.mover
+    local frame  = ActiveMover(key)
     local saved  = GetSaved(key)
     if not frame or not saved then return false end
 
@@ -135,7 +195,7 @@ function ns.SavePosition(key)
     saved.y     = y
     saved.v     = GEOMETRY_VERSION
 
-    ReleaseFromUIParent(record.moverName)
+    ReleaseFromUIParent(ActiveMoverName(key))
 
     -- Re-anchor to the canonical point, so what is on screen and what is in the
     -- store cannot drift apart. If combat started mid-drag this waits, which is
@@ -146,18 +206,19 @@ function ns.SavePosition(key)
         applying[key] = nil
     end, "Normalize:" .. key)
 
-    ns.Debug("saved %s position: %.0f, %.0f", key, x, y)
+    ns.Debug("saved %s position: %.0f, %.0f (moving %s)", key, x, y, tostring(ActiveMoverName(key)))
     return true
 end
 
 function ns.RestorePosition(key)
-    local record = ns.trackers[key]
-    local frame  = record and record.mover
-    local saved  = GetSaved(key)
+    if ns.GetMode(key) == "yield" then return false end
+
+    local frame = ActiveMover(key)
+    local saved = GetSaved(key)
     if not frame or not saved or not saved.point then return false end
 
     return ns.RunWhenSafe(function()
-        ReleaseFromUIParent(record.moverName)
+        ReleaseFromUIParent(ActiveMoverName(key))
         applying[key] = true
         ApplyUIOffsets(frame, saved.x or 0, saved.y or 0)
         applying[key] = nil
@@ -166,17 +227,52 @@ function ns.RestorePosition(key)
 end
 
 --------------------------------------------------------------------------------
--- Fight detection
+-- Contention handling
 --
 -- If another addon owns the same frame, correcting it every time it moves is an
 -- endless tug-of-war that flickers and burns CPU for no benefit. Count the
--- corrections; past a threshold, stop, say so once, and leave the frame alone.
+-- corrections; past a threshold, step down a mode rather than keep fighting.
 --------------------------------------------------------------------------------
 
 local FIGHT_LIMIT, FIGHT_WINDOW = 8, 3
 
-local fightCounts = {}
+local fightCounts  = {}
 local fightGivenUp = {}
+
+-- own -> holder (if one was observed) -> yield
+local function DegradeMode(key)
+    local record = ns.trackers[key]
+    if not record then return end
+
+    local configured = ns.db and ns.db.frame.ownership or "auto"
+    if configured ~= "auto" then
+        -- The user asked for this mode explicitly. Say it is not working rather
+        -- than quietly overriding the choice.
+        ns.Warn("another addon keeps re-anchoring the %s and heroPanel is set to "
+            .. "'%s'. Stopping corrections - try /hp mode auto.",
+            string.lower(record.label), configured)
+        record.mode = "yield"
+        return
+    end
+
+    local current = record.mode or "own"
+
+    if current == "own" and record.holderFrame then
+        record.mode = "holder"
+        ns.Print("another addon docks the %s into |cFFC2C6D8%s|r. heroPanel will move "
+            .. "that holder instead, so both can coexist.",
+            string.lower(record.label), tostring(record.holderName))
+        fightCounts[key], fightGivenUp[key] = nil, nil
+        ns.RestorePosition(key)
+        return
+    end
+
+    record.mode = "yield"
+    ns.Warn("another addon owns the %s, so heroPanel has stopped positioning it - "
+        .. "use that addon's mover to place it. Skinning still applies. "
+        .. "Force heroPanel to take over with /hp mode own.",
+        string.lower(record.label))
+end
 
 local function AllowCorrection(key)
     if fightGivenUp[key] then return false end
@@ -192,24 +288,20 @@ local function AllowCorrection(key)
     if count.n <= FIGHT_LIMIT then return true end
 
     fightGivenUp[key] = true
-    local record = ns.trackers[key]
-    ns.Warn("another addon keeps re-anchoring the %s, so heroPanel has stopped "
-        .. "correcting it. Disable that addon's objective tracker module to let "
-        .. "heroPanel position it, or run /hp reset.",
-        record and string.lower(record.label) or key)
+    DegradeMode(key)
     return false
 end
 
 -- Called when the user expresses fresh intent (a drag, an unlock, a reset), so
 -- one bad stretch does not disable correction for the rest of the session.
-local function ClearFightState(key)
+function ns.ClearFightState(key)
     if key then
         fightCounts[key], fightGivenUp[key] = nil, nil
     else
         fightCounts, fightGivenUp = {}, {}
     end
 end
-ns.ClearFightState = ClearFightState
+local ClearFightState = ns.ClearFightState
 
 -- Re-apply every saved anchor after something else has laid the screen out.
 -- Coalesced onto the next frame so a burst of layout calls costs one pass.
@@ -224,7 +316,8 @@ local function ReapplyGeometry()
             local key    = ns.TRACKER_KEYS[i]
             local record = ns.trackers[key]
             local saved  = GetSaved(key)
-            if record and record.hooked and saved and saved.point and AllowCorrection(key) then
+            if record and record.hooked and saved and saved.point
+               and ns.GetMode(key) ~= "yield" and AllowCorrection(key) then
                 ns.RestorePosition(key)
             end
         end
@@ -241,12 +334,7 @@ function ns.ResetPosition(key)
             local saved = GetSaved(record.key)
             saved.point, saved.x, saved.y, saved.scale, saved.v = nil, 0, 0, 1.0, nil
             ClearFightState(record.key)
-
-            if record.mover and record.mover.SetUserPlaced then
-                local frame = record.mover
-                ns.RunWhenSafe(function() pcall(frame.SetUserPlaced, frame, false) end,
-                    "ClearUserPlaced:" .. record.key)
-            end
+            record.mode = nil
 
             local managed = _G.UIPARENT_MANAGED_FRAME_POSITIONS
             local stashed = ns.savedManagedPositions and ns.savedManagedPositions[record.moverName]
@@ -255,9 +343,12 @@ function ns.ResetPosition(key)
                 ns.savedManagedPositions[record.moverName] = nil
             end
 
-            if record.mover then
-                local frame = record.mover
-                ns.RunWhenSafe(function() frame:SetScale(1.0) end, "ResetScale:" .. record.key)
+            local frame = record.mover
+            if frame then
+                ns.RunWhenSafe(function()
+                    frame:SetScale(1.0)
+                    if frame.SetUserPlaced then pcall(frame.SetUserPlaced, frame, false) end
+                end, "Reset:" .. record.key)
             end
             ns.Print("%s reset. Reload the UI to put it back where the game wants it.", record.label)
         end
@@ -273,9 +364,8 @@ end
 --------------------------------------------------------------------------------
 
 function ns.SetScale(key, scale)
-    local record = ns.trackers[key]
-    local frame  = record and record.mover
-    local saved  = GetSaved(key)
+    local frame = ActiveMover(key)
+    local saved = GetSaved(key)
     if not frame or not saved then return false end
 
     scale = ns.Snap(ns.Clamp(scale, SCALE_MIN, SCALE_MAX), SCALE_STEP)
@@ -285,7 +375,7 @@ function ns.SetScale(key, scale)
         frame:SetScale(scale)
         -- Offsets are stored in UIParent space, so re-apply to keep the frame's
         -- top-left corner pinned where the user put it.
-        if saved.point then
+        if saved.point and ns.GetMode(key) ~= "yield" then
             applying[key] = true
             ApplyUIOffsets(frame, saved.x or 0, saved.y or 0)
             applying[key] = nil
@@ -295,8 +385,8 @@ function ns.SetScale(key, scale)
 end
 
 function ns.RestoreScale(key)
+    local frame = ActiveMover(key)
     local saved = GetSaved(key)
-    local frame = ns.GetMoverFrame(key)
     if not frame or not saved then return false end
     local scale = ns.Clamp(saved.scale or 1.0, SCALE_MIN, SCALE_MAX)
     return ns.RunWhenSafe(function() frame:SetScale(scale) end, "RestoreScale:" .. key)
@@ -310,13 +400,19 @@ end
 --------------------------------------------------------------------------------
 
 -- A drag cannot be deferred and replayed once combat ends, so an attempt made
--- in combat is simply refused. Warned once per combat so repeated attempts do
--- not spam chat.
+-- in combat is refused. Warned once per combat so repeated attempts do not
+-- spam chat.
 local combatMoveWarned = false
 
 local function OnDragStart(frame)
     local record = ns.ResolveTracker(frame)
     if not record or ns.IsLocked() then return end
+
+    if ns.GetMode(record.key) == "yield" then
+        ns.Warn("another addon is positioning the %s - use its mover, or run "
+            .. "/hp mode own to let heroPanel take over.", string.lower(record.label))
+        return
+    end
 
     -- Only the game's own tracker is protected. Addon-owned frames such as the
     -- Mythic+ tracker stay draggable in combat, which is when you are most
@@ -330,28 +426,40 @@ local function OnDragStart(frame)
         return
     end
 
-    local x, y = GetUIOffsets(frame)
-    ns.Debug("drag start %s at %.0f, %.0f", record.key, x or -1, y or -1)
-    ClearFightState(record.key)   -- a fresh drag is fresh intent
-    frame:StartMoving()
-    record.isMoving = true
-end
+    -- In holder mode the frame under the cursor is the tracker, but the frame
+    -- that actually moves is the holder it is docked into.
+    local mover = ActiveMover(record.key)
+    if not mover then return end
 
-ns:On("PLAYER_REGEN_ENABLED", function() combatMoveWarned = false end)
+    local x, y = GetUIOffsets(mover)
+    ns.Debug("drag start %s at %.0f, %.0f (moving %s)",
+        record.key, x or -1, y or -1, tostring(ActiveMoverName(record.key)))
+    ClearFightState(record.key)   -- a fresh drag is fresh intent
+
+    mover:SetMovable(true)
+    mover:StartMoving()
+    record.movingFrame = mover
+end
 
 local function OnDragStop(frame)
     local record = ns.ResolveTracker(frame)
-    if not record or not record.isMoving then return end
-    record.isMoving = false
+    if not record or not record.movingFrame then return end
+
+    local mover = record.movingFrame
+    record.movingFrame = nil
+
     -- Combat can start mid-drag, which blocks the stop on a protected frame.
-    if not pcall(frame.StopMovingOrSizing, frame) then
+    if not pcall(mover.StopMovingOrSizing, mover) then
         ns.Debug("could not stop moving %s.", record.key)
         return
     end
-    local x, y = GetUIOffsets(frame)
+
+    local x, y = GetUIOffsets(mover)
     ns.Debug("drag stop %s, frame now at %.0f, %.0f", record.key, x or -1, y or -1)
     ns.SavePosition(record.key)
 end
+
+ns:On("PLAYER_REGEN_ENABLED", function() combatMoveWarned = false end)
 
 -- Apply the current lock state to one tracker. Everything here touches
 -- protected methods, so it all goes through RunWhenSafe.
@@ -386,6 +494,42 @@ local function ApplyLockState(key)
 end
 ns.ApplyLockState = ApplyLockState
 
+--------------------------------------------------------------------------------
+-- Holder discovery
+--
+-- When another addon re-anchors a tracker, whatever it anchors the tracker to
+-- is that addon's holder. Remembering it by observation means heroPanel can
+-- cooperate with any addon that works this way, without knowing its name in
+-- advance or reading its saved variables.
+--------------------------------------------------------------------------------
+
+local function NameOf(object)
+    if type(object) ~= "table" then return tostring(object) end
+    local ok, objectName = pcall(object.GetName, object)
+    return (ok and objectName) or "unnamed"
+end
+
+local function NoteHolder(key, candidate)
+    if type(candidate) ~= "table" or candidate == UIParent then return end
+
+    local record = ns.trackers[key]
+    if not record or candidate == record.frame or candidate == record.mover then return end
+    if record.holderFrame == candidate then return end
+
+    -- An unnamed frame cannot be reported to the user or matched again later,
+    -- but it is still a usable move target, so accept it with a placeholder.
+    local candidateName = NameOf(candidate)
+    if type(candidate.SetPoint) ~= "function" then return end
+
+    record.holderFrame = candidate
+    record.holderName  = candidateName
+    ns.Debug("%s holder observed: %s", key, candidateName)
+end
+
+--------------------------------------------------------------------------------
+-- Hooking
+--------------------------------------------------------------------------------
+
 local function HookTracker(key)
     local record = ns.trackers[key]
     if not record or not record.found or record.hooked then return false end
@@ -407,19 +551,13 @@ local function HookTracker(key)
         ns.RestorePosition(key)
     end)
 
-    -- Anything that re-anchors this frame - a layout pass, the client's own
-    -- tracker code, another addon - is corrected on the next frame.
     if not record.anchorHooksInstalled then
         record.anchorHooksInstalled = true
 
-        local function NameOf(object)
-            if type(object) ~= "table" then return tostring(object) end
-            local ok, objectName = pcall(object.GetName, object)
-            return (ok and objectName) or "unnamed"
-        end
-
-        local function ExternalAnchor(how, detail)
+        local function ExternalAnchor(how, holderCandidate, detail)
             if applying[key] then return end
+            NoteHolder(key, holderCandidate)
+
             local saved = GetSaved(key)
             if not (saved and saved.point) then return end
             ns.Debug("%s re-anchored via %s %s", key, how, detail or "")
@@ -430,17 +568,17 @@ local function HookTracker(key)
         -- repositions a frame without ever calling SetPoint, and reparenting
         -- moves it along with its new parent. Watch all three.
         hooksecurefunc(frame, "SetPoint", function(_, point, relativeTo, relPoint, ox, oy)
-            ExternalAnchor("SetPoint", string.format("(%s -> %s %s at %s, %s)",
+            ExternalAnchor("SetPoint", relativeTo, string.format("(%s -> %s %s at %s, %s)",
                 tostring(point), NameOf(relativeTo), tostring(relPoint), tostring(ox), tostring(oy)))
         end)
 
         hooksecurefunc(frame, "SetAllPoints", function(_, relativeTo)
-            ExternalAnchor("SetAllPoints", "(" .. NameOf(relativeTo) .. ")")
+            ExternalAnchor("SetAllPoints", relativeTo, "(" .. NameOf(relativeTo) .. ")")
         end)
 
         hooksecurefunc(frame, "SetParent", function(_, parent)
             ns.Debug("%s reparented to %s", key, NameOf(parent))
-            ExternalAnchor("SetParent", "(" .. NameOf(parent) .. ")")
+            ExternalAnchor("SetParent", parent, "(" .. NameOf(parent) .. ")")
         end)
     end
 
