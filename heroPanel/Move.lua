@@ -165,6 +165,52 @@ function ns.RestorePosition(key)
     end, "RestorePosition:" .. key)
 end
 
+--------------------------------------------------------------------------------
+-- Fight detection
+--
+-- If another addon owns the same frame, correcting it every time it moves is an
+-- endless tug-of-war that flickers and burns CPU for no benefit. Count the
+-- corrections; past a threshold, stop, say so once, and leave the frame alone.
+--------------------------------------------------------------------------------
+
+local FIGHT_LIMIT, FIGHT_WINDOW = 8, 3
+
+local fightCounts = {}
+local fightGivenUp = {}
+
+local function AllowCorrection(key)
+    if fightGivenUp[key] then return false end
+
+    local now   = GetTime()
+    local count = fightCounts[key]
+    if not count or (now - count.start) > FIGHT_WINDOW then
+        fightCounts[key] = { start = now, n = 1 }
+        return true
+    end
+
+    count.n = count.n + 1
+    if count.n <= FIGHT_LIMIT then return true end
+
+    fightGivenUp[key] = true
+    local record = ns.trackers[key]
+    ns.Warn("another addon keeps re-anchoring the %s, so heroPanel has stopped "
+        .. "correcting it. Disable that addon's objective tracker module to let "
+        .. "heroPanel position it, or run /hp reset.",
+        record and string.lower(record.label) or key)
+    return false
+end
+
+-- Called when the user expresses fresh intent (a drag, an unlock, a reset), so
+-- one bad stretch does not disable correction for the rest of the session.
+local function ClearFightState(key)
+    if key then
+        fightCounts[key], fightGivenUp[key] = nil, nil
+    else
+        fightCounts, fightGivenUp = {}, {}
+    end
+end
+ns.ClearFightState = ClearFightState
+
 -- Re-apply every saved anchor after something else has laid the screen out.
 -- Coalesced onto the next frame so a burst of layout calls costs one pass.
 local reapplyQueued = false
@@ -178,7 +224,7 @@ local function ReapplyGeometry()
             local key    = ns.TRACKER_KEYS[i]
             local record = ns.trackers[key]
             local saved  = GetSaved(key)
-            if record and record.hooked and saved and saved.point then
+            if record and record.hooked and saved and saved.point and AllowCorrection(key) then
                 ns.RestorePosition(key)
             end
         end
@@ -194,6 +240,13 @@ function ns.ResetPosition(key)
         if record then
             local saved = GetSaved(record.key)
             saved.point, saved.x, saved.y, saved.scale, saved.v = nil, 0, 0, 1.0, nil
+            ClearFightState(record.key)
+
+            if record.mover and record.mover.SetUserPlaced then
+                local frame = record.mover
+                ns.RunWhenSafe(function() pcall(frame.SetUserPlaced, frame, false) end,
+                    "ClearUserPlaced:" .. record.key)
+            end
 
             local managed = _G.UIPARENT_MANAGED_FRAME_POSITIONS
             local stashed = ns.savedManagedPositions and ns.savedManagedPositions[record.moverName]
@@ -279,6 +332,7 @@ local function OnDragStart(frame)
 
     local x, y = GetUIOffsets(frame)
     ns.Debug("drag start %s at %.0f, %.0f", record.key, x or -1, y or -1)
+    ClearFightState(record.key)   -- a fresh drag is fresh intent
     frame:StartMoving()
     record.isMoving = true
 end
@@ -355,15 +409,38 @@ local function HookTracker(key)
 
     -- Anything that re-anchors this frame - a layout pass, the client's own
     -- tracker code, another addon - is corrected on the next frame.
-    if not record.setPointHooked then
-        record.setPointHooked = true
-        hooksecurefunc(frame, "SetPoint", function(_, point, _, relPoint, ox, oy)
+    if not record.anchorHooksInstalled then
+        record.anchorHooksInstalled = true
+
+        local function NameOf(object)
+            if type(object) ~= "table" then return tostring(object) end
+            local ok, objectName = pcall(object.GetName, object)
+            return (ok and objectName) or "unnamed"
+        end
+
+        local function ExternalAnchor(how, detail)
             if applying[key] then return end
             local saved = GetSaved(key)
             if not (saved and saved.point) then return end
-            ns.Debug("%s re-anchored by something else (%s/%s at %s, %s) - correcting.",
-                key, tostring(point), tostring(relPoint), tostring(ox), tostring(oy))
+            ns.Debug("%s re-anchored via %s %s", key, how, detail or "")
             ReapplyGeometry()
+        end
+
+        -- SetPoint is the obvious route, but not the only one: SetAllPoints
+        -- repositions a frame without ever calling SetPoint, and reparenting
+        -- moves it along with its new parent. Watch all three.
+        hooksecurefunc(frame, "SetPoint", function(_, point, relativeTo, relPoint, ox, oy)
+            ExternalAnchor("SetPoint", string.format("(%s -> %s %s at %s, %s)",
+                tostring(point), NameOf(relativeTo), tostring(relPoint), tostring(ox), tostring(oy)))
+        end)
+
+        hooksecurefunc(frame, "SetAllPoints", function(_, relativeTo)
+            ExternalAnchor("SetAllPoints", "(" .. NameOf(relativeTo) .. ")")
+        end)
+
+        hooksecurefunc(frame, "SetParent", function(_, parent)
+            ns.Debug("%s reparented to %s", key, NameOf(parent))
+            ExternalAnchor("SetParent", "(" .. NameOf(parent) .. ")")
         end)
     end
 
@@ -394,6 +471,7 @@ end
 function ns.SetLocked(locked, trackerKey)
     if not ns.db then return false end
     ns.db.frame.locked = locked and true or false
+    ClearFightState()   -- the user is actively repositioning; try again
 
     if trackerKey and ns.trackers[trackerKey] then ApplyLockState(trackerKey) end
     for i = 1, #ns.TRACKER_KEYS do
