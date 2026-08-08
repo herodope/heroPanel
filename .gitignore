@@ -1,0 +1,21 @@
+# WoW client artefacts
+*.bak
+*.old
+WTF/
+Interface/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Local design reference — not part of the distributed addon
+design_handoff_heroPanel/
+
+# Packaging output
+/dist/
+/release/
+*.zip

@@ -1,0 +1,16 @@
+## Interface: 30300
+## Title: heroPanel
+## Author: herodope
+## Version: 0.1.0
+## Notes: Skin, mover and lock controls for the objective tracker and the Mythic+ tracker.
+## SavedVariables: HEROPANEL_DB
+## OptionalDeps: Ascension_MythicPlus
+## X-Website: https://github.com/herodope/heroPanel
+## X-Category: Quests & Leveling
+## DefaultState: enabled
+
+Core.lua
+Util.lua
+Trackers.lua
+Move.lua
+Compat.lua
