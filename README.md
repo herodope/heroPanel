@@ -39,8 +39,8 @@ exists. Restart the client or `/reload`.
 | `/hp status` | Report which frames were found and hooked |
 | `/hp debug` | Toggle debug chat output (off by default) |
 
-With the trackers unlocked, **Ctrl + Mouse Wheel** over either frame rescales it
-(0.5–1.5 in 0.1 steps).
+Unlock, drag a tracker with the left mouse button, and the position is saved.
+Scale is 0.5–1.5 in 0.1 steps; it moves into the options panel in Phase 4.
 
 ## Compatibility
 
@@ -74,6 +74,12 @@ heroPanel/
   by `ns.PollForTracker`, which backs off and gives up rather than spinning.
 * **Timers go through `ns.After`.** `C_Timer` is not present on every 3.3.5a
   client, so `ns.After` falls back to an `OnUpdate` queue.
+* **Holding a position on `WatchFrame` needs three measures**, because the
+  client re-anchors it from more than one place: removal from
+  `UIPARENT_MANAGED_FRAME_POSITIONS`, a `hooksecurefunc` on
+  `UIParent_ManageFramePositions`, and a `hooksecurefunc` on the frame's own
+  `SetPoint`. Positions are stored as UIParent-space offsets from `TOPLEFT`,
+  not as whatever anchor the frame happened to be using.
 * **Frame-tree walks are throttled.** `ns.NewTreeScanner(frame, callback, opts)`
   drives passes from a shared `OnUpdate` accumulator, capped at ~10 per second.
   Use it instead of writing per-frame `OnUpdate` handlers.

@@ -9,14 +9,28 @@
         defers to PLAYER_REGEN_ENABLED while the player is in combat.
       * Scripts are attached with ns.HookScript, which hooks rather than
         replaces anything the game already installed.
-      * Blizzard's UIParent layout manager is told to stop managing WatchFrame
-        the first time the user actually saves a position, so the game does not
-        drag it back on the next layout pass.
+      * Global functions are extended with hooksecurefunc, never overwritten.
+
+    Holding a position on WatchFrame takes three separate measures, because on
+    a 3.3.5a client the game re-anchors it from more than one place:
+      1. it is removed from UIPARENT_MANAGED_FRAME_POSITIONS,
+      2. UIParent_ManageFramePositions is hooked so our anchor is re-applied
+         after any full layout pass,
+      3. the frame's own SetPoint is hooked, so an anchor change from anywhere
+         else - including client code we cannot see - is corrected on the next
+         frame.
+    Positions are stored as UIParent-space offsets from TOPLEFT rather than
+    whatever anchor the frame happened to be using, so restoring is exact and
+    survives a scale change.
 ----------------------------------------------------------------------------]]
 
 local ADDON_NAME, ns = ...
 
 local SCALE_MIN, SCALE_MAX, SCALE_STEP = 0.5, 1.5, 0.1
+
+-- Bumped when the meaning of the stored geometry changes. Anything older is
+-- dropped rather than misinterpreted.
+local GEOMETRY_VERSION = 2
 
 --------------------------------------------------------------------------------
 -- Saved geometry access
@@ -24,8 +38,20 @@ local SCALE_MIN, SCALE_MAX, SCALE_STEP = 0.5, 1.5, 0.1
 
 local function GetSaved(key)
     if not ns.db then return nil end
-    ns.db.frame[key] = ns.db.frame[key] or { x = 0, y = 0, scale = 1.0 }
-    return ns.db.frame[key]
+    local saved = ns.db.frame[key]
+    if type(saved) ~= "table" then
+        saved = { x = 0, y = 0, scale = 1.0 }
+        ns.db.frame[key] = saved
+    end
+
+    -- Geometry written by an earlier version stored whatever anchor point the
+    -- frame happened to have, which is not reproducible. Discard it.
+    if saved.point and saved.v ~= GEOMETRY_VERSION then
+        ns.Debug("dropping %s position saved by an older version.", key)
+        saved.point, saved.x, saved.y, saved.v = nil, 0, 0, nil
+    end
+
+    return saved
 end
 
 function ns.IsLocked()
@@ -33,11 +59,42 @@ function ns.IsLocked()
 end
 
 --------------------------------------------------------------------------------
--- Position
+-- Coordinate helpers
+--
+-- SetPoint offsets are measured in the moved frame's own coordinate space, so
+-- they change meaning when the frame is rescaled. Offsets are therefore stored
+-- in UIParent space and converted on the way in and out.
 --------------------------------------------------------------------------------
 
--- Blizzard re-anchors WatchFrame from UIParent_ManageFramePositions. Once the
--- user has moved it, take it out of that table so our anchor sticks.
+local function GetUIOffsets(frame)
+    local frameScale = frame:GetEffectiveScale()
+    local uiScale    = UIParent:GetEffectiveScale()
+    if not frameScale or frameScale == 0 or not uiScale or uiScale == 0 then return nil end
+
+    local left, top = frame:GetLeft(), frame:GetTop()
+    if not left or not top then return nil end
+
+    local x = (left * frameScale - UIParent:GetLeft() * uiScale) / uiScale
+    local y = (top  * frameScale - UIParent:GetTop()  * uiScale) / uiScale
+    return x, y
+end
+
+local function ApplyUIOffsets(frame, x, y)
+    local frameScale = frame:GetEffectiveScale()
+    local uiScale    = UIParent:GetEffectiveScale()
+    if not frameScale or frameScale == 0 then return false end
+
+    frame:ClearAllPoints()
+    frame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", x * uiScale / frameScale, y * uiScale / frameScale)
+    return true
+end
+
+--------------------------------------------------------------------------------
+-- Anchor ownership
+--------------------------------------------------------------------------------
+
+-- Take the frame out of Blizzard's layout manager so a full layout pass stops
+-- trying to place it. The previous entry is stashed so /hp reset can undo it.
 local function ReleaseFromUIParent(frameName)
     if not frameName then return end
     local managed = _G.UIPARENT_MANAGED_FRAME_POSITIONS
@@ -49,21 +106,40 @@ local function ReleaseFromUIParent(frameName)
     end
 end
 
+-- True while heroPanel is the one moving a frame, so the SetPoint hook can
+-- tell our own anchor changes apart from everyone else's.
+local applying = {}
+
+--------------------------------------------------------------------------------
+-- Position
+--------------------------------------------------------------------------------
+
 function ns.SavePosition(key)
     local record = ns.trackers[key]
     local frame  = record and record.mover
     local saved  = GetSaved(key)
     if not frame or not saved then return false end
 
-    local point, _, _, x, y = frame:GetPoint(1)
-    if not point then return false end
+    local x, y = GetUIOffsets(frame)
+    if not x then return false end
 
-    saved.point = point
-    saved.x     = x or 0
-    saved.y     = y or 0
+    saved.point = "TOPLEFT"
+    saved.x     = x
+    saved.y     = y
+    saved.v     = GEOMETRY_VERSION
 
     ReleaseFromUIParent(record.moverName)
-    ns.Debug("saved %s position: %s %.0f, %.0f", key, point, saved.x, saved.y)
+
+    -- Re-anchor to the canonical point, so what is on screen and what is in the
+    -- store cannot drift apart. If combat started mid-drag this waits, which is
+    -- safe: the stored offsets already describe where the frame is.
+    ns.RunWhenSafe(function()
+        applying[key] = true
+        ApplyUIOffsets(frame, x, y)
+        applying[key] = nil
+    end, "Normalize:" .. key)
+
+    ns.Debug("saved %s position: %.0f, %.0f", key, x, y)
     return true
 end
 
@@ -75,11 +151,33 @@ function ns.RestorePosition(key)
 
     return ns.RunWhenSafe(function()
         ReleaseFromUIParent(record.moverName)
-        frame:ClearAllPoints()
-        frame:SetPoint(saved.point, UIParent, saved.point, saved.x or 0, saved.y or 0)
-        ns.Debug("restored %s position: %s %.0f, %.0f", key, saved.point, saved.x or 0, saved.y or 0)
+        applying[key] = true
+        ApplyUIOffsets(frame, saved.x or 0, saved.y or 0)
+        applying[key] = nil
+        ns.Debug("restored %s position: %.0f, %.0f", key, saved.x or 0, saved.y or 0)
     end, "RestorePosition:" .. key)
 end
+
+-- Re-apply every saved anchor after something else has laid the screen out.
+-- Coalesced onto the next frame so a burst of layout calls costs one pass.
+local reapplyQueued = false
+
+local function ReapplyGeometry()
+    if reapplyQueued then return end
+    reapplyQueued = true
+    ns.After(0, function()
+        reapplyQueued = false
+        for i = 1, #ns.TRACKER_KEYS do
+            local key    = ns.TRACKER_KEYS[i]
+            local record = ns.trackers[key]
+            local saved  = GetSaved(key)
+            if record and record.hooked and saved and saved.point then
+                ns.RestorePosition(key)
+            end
+        end
+    end)
+end
+ns.ReapplyGeometry = ReapplyGeometry
 
 -- Clear the saved anchor (and scale) and hand the frame back to the game.
 function ns.ResetPosition(key)
@@ -88,7 +186,7 @@ function ns.ResetPosition(key)
         local record = ns.trackers[keys[i]]
         if record then
             local saved = GetSaved(record.key)
-            saved.point, saved.x, saved.y, saved.scale = nil, 0, 0, 1.0
+            saved.point, saved.x, saved.y, saved.scale, saved.v = nil, 0, 0, 1.0, nil
 
             local managed = _G.UIPARENT_MANAGED_FRAME_POSITIONS
             local stashed = ns.savedManagedPositions and ns.savedManagedPositions[record.moverName]
@@ -109,6 +207,9 @@ end
 
 --------------------------------------------------------------------------------
 -- Scale
+--
+-- Scale is set from /hp scale and, from Phase 4, the options panel. There is
+-- deliberately no mousewheel binding on the tracker frames.
 --------------------------------------------------------------------------------
 
 function ns.SetScale(key, scale)
@@ -120,7 +221,16 @@ function ns.SetScale(key, scale)
     scale = ns.Snap(ns.Clamp(scale, SCALE_MIN, SCALE_MAX), SCALE_STEP)
     saved.scale = scale
 
-    ns.RunWhenSafe(function() frame:SetScale(scale) end, "SetScale:" .. key)
+    ns.RunWhenSafe(function()
+        frame:SetScale(scale)
+        -- Offsets are stored in UIParent space, so re-apply to keep the frame's
+        -- top-left corner pinned where the user put it.
+        if saved.point then
+            applying[key] = true
+            ApplyUIOffsets(frame, saved.x or 0, saved.y or 0)
+            applying[key] = nil
+        end
+    end, "SetScale:" .. key)
     return true, scale
 end
 
@@ -133,39 +243,49 @@ function ns.RestoreScale(key)
 end
 
 --------------------------------------------------------------------------------
--- Drag / mousewheel wiring
+-- Drag wiring
 --
 -- Scripts are attached exactly once per frame. Lock state is applied by
 -- toggling movability and drag registration, not by rewiring scripts.
 --------------------------------------------------------------------------------
 
+-- A drag cannot be deferred and replayed once combat ends, so an attempt made
+-- in combat is simply refused. Warned once per combat so repeated attempts do
+-- not spam chat.
+local combatMoveWarned = false
+
 local function OnDragStart(frame)
     local record = ns.ResolveTracker(frame)
     if not record or ns.IsLocked() then return end
-    if InCombatLockdown() and record.protected then return end
+
+    -- Only the game's own tracker is protected. Addon-owned frames such as the
+    -- Mythic+ tracker stay draggable in combat, which is when you are most
+    -- likely to want to move one.
+    if record.protected and InCombatLockdown() then
+        if not combatMoveWarned then
+            combatMoveWarned = true
+            ns.Warn("can't move the %s in combat - the game protects it. Try again out of combat.",
+                string.lower(record.label))
+        end
+        return
+    end
+
     frame:StartMoving()
     record.isMoving = true
 end
 
+ns:On("PLAYER_REGEN_ENABLED", function() combatMoveWarned = false end)
+
 local function OnDragStop(frame)
     local record = ns.ResolveTracker(frame)
     if not record or not record.isMoving then return end
-    frame:StopMovingOrSizing()
     record.isMoving = false
+    -- Combat can start mid-drag, which blocks the stop on a protected frame.
+    if not pcall(frame.StopMovingOrSizing, frame) then
+        ns.Debug("could not stop moving %s.", record.key)
+        return
+    end
     ns.SavePosition(record.key)
-end
-
-local function OnMouseWheel(frame, delta)
-    if not IsControlKeyDown() then return end
-    local record = ns.ResolveTracker(frame)
-    if not record then return end
-
-    local saved   = GetSaved(record.key)
-    local current = saved and saved.scale or frame:GetScale() or 1
-    local target  = current + (delta > 0 and SCALE_STEP or -SCALE_STEP)
-
-    local ok, applied = ns.SetScale(record.key, target)
-    if ok then ns.Debug("%s scale -> %.1f", record.key, applied) end
 end
 
 -- Apply the current lock state to one tracker. Everything here touches
@@ -208,26 +328,31 @@ local function HookTracker(key)
     ns.HookScript(frame, "OnDragStart", OnDragStart)
     ns.HookScript(frame, "OnDragStop",  OnDragStop)
 
-    -- Ctrl+Scroll to rescale. Mousewheel input does not enable mouse clicks,
-    -- so this is safe to leave on while the frame is locked.
-    if frame.EnableMouseWheel then
-        ns.RunWhenSafe(function() frame:EnableMouseWheel(true) end, "EnableMouseWheel:" .. key)
-        ns.HookScript(frame, "OnMouseWheel", OnMouseWheel)
-    end
-
     -- Re-assert our geometry whenever the frame comes back into view; the game
     -- and other addons both like to reposition trackers on show.
     ns.HookScript(frame, "OnShow", function()
-        ns.RestorePosition(key)
         ns.RestoreScale(key)
+        ns.RestorePosition(key)
     end)
+
+    -- Anything that re-anchors this frame - a layout pass, the client's own
+    -- tracker code, another addon - is corrected on the next frame.
+    if not record.setPointHooked then
+        record.setPointHooked = true
+        hooksecurefunc(frame, "SetPoint", function()
+            if applying[key] then return end
+            local saved = GetSaved(key)
+            if saved and saved.point then ReapplyGeometry() end
+        end)
+    end
 
     record.hooked = true
     ns.Debug("hooked %s (%s).", record.label, tostring(record.moverName))
 
     ApplyLockState(key)
-    ns.RestorePosition(key)
+    -- Scale first: position offsets are converted using the current scale.
     ns.RestoreScale(key)
+    ns.RestorePosition(key)
     return true
 end
 ns.HookTracker = HookTracker
@@ -240,7 +365,7 @@ ns.HookTracker = HookTracker
 --
 -- Flips HEROPANEL_DB.frame.locked. The lock is a single global flag, so the
 -- new state is applied to every discovered tracker; trackerKey selects which
--- frame gets reported and is applied first.
+-- frame gets applied first.
 function ns:ToggleLock(trackerKey)
     return ns.SetLocked(not ns.IsLocked(), trackerKey)
 end
@@ -260,7 +385,7 @@ function ns.SetLocked(locked, trackerKey)
     if ns.db.frame.locked then
         ns.Print("trackers |cFFC2C6D8locked|r.")
     else
-        ns.Print("trackers |cFF79C68Dunlocked|r - drag with the left mouse button, Ctrl+Scroll to resize.")
+        ns.Print("trackers |cFF79C68Dunlocked|r - drag with the left mouse button.")
     end
 
     if InCombatLockdown() then
@@ -286,4 +411,16 @@ ns:On("PLAYER_LOGIN", function()
         local key = ns.TRACKER_KEYS[i]
         if ns.trackers[key].found then HookTracker(key) end
     end
+
+    -- A full layout pass re-places every frame the game thinks it owns, and it
+    -- runs well after login. Re-apply ours afterwards rather than fighting it.
+    if type(_G.UIParent_ManageFramePositions) == "function" then
+        hooksecurefunc("UIParent_ManageFramePositions", ReapplyGeometry)
+        ns.Debug("hooked UIParent_ManageFramePositions.")
+    end
+end)
+
+ns:On("PLAYER_ENTERING_WORLD", function()
+    -- Zoning triggers a layout pass of its own.
+    ReapplyGeometry()
 end)
