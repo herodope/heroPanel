@@ -194,7 +194,6 @@ ns:On("PLAYER_LOGIN", function()
     -- Belt and braces: if for any reason ADDON_LOADED was missed, make sure
     -- the store exists before anything reads ns.db.
     if not ns.db then ns.InitDB() end
-    ns.Debug("%s v%s loaded.", ADDON_NAME, ns.version)
 end)
 
 --------------------------------------------------------------------------------

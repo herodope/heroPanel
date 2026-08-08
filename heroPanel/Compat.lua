@@ -54,9 +54,40 @@ function ns.CheckConflicts()
     end
 
     ns.conflictsWarned = true
+    local others = table.concat(detected, "/")
+
+    -- Another addon being present is not by itself a problem. What matters is
+    -- how the overlap actually resolved, so report that rather than telling the
+    -- user to disable something that is working fine alongside heroPanel.
+    local cooperating, yielded = {}, {}
+    for i = 1, #ns.TRACKER_KEYS do
+        local key    = ns.TRACKER_KEYS[i]
+        local record = ns.trackers[key]
+        local mode   = ns.GetMode and ns.GetMode(key) or "own"
+        if mode == "holder" then
+            table.insert(cooperating, tostring(record.holderName))
+        elseif mode == "yield" then
+            table.insert(yielded, string.lower(record.label))
+        end
+    end
+
+    if #yielded > 0 then
+        ns.Warn("%s is positioning the %s and heroPanel could not share it. "
+            .. "Disable that addon's objective tracker module, or run /hp mode own, "
+            .. "to let heroPanel place it.",
+            others, table.concat(yielded, " and "))
+        return
+    end
+
+    if #cooperating > 0 then
+        -- Sharing cleanly. Nothing for the user to do, so keep it out of chat.
+        ns.Debug("%s detected; sharing via %s.", others, table.concat(cooperating, ", "))
+        return
+    end
+
     ns.Warn("%s also loading - both may try to control WatchFrame/MythicPlusObjectiveTracker. "
-        .. "Recommend disabling one to avoid conflicting hooks.",
-        table.concat(detected, "/"))
+        .. "If the trackers misbehave, disable one or run /hp status to see what heroPanel resolved.",
+        others)
 end
 
 ns.GetDetectedConflicts = function()
@@ -75,7 +106,9 @@ end
 --------------------------------------------------------------------------------
 
 ns:On("PLAYER_LOGIN", function()
-    ns.CheckConflicts()
+    -- Deliberately deferred. Holder adoption and the Mythic+ tracker poll both
+    -- resolve after login, and the message depends on how they resolved.
+    ns.After(3, ns.CheckConflicts)
 
     if not ns.DEBUG then return end
 

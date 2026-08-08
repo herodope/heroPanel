@@ -572,6 +572,10 @@ function InstallAnchorHooks(key, frame, role)
     if not frame or anchorHookedFrames[frame] then return false end
     anchorHookedFrames[frame] = true
 
+    -- A contended frame can be re-anchored many times a second. Log the first
+    -- few so the cause is identifiable, then go quiet rather than flooding chat.
+    local LOG_LIMIT, logged = 3, 0
+
     local function ExternalAnchor(how, candidate, detail)
         if applying[key] then return end
 
@@ -586,7 +590,12 @@ function InstallAnchorHooks(key, frame, role)
 
         local saved = GetSaved(key)
         if not (saved and saved.point) then return end
-        ns.Debug("%s %s re-anchored via %s %s", key, role, how, detail or "")
+
+        if logged < LOG_LIMIT then
+            logged = logged + 1
+            ns.Debug("%s %s re-anchored via %s %s%s", key, role, how, detail or "",
+                logged == LOG_LIMIT and " (further re-anchors not logged)" or "")
+        end
         ReapplyGeometry()
     end
 
@@ -603,7 +612,6 @@ function InstallAnchorHooks(key, frame, role)
     end)
 
     hooksecurefunc(frame, "SetParent", function(_, parent)
-        ns.Debug("%s %s reparented to %s", key, role, NameOf(parent))
         ExternalAnchor("SetParent", parent, "(" .. NameOf(parent) .. ")")
     end)
 
@@ -728,10 +736,7 @@ ns:On("PLAYER_LOGIN", function()
     -- A full layout pass re-places every frame the game thinks it owns, and it
     -- runs well after login. Re-apply ours afterwards rather than fighting it.
     if type(_G.UIParent_ManageFramePositions) == "function" then
-        hooksecurefunc("UIParent_ManageFramePositions", function()
-            ns.Debug("layout pass ran.")
-            ReapplyGeometry()
-        end)
+        hooksecurefunc("UIParent_ManageFramePositions", ReapplyGeometry)
         ns.Debug("hooked UIParent_ManageFramePositions.")
     end
 end)
