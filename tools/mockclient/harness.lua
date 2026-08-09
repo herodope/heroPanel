@@ -645,6 +645,28 @@ check(string.find(blind, "hidden", 1, true) ~= nil,
     "/hp dump should report the hidden frames it visited, got:\n" .. blind)
 for _, line in ipairs(trackerLines) do line:Show() end
 
+-- Another addon docks the tracker into a holder of its own and draws a header
+-- there. The walk starts at WatchFrame so it cannot see that; the dump has to
+-- name it anyway.
+local holder = new("Frame", "SomeOtherAddonHolder", UIParent)
+holder.__rect = { left = 1000, right = 1204, top = 810, bottom = 300 }
+local otherHeader = new("Frame", "SomeOtherAddonTrackerHeader", holder)
+otherHeader.__rect = { left = 1000, right = 1204, top = 810, bottom = 794 }
+local otherText = otherHeader:CreateFontString(nil, "ARTWORK")
+otherText:SetText("Objectives (1)")
+ns.trackers.watch.holderFrame = holder
+
+before = #log
+SlashCmdList["HEROPANEL"]("dump")
+local neighbours = table.concat(log, "\n", before + 1)
+check(string.find(neighbours, "SomeOtherAddonHolder", 1, true) ~= nil,
+    "/hp dump should name the holder")
+check(string.find(neighbours, "Objectives %(1%)") ~= nil,
+    "/hp dump should find text another addon draws around the tracker, got:\n" .. neighbours)
+check(string.find(neighbours, "SomeOtherAddonTrackerHeader", 1, true) ~= nil,
+    "/hp dump should name the frame that owns that text")
+ns.trackers.watch.holderFrame = nil
+
 -- An error anywhere in the addon must reach the player, not just the debug log.
 ns.DEBUG = false
 local exploded = false

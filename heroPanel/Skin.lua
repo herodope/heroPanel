@@ -910,6 +910,68 @@ local function Describe(frame, label)
         frame:GetScale() or 1, frame:GetEffectiveScale() or 1)
 end
 
+-- Who else is drawing here.
+--
+-- The walk starts at WatchFrame, so anything another addon parents somewhere
+-- else is invisible to it - including, potentially, the header drawn over ours.
+-- Reporting the text around the tracker with the frame that owns it names the
+-- culprit outright. It uses the holder heroPanel already observed in Phase 1
+-- rather than any hardcoded frame name, so this works for whichever addon it
+-- turns out to be.
+local NEIGHBOUR_LIMIT = 20
+
+local function DescribeChain(frame, label)
+    if not frame then return end
+    local names, guard, current = {}, 0, frame
+    while current and guard < 8 do
+        table.insert(names, (current.GetName and current:GetName()) or "unnamed")
+        current = current.GetParent and current:GetParent() or nil
+        guard = guard + 1
+    end
+    ns.Print("  %s chain: %s", label, table.concat(names, " < "))
+end
+
+local function DumpNeighbourhood()
+    local record = ns.trackers and ns.trackers.watch
+    if not record or not record.frame then return end
+
+    local roots, seen = {}, {}
+    local function AddRoot(frame)
+        if frame and frame ~= UIParent and not seen[frame] then
+            seen[frame] = true
+            table.insert(roots, frame)
+        end
+    end
+    AddRoot(record.holderFrame)
+    AddRoot(record.frame:GetParent())
+
+    if #roots == 0 then
+        ns.Print("  nothing else owns the tracker - it hangs straight off UIParent")
+        return
+    end
+
+    for i = 1, #roots do
+        local root = roots[i]
+        ns.Print("  text drawn under |cFFC2C6D8%s|r:",
+            tostring((root.GetName and root:GetName()) or "unnamed"))
+
+        local count = 0
+        ns.WalkFrameTree(root, function(object, info)
+            if info.objectType ~= "FontString" then return end
+            local text = object:GetText()
+            if not text or text == "" then return end
+
+            count = count + 1
+            if count > NEIGHBOUR_LIMIT then return false end
+            ns.Print("    d%.0f %s: %s", info.depth,
+                tostring((info.parent.GetName and info.parent:GetName()) or "unnamed"),
+                string.sub(text, 1, 34))
+        end, { maxDepth = 4 })
+
+        if count == 0 then ns.Print("    none") end
+    end
+end
+
 function skin.Dump()
     local watch = ns.GetTrackerFrame("watch")
     ns.Print("geometry dump")
@@ -932,7 +994,12 @@ function skin.Dump()
             or "|cFFFFAA00nothing measured|r",
         lastBlockCount)
 
+    DescribeChain(watch, "tracker")
+    DescribeChain(plate, "panel")
+
     if ns.Lines and ns.Lines.Dump then ns.Lines.Dump() end
+
+    DumpNeighbourhood()
 end
 
 --------------------------------------------------------------------------------
