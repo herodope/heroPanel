@@ -172,13 +172,32 @@ function ns.IsCollapsed(target)
     local record = ns.ResolveTracker(target)
     if not record then return false end
 
-    -- Trust the frame's own flag when it has one; the WatchFrame collapse
-    -- button sets this, and heroPanel must not fight it.
+    -- What is actually drawn wins.
+    --
+    -- The frame's own collapsed flag looks authoritative and is not: this
+    -- client leaves WatchFrame.collapsed set while the tracker is plainly
+    -- expanded with quest lines on screen. Believing it made the skin treat a
+    -- full tracker as empty - no lines styled, nothing measured, a panel
+    -- collapsed to header height around visible text.
+    --
+    -- So when something has measured the tracker, that measurement is the
+    -- answer. The flag is only a fallback for before the first measurement.
+    if record.measuredCollapsed ~= nil then return record.measuredCollapsed end
+
     local frame = record.frame
     if frame and frame.collapsed ~= nil then return frame.collapsed and true or false end
 
     local db = ns.db
     return db and db.collapsed and db.collapsed[record.key] and true or false
+end
+
+-- Recorded by whoever walks the tracker's lines - the skin, in practice. nil
+-- means "nobody has looked yet".
+function ns.SetMeasuredCollapsed(target, collapsed)
+    local record = ns.ResolveTracker(target)
+    if not record then return false end
+    record.measuredCollapsed = collapsed and true or false
+    return true
 end
 
 function ns.SetCollapsedState(target, collapsed)

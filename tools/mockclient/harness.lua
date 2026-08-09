@@ -611,6 +611,33 @@ end
 check(notched == 8, "an 8px radius should be a 2px step at each of the four corners, got " .. notched)
 
 --------------------------------------------------------------------------------
+-- A stuck collapsed flag
+--
+-- Observed in the wild: the client leaves WatchFrame.collapsed set while the
+-- tracker is plainly expanded with quest lines on screen. Trusting the flag
+-- made the skin skip the line walk entirely - nothing styled, nothing
+-- measured, and a panel collapsed to header height around visible text. What
+-- is drawn has to win.
+--------------------------------------------------------------------------------
+
+WatchFrame.collapsed = true
+for _, line in ipairs(trackerLines) do line:Show() end
+ns.Skin.Refresh("stuck flag")
+tick(); tick()
+
+check(plate:GetHeight() > 100,
+    "a stuck collapsed flag must not shrink the panel around visible lines, got "
+    .. tostring(plate:GetHeight()))
+check(colourOf(trackerLines[1].__text) == "E7C67C",
+    "lines must still be styled when the collapsed flag is stuck, got " .. colourOf(trackerLines[1].__text))
+check(ns.IsCollapsed("watch") == false,
+    "the measurement should override the frame's flag")
+
+WatchFrame.collapsed = false
+ns.Skin.Refresh("cleared")
+tick(); tick()
+
+--------------------------------------------------------------------------------
 -- Diagnostics
 --
 -- /hp status has to survive being run when the skin is broken, which is the

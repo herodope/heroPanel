@@ -495,9 +495,6 @@ end
 -- actually on screen and only falls back to the frame when there is nothing to
 -- measure.
 local function LayoutPlate(watch, contentBottom)
-    local collapsed = ns.IsCollapsed("watch")
-    ns.SetCollapsedState("watch", collapsed)
-
     -- Another addon may have re-parented the tracker since the plate was built.
     -- Following it keeps the two in one scale chain, which is what lets line
     -- measurements be used directly as offsets on our own frames.
@@ -532,9 +529,12 @@ local function LayoutPlate(watch, contentBottom)
     local trackerWidth = watch:GetWidth() or 0
     local width = trackerWidth > 60 and (trackerWidth + PAD_LEFT + PAD_RIGHT) or PANEL_MIN_WIDTH
 
+    -- No content measured means nothing is drawn below the header, whether
+    -- because the tracker is collapsed or because it is empty. Either way the
+    -- panel is a header.
     local top    = watch:GetTop()
     local height = minHeight
-    if not collapsed and contentBottom and top then
+    if contentBottom and top then
         height = (top + extraTop) - contentBottom + PAD_BOTTOM
     end
 
@@ -542,8 +542,6 @@ local function LayoutPlate(watch, contentBottom)
     plate:SetPoint("TOPLEFT", watch, "TOPLEFT", -PAD_LEFT, extraTop)
     plate:SetWidth(width)
     plate:SetHeight(math.max(minHeight, height))
-
-    return collapsed
 end
 
 --------------------------------------------------------------------------------
@@ -636,17 +634,23 @@ local function Refresh(reason)
         -- the lines have something to measure against; the second sizes it to
         -- what those lines turned out to be. Both happen before the frame is
         -- drawn, so nothing flickers.
-        local collapsed = LayoutPlate(watch, nil)
+        LayoutPlate(watch, nil)
         plate:Show()
 
         if ns.Lines then
-            if collapsed then
-                ns.Lines.ClearBlocks()
-            else
-                local count, contentBottom = ns.Lines.Apply(watch)
-                lastBlockCount, lastContentBottom = count or 0, contentBottom
-                LayoutPlate(watch, contentBottom)
-            end
+            -- The walk always runs. Whether the tracker is collapsed is decided
+            -- by what it finds, not by asking the frame first: a client that
+            -- leaves its collapsed flag set would otherwise stop the skin from
+            -- ever looking at the lines it is meant to be styling.
+            local count, contentBottom = ns.Lines.Apply(watch)
+            lastBlockCount, lastContentBottom = count or 0, contentBottom
+
+            local collapsed = (contentBottom == nil)
+            ns.SetMeasuredCollapsed("watch", collapsed)
+            ns.SetCollapsedState("watch", collapsed)
+            if collapsed then ns.Lines.ClearBlocks() end
+
+            LayoutPlate(watch, contentBottom)
         end
 
         -- After the lines, so a client with no quest-watch API can still put
