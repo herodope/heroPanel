@@ -45,6 +45,28 @@ local BADGE_HEIGHT    = 14
 local BADGE_PAD_X     = 6
 local HOVER_INTERVAL  = 0.1
 
+-- The tracker's own header band, measured down from its top edge. The fallback
+-- is a constant rather than zero on purpose: a band that measures as nothing
+-- whenever the collapse button is briefly unmeasurable moves heroPanel's whole
+-- header row by 30px, which is the difference between the design and two
+-- headers stacked on top of each other.
+local HEADER_BAND_FALLBACK = 22
+local HEADER_BAND_MAX      = HEADER_HEIGHT + 18
+
+-- Frame levels only run down to zero and are only comparable inside a strata,
+-- so "a couple of levels below the tracker" silently stops working on a client
+-- that puts the tracker at level 1. A strata step has no floor.
+local STRATA_BELOW = {
+    TOOLTIP           = "FULLSCREEN_DIALOG",
+    FULLSCREEN_DIALOG = "FULLSCREEN",
+    FULLSCREEN        = "DIALOG",
+    DIALOG            = "HIGH",
+    HIGH              = "MEDIUM",
+    MEDIUM            = "LOW",
+    LOW               = "BACKGROUND",
+    BACKGROUND        = "BACKGROUND",
+}
+
 -- Client textures used as glyphs, most preferred first. heroPanel ships no art,
 -- and which of these exist varies between 3.3.5a builds, so each is a fallback
 -- chain ending at a plain square - see ns.SetTextureFile.
@@ -201,10 +223,20 @@ end
 --------------------------------------------------------------------------------
 -- Blizzard chrome
 --
--- The tracker's own title and collapse-button art are faded out rather than
--- hidden: Show/Hide on a frame the game manages is exactly the kind of call
--- that gets refused in combat, and SetAlpha on a region is neither protected
--- nor something Blizzard's layout code reads back.
+-- heroPanel's header row replaces the tracker's own, so everything the tracker
+-- draws in that band has to go - not just the title FontString and the collapse
+-- button's art. Fading only those two left this client's header title and its
+-- header art on screen underneath ours.
+--
+-- Which regions make up the header differs between builds and between addon
+-- stacks, and the string on screen is not reliably the one a name lookup finds,
+-- so the band is cleared by *geometry* rather than by name: every region the
+-- tracker or one of its direct children draws inside the band is faded, and its
+-- original alpha is kept so Disable() puts all of them back.
+--
+-- Fading, not hiding: Show/Hide on a frame the game manages is exactly the kind
+-- of call that gets refused in combat, and SetAlpha on a region is neither
+-- protected nor something Blizzard's layout code reads back.
 --------------------------------------------------------------------------------
 
 local function FindCollapseButton(watch)
@@ -249,14 +281,85 @@ local function EachButtonTexture(button, fn)
     end
 end
 
+-- The original alpha is recorded once; the fade itself is re-applied every
+-- time. A region heroPanel has already seen can be shown again by the tracker's
+-- next update, and an early return on "we know this one" would leave it there.
 local function FadeRegion(region)
-    if not region or blizz.alpha[region] ~= nil then return end
-    blizz.alpha[region] = region:GetAlpha() or 1
-    region:SetAlpha(0)
+    if not region or type(region.SetAlpha) ~= "function" then return end
+    if blizz.alpha[region] == nil then
+        local ok, alpha = pcall(region.GetAlpha, region)
+        blizz.alpha[region] = (ok and alpha) or 1
+    end
+    pcall(region.SetAlpha, region, 0)
 end
 
-local function HideBlizzardChrome()
-    FadeRegion(blizz.title)
+-- Bottom edge of the tracker's header band, in screen coordinates.
+--
+-- The band is the union of the header widgets that can be measured, so it
+-- covers everything the tracker's header draws: the collapse button is the one
+-- widget every build of this tracker has, and the title extends the band
+-- downwards when it sits lower. HEADER_BAND_MAX caps how far that can run, and
+-- anything unreasonable falls back to the constant rather than to zero - a band
+-- of zero moves heroPanel's whole header row, see HEADER_BAND_FALLBACK.
+local function HeaderBandBottom(watch)
+    local top = watch and watch:GetTop()
+    if not top then return nil end
+
+    local bottom
+    local button = blizz.collapse
+    if button and button:IsShown() and button:GetBottom() then
+        bottom = button:GetBottom()
+    end
+    local title = blizz.title
+    if title and title:IsShown() and title:GetBottom() then
+        bottom = bottom and math.min(bottom, title:GetBottom()) or title:GetBottom()
+    end
+
+    if not bottom or bottom >= top or (top - bottom) > HEADER_BAND_MAX then
+        bottom = top - HEADER_BAND_FALLBACK
+    end
+    return bottom
+end
+
+-- Lines.lua needs the same band to keep the tracker's header title out of its
+-- quest-line walk, and there must be exactly one definition of where it is.
+function skin.HeaderBandBottom(watch)
+    return HeaderBandBottom(watch or ns.GetTrackerFrame("watch"))
+end
+
+-- Deliberately the same reach as Lines.Collect's walk. The two have to agree:
+-- anything the line walk can pick up and mistake for a quest title is something
+-- this has to be able to fade, and a header nested one frame deeper than the
+-- fade could see is exactly how the tracker's own title ended up both visible
+-- and styled as a quest. The geometry test is what keeps the extra depth safe -
+-- quest lines are drawn below the band, not inside it.
+local BAND_DEPTH = 3
+
+local function FadeHeaderBand(watch)
+    if not watch then return end
+
+    local top        = watch:GetTop()
+    local bandBottom = HeaderBandBottom(watch)
+    if not (top and bandBottom) then return end
+
+    blizz.bandBottom = bandBottom
+    blizz.bandCount  = 0
+
+    ns.WalkFrameTree(watch, function(region, info)
+        if info.kind ~= "region" then return end
+        if info.objectType ~= "FontString" and info.objectType ~= "Texture" then return end
+        if not (region.IsShown and region:IsShown()) then return end
+
+        local regionTop = region:GetTop()
+        if not regionTop or regionTop < bandBottom or regionTop > top + 2 then return end
+
+        blizz.bandCount = blizz.bandCount + 1
+        FadeRegion(region)
+    end, { maxDepth = BAND_DEPTH, includeRegions = true })
+
+    -- A button's textures are regions of the button and are covered by the walk
+    -- above, but only while the button is shown and measurable. This is the
+    -- belt-and-braces pass for the one widget heroPanel draws over itself.
     EachButtonTexture(blizz.collapse, FadeRegion)
 end
 
@@ -265,6 +368,7 @@ local function RestoreBlizzardChrome()
         pcall(region.SetAlpha, region, alpha)
     end
     wipe(blizz.alpha)
+    blizz.bandCount = 0
 end
 
 --------------------------------------------------------------------------------
@@ -274,6 +378,23 @@ end
 -- the options panel does not have to re-measure the tracker, and so the
 -- per-trigger refresh stays as cheap as possible.
 --------------------------------------------------------------------------------
+
+-- The caret rides on the real collapse button when there is one, so the glyph
+-- the player clicks is the glyph heroPanel drew. Re-run on every refresh rather
+-- than once at Enable: the button is not always there the first time the skin
+-- looks, and a caret parked in the plate's corner never found its way back.
+local function AnchorCaret()
+    if not plate then return end
+
+    header.caret:ClearAllPoints()
+    header.caretHover:ClearAllPoints()
+    if blizz.collapse and blizz.collapse:IsShown() then
+        header.caret:SetPoint("CENTER", blizz.collapse, "CENTER", 0, 0)
+    else
+        header.caret:SetPoint("RIGHT", plate, "TOPRIGHT", -HEADER_PAD_X, -HEADER_HEIGHT / 2)
+    end
+    header.caretHover:SetPoint("CENTER", header.caret, "CENTER", 0, 0)
+end
 
 local function StylePlate()
     if not plate then return end
@@ -449,16 +570,7 @@ local function StylePlate()
     local ar, ag, ab = ns.HexToRGB(ns.PALETTE.accent)
     header.caretHover:SetVertexColor(ar, ag, ab, ns.ALPHA.hoverButton)
 
-    -- The caret rides on the real collapse button when there is one, so the
-    -- glyph the player clicks is the glyph heroPanel drew.
-    header.caret:ClearAllPoints()
-    header.caretHover:ClearAllPoints()
-    if blizz.collapse then
-        header.caret:SetPoint("CENTER", blizz.collapse, "CENTER", 0, 0)
-    else
-        header.caret:SetPoint("RIGHT", plate, "TOPRIGHT", -HEADER_PAD_X, -HEADER_HEIGHT / 2)
-    end
-    header.caretHover:SetPoint("CENTER", header.caret, "CENTER", 0, 0)
+    AnchorCaret()
 end
 skin.Restyle = StylePlate
 
@@ -470,23 +582,10 @@ skin.Restyle = StylePlate
 -- Our header row overlays that space instead of adding to it, so the skinned
 -- panel is the same height as the frame it is skinning.
 local function NativeHeaderHeight(watch)
-    local top = watch:GetTop()
-    if not top then return 0 end
-
-    local lowest
-    local button = blizz.collapse
-    if button and button:IsShown() and button:GetBottom() then
-        lowest = button:GetBottom()
-    end
-    local title = blizz.title
-    if title and title:IsShown() and title:GetBottom() then
-        lowest = lowest and math.min(lowest, title:GetBottom()) or title:GetBottom()
-    end
-    if not lowest then return 0 end
-
-    local height = top - lowest
-    if height < 0 or height > HEADER_HEIGHT + 18 then return 0 end
-    return height
+    local top        = watch:GetTop()
+    local bandBottom = HeaderBandBottom(watch)
+    if not (top and bandBottom) then return HEADER_BAND_FALLBACK end
+    return top - bandBottom
 end
 
 -- contentBottom is the bottom edge of the lowest line the skin styled, measured
@@ -502,21 +601,27 @@ local function LayoutPlate(watch, contentBottom)
     if plate:GetParent() ~= parent then plate:SetParent(parent) end
     plate:SetScale(watch:GetScale() or 1)
 
-    -- Two levels below the tracker, not one: the hover tint has to sit above
-    -- the plate's background and still below every line the tracker draws, and
-    -- that needs a level of its own between them.
+    -- The plate goes a strata below the tracker rather than a couple of frame
+    -- levels below it. Levels bottom out at zero and only compare inside one
+    -- strata, so on a client that puts the tracker at level 1 - which is what
+    -- this one does - "two below" clamped to zero and the overlay, two levels up
+    -- from that, came out *above* the tracker and drew heroPanel's check marks
+    -- over Blizzard's text. A strata step has no floor, so the plate, the hover
+    -- tint and the glyphs stay behind the tracker whatever level it picks.
     --
     -- The lock button is the one thing that goes above the tracker. It has to
     -- take its own clicks even while the tracker itself is mouse-enabled for
     -- dragging, and it only covers the header's top-left corner. The collapse
     -- strip stays below, so an unlocked tracker drags from the header instead.
-    local level = watch:GetFrameLevel() or 2
-    local base  = math.max(0, level - 2)
-    plate:SetFrameStrata(watch:GetFrameStrata())
-    plate:SetFrameLevel(base)
-    plate.overlay:SetFrameLevel(base + 2)
-    header.hit:SetFrameLevel(base + 1)
-    header.lock:SetFrameLevel(base + 3)
+    local strata = watch:GetFrameStrata() or "LOW"
+    local level  = watch:GetFrameLevel() or 1
+    plate:SetFrameStrata(STRATA_BELOW[strata] or "BACKGROUND")
+    plate:SetFrameLevel(1)
+    header.hit:SetFrameLevel(2)
+    plate.overlay:SetFrameLevel(3)
+
+    header.lock:SetFrameStrata(strata)
+    header.lock:SetFrameLevel(level + 1)
 
     local nativeHeader = NativeHeaderHeight(watch)
     local headerHeight = ns.db.header.show and HEADER_HEIGHT or 0
@@ -557,7 +662,7 @@ local function TrackedQuestCount()
     return lastBlockCount
 end
 
-local function UpdateHeader()
+local function UpdateHeader(watch)
     if not plate then return end
 
     local locked = ns.IsLocked()
@@ -580,7 +685,7 @@ local function UpdateHeader()
     -- Turning heroPanel's header off has to give the tracker's own header back,
     -- otherwise there is nothing left to collapse the panel with.
     if ns.db.header.show then
-        HideBlizzardChrome()
+        FadeHeaderBand(watch)
     else
         RestoreBlizzardChrome()
     end
@@ -630,6 +735,14 @@ local function Refresh(reason)
             return
         end
 
+        -- Both are cached at build time, and both can be absent then: the
+        -- tracker is sometimes found before it has drawn its own header. Look
+        -- again while either is missing rather than skinning around a hole for
+        -- the rest of the session.
+        if not blizz.collapse then blizz.collapse = FindCollapseButton(watch) end
+        if not blizz.title    then blizz.title    = FindTitleFontString(watch) end
+        AnchorCaret()
+
         -- First pass anchors the plate and gives it a header-sized height, so
         -- the lines have something to measure against; the second sizes it to
         -- what those lines turned out to be. Both happen before the frame is
@@ -655,7 +768,7 @@ local function Refresh(reason)
 
         -- After the lines, so a client with no quest-watch API can still put
         -- the number of blocks it just drew in the badge.
-        UpdateHeader()
+        UpdateHeader(watch)
 
         ns.Debug("skin refreshed (%s).", tostring(reason))
     end)
@@ -804,7 +917,7 @@ function skin.Enable()
     end
 
     skin.enabled = true
-    HideBlizzardChrome()
+    FadeHeaderBand(watch)
     StylePlate()
 
     if not hoverTicker then hoverTicker = ns.NewTicker(HOVER_INTERVAL, HoverTick) end
@@ -871,9 +984,16 @@ function skin.PrintStatus()
             lastBlockCount)
     end
 
-    ns.Print("    header chrome: collapse button %s, title %s",
+    -- "title found" on its own was misleading: it says a FontString was
+    -- located, not that it is the one on screen. The faded count is the honest
+    -- answer to "is Blizzard's header gone" - zero means it is still there
+    -- whatever the name lookup managed to find.
+    ns.Print("    header chrome: collapse button %s, title %s, %s region(s) faded",
         blizz.collapse and "found" or "|cFFFFAA00not found|r",
-        blizz.title and "found" or "|cFFFFAA00not found|r")
+        blizz.title and "found" or "|cFFFFAA00not found|r",
+        (blizz.bandCount or 0) > 0
+            and string.format("|cFF79C68D%.0f|r", blizz.bandCount)
+            or "|cFFFFAA000|r")
     ns.Print("    glyphs: lock |cFF8B8FA3%s|r, caret |cFF8B8FA3%s|r",
         tostring(header.lockIcon and header.lockIcon:GetTexture()),
         tostring(header.caret and header.caret:GetTexture()))
@@ -976,6 +1096,71 @@ local function DumpNeighbourhood()
     end
 end
 
+-- What the tracker actually draws in its header band, and whether heroPanel
+-- got hold of it.
+--
+-- This is the half of the picture the rest of the dump was missing. The skin
+-- fades chrome it identifies by name, the name lookup can land on a FontString
+-- that is not the one on screen, and from the outside "faded the wrong string"
+-- and "did not fade anything" look identical - two headers on top of each
+-- other. Listing the band region by region, with the owner that draws it and
+-- whether heroPanel has its alpha, says which.
+local CHROME_LIMIT = 24
+
+local function RegionSummary(region, objectType)
+    if objectType == "FontString" then
+        local ok, text = pcall(region.GetText, region)
+        return string.format("\"%s\"", string.sub((ok and text) or "", 1, 26))
+    end
+    local ok, path = pcall(region.GetTexture, region)
+    if ok and path then
+        path = tostring(path)
+        return string.sub(path, math.max(1, #path - 29))
+    end
+    return "-"
+end
+
+local function DumpChrome(watch)
+    local top = watch and watch:GetTop()
+    if not top then
+        ns.Print("  |cFFFFAA00header band: no top edge to measure from|r")
+        return
+    end
+
+    local bandBottom = HeaderBandBottom(watch)
+    ns.Print("  header band: top %.0f bottom %.0f (%.0f tall), %.0f region(s) faded",
+        top, bandBottom or top, top - (bandBottom or top), blizz.bandCount or 0)
+
+    local count = 0
+    ns.WalkFrameTree(watch, function(region, info)
+        if info.kind ~= "region" then return end
+        if info.objectType ~= "FontString" and info.objectType ~= "Texture" then return end
+
+        local regionTop = region:GetTop()
+        if not regionTop or not bandBottom then return end
+        if regionTop < bandBottom or regionTop > top + 2 then return end
+
+        count = count + 1
+        if count > CHROME_LIMIT then return end
+
+        local alpha = (region.GetAlpha and region:GetAlpha()) or 1
+        ns.Print("    d%.0f %s %s %s a%.2f %s %s",
+            info.depth,
+            tostring((info.parent.GetName and info.parent:GetName()) or "unnamed"),
+            info.objectType == "FontString" and "text" or "art ",
+            (region.IsShown and region:IsShown()) and "shown" or "|cFF8B8FA3hidden|r",
+            alpha,
+            blizz.alpha[region] ~= nil and "|cFF79C68Dfaded|r" or "|cFFFFAA00left alone|r",
+            RegionSummary(region, info.objectType))
+    end, { maxDepth = BAND_DEPTH, includeRegions = true })
+
+    if count == 0 then
+        ns.Print("    |cFFFFAA00nothing in the band|r - the tracker's header is drawn elsewhere")
+    elseif count > CHROME_LIMIT then
+        ns.Print("    ... and %.0f more", count - CHROME_LIMIT)
+    end
+end
+
 function skin.Dump()
     local watch = ns.GetTrackerFrame("watch")
     ns.Print("geometry dump")
@@ -998,6 +1183,8 @@ function skin.Dump()
             or "|cFFFFAA00nothing measured|r",
         lastBlockCount)
 
+    DumpChrome(watch)
+
     DescribeChain(watch, "tracker")
     DescribeChain(plate, "panel")
 
@@ -1017,7 +1204,7 @@ ns:On("HEROPANEL_TRACKER_FOUND", function(key)
 end)
 
 ns:On("HEROPANEL_LOCK_CHANGED", function()
-    if skin.enabled then UpdateHeader() end
+    if skin.enabled then UpdateHeader(ns.GetTrackerFrame("watch")) end
 end)
 
 ns:On("PLAYER_LOGIN", function()

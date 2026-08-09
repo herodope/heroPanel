@@ -122,8 +122,16 @@ local function RawText(fontString)
     return current
 end
 
+-- Everything the tracker draws inside its own header band belongs to its
+-- header, not to a quest. Without this test the header title comes back as a
+-- quest line and Classify has no way to tell: it carries no dash, no counter,
+-- and it sits at the tracker's left edge, which is precisely the shape of a
+-- quest title. It would take a phantom quest block with it, colour the string
+-- heroPanel is meant to be hiding, and - worse - set the leftmost edge that
+-- every real line's indentation is judged against.
 local function Collect(watch)
-    local found = {}
+    local found      = {}
+    local bandBottom = ns.Skin.HeaderBandBottom and ns.Skin.HeaderBandBottom(watch)
 
     ns.WalkFrameTree(watch, function(object, info)
         if not (object.IsShown and object:IsShown()) then return false end
@@ -132,6 +140,8 @@ local function Collect(watch)
         if label and label:IsShown() then
             local raw = RawText(label)
             local top = label:GetTop()
+            if top and bandBottom and top >= bandBottom then return end
+
             if raw ~= "" and top then
                 table.insert(found, {
                     frame = object,

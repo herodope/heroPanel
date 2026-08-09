@@ -338,6 +338,28 @@ local titleFS = WatchFrame:CreateFontString(MINIMAL and nil or "WatchFrameTitle"
 titleFS:SetText("Objectives")
 titleFS.__rect = { left = 1002, right = 1060, top = 800, bottom = 786 }
 
+-- A second header, drawn on a child frame rather than on WatchFrame itself.
+--
+-- This is the shape the live client turned out to have, and the one the mock
+-- was missing: the string actually on screen is not the one a WatchFrameTitle
+-- lookup finds, and it is a region of a child, so a name lookup misses it and a
+-- regions-of-the-root scan never sees it either. Two things went wrong because
+-- of that - the header stayed visible under heroPanel's own, and the line walk
+-- picked the string up as a quest title, because a title is exactly what it
+-- looks like: no dash, no counter, at the tracker's left edge.
+--
+-- Left unnamed on purpose. Nothing may key off the name.
+local nativeHeader = new("Frame", nil, WatchFrame)
+nativeHeader.__level = 3
+nativeHeader.__rect = { left = 1000, right = 1204, top = 800, bottom = 784 }
+
+local nativeHeaderArt = nativeHeader:CreateTexture(nil, "ARTWORK")
+nativeHeaderArt.__rect = { left = 1000, right = 1204, top = 800, bottom = 796 }
+
+local nativeHeaderText = nativeHeader:CreateFontString(nil, "ARTWORK")
+nativeHeaderText:SetText("Objectives (1)")
+nativeHeaderText.__rect = { left = 1002, right = 1080, top = 796, bottom = 784 }
+
 local WatchFrameLines = new("Frame", "WatchFrameLines", WatchFrame)
 WatchFrameLines.__level = 3
 WatchFrameLines.__rect = { left = 1000, right = 1204, top = 780, bottom = 300 }
@@ -459,13 +481,27 @@ if plate then
     local height = plate:GetHeight()
     check(height > 100 and height < 200, "plate height should track content, got " .. tostring(height))
 
-    check(plate:GetFrameLevel() == 0, "plate should sit below the tracker, level " .. tostring(plate:GetFrameLevel()))
+    -- Behind the tracker is a strata step, not frame-level arithmetic. Levels
+    -- bottom out at zero and only compare inside one strata, so subtracting a
+    -- couple from the tracker's level silently stopped working on the live
+    -- client, which puts WatchFrame at level 1.
+    check(plate:GetFrameStrata() == "LOW",
+        "plate should sit a strata below the tracker's MEDIUM, got " .. tostring(plate:GetFrameStrata()))
 end
 
 -- Blizzard chrome faded, not hidden
 check(titleFS:GetAlpha() == 0, "Blizzard title should be faded out")
 check(titleFS:IsShown(), "Blizzard title should not be hidden, only faded")
 check(collapseBtn.__normal:GetAlpha() == 0, "collapse button art should be faded")
+
+-- ...and the header the tracker draws on a child frame, which is the one that
+-- was left on screen underneath heroPanel's own. Neither region is named, so
+-- this only passes if the band is being cleared by geometry.
+check(nativeHeaderText:GetAlpha() == 0,
+    "the tracker's own header text should be faded, got " .. tostring(nativeHeaderText:GetAlpha()))
+check(nativeHeaderArt:GetAlpha() == 0,
+    "the tracker's own header art should be faded, got " .. tostring(nativeHeaderArt:GetAlpha()))
+check(nativeHeaderText:IsShown(), "header text should be faded, not hidden")
 
 -- Line styling
 local function colourOf(fontString)
@@ -485,6 +521,12 @@ check(trackerLines[5].__text:GetText() == "Iron ore collected: 12/12",
     "completed line should not be recoloured inline, got " .. tostring(trackerLines[5].__text:GetText()))
 check(trackerLines[5].__dash:GetAlpha() == 0, "completed objective's dash should be faded for the check glyph")
 check(trackerLines[7].__dash:GetAlpha() == 1, "text objective keeps its dash")
+
+-- The tracker's own header text must not come back from the line walk as a
+-- quest title. In minimal mode the badge below counts blocks, so a phantom
+-- block shows up there too; this says outright which mistake was made.
+check(colourOf(nativeHeaderText) ~= "E7C67C",
+    "the tracker's header text was styled as a quest title by the line walk")
 
 -- Fonts never grow past what the tracker measured
 local _, titleSize = trackerLines[1].__text:GetFont()

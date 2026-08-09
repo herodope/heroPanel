@@ -171,15 +171,30 @@ heroPanel/
   the player and the tracker's clickable quest lines, so hover is sampled with
   `ns.MouseIsOver` — pure geometry — and the wrapper's own `OnEnter`/`OnLeave`
   are called from there. Nothing heroPanel draws can swallow a click.
-* **Frame levels matter.** The plate sits two levels below the tracker: the
-  hover tint needs a level above the plate's background and below every line the
-  tracker draws. The only thing above the tracker is the lock button, which has
-  to take its own clicks even while the tracker is mouse-enabled for dragging.
-* **Nothing on a Blizzard region is destroyed.** The tracker's title and
-  collapse-button art are faded with `SetAlpha`, not hidden — `Show`/`Hide` on a
-  frame the game manages is what gets refused in combat — and every font,
-  colour, alpha and rewritten string is remembered so `/hp skin off` can put it
-  back exactly.
+* **The plate sits a strata below the tracker, not a couple of frame levels.**
+  Levels bottom out at zero and only compare within one strata, so subtracting
+  from the tracker's level is only safe if the tracker is high enough — and this
+  client puts `WatchFrame` at level 1, which clamped the plate to 0 and pushed
+  the glyph overlay *above* the tracker. A strata step has no floor, so the
+  plate, the hover tint and the check glyphs are behind the tracker whatever
+  level it picks. The only thing above the tracker is the lock button, which has
+  to take its own clicks even while the tracker is mouse-enabled for dragging;
+  it gets the tracker's own strata and one level up.
+* **The tracker's header is cleared by geometry, not by name.** heroPanel's
+  header row replaces the tracker's own, so everything drawn in that band has to
+  go. Naming the regions does not work: the string on screen is not reliably the
+  one a `WatchFrameTitle` lookup finds, and on this client it is not even a
+  region of `WatchFrame` — it hangs off a child frame, where a name lookup and a
+  regions-of-the-root scan both miss it. So the band is measured from the
+  collapse button and everything the tracker draws inside it is faded. The walk
+  reaches as deep as the line walk does, deliberately: anything the line walk can
+  mistake for a quest title has to be something the fade can reach.
+* **Nothing on a Blizzard region is destroyed.** Header chrome is faded with
+  `SetAlpha`, not hidden — `Show`/`Hide` on a frame the game manages is what gets
+  refused in combat — and every font, colour, alpha and rewritten string is
+  remembered so `/hp skin off` can put it back exactly. The original alpha is
+  recorded once but the fade is re-applied on every refresh, because the tracker
+  will happily show a region again on its next update.
 * **Texture paths are candidate lists.** heroPanel ships no art, and which
   client textures exist varies between 3.3.5a builds, so `ns.SetTextureFile`
   tries each path and falls back to a plain square. It probes once whether the
