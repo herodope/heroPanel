@@ -625,6 +625,26 @@ local reported = table.concat(log, "\n", before + 1)
 check(string.find(reported, "skin is", 1, true) ~= nil, "/hp status should report the skin state")
 check(string.find(reported, "quest block", 1, true) ~= nil, "/hp status should report styled blocks")
 
+before = #log
+SlashCmdList["HEROPANEL"]("dump")
+local dumped = table.concat(log, "\n", before + 1)
+check(string.find(dumped, "WatchFrame", 1, true) ~= nil, "/hp dump should describe the tracker")
+check(string.find(dumped, "walk resolved 7 line", 1, true) ~= nil,
+    "/hp dump should list the resolved lines, got:\n" .. dumped)
+
+-- The branch that matters when something is wrong: another addon has taken the
+-- display over and the tracker's own lines are hidden. The dump has to say what
+-- it visited, not just that it found nothing.
+for _, line in ipairs(trackerLines) do line:Hide() end
+before = #log
+SlashCmdList["HEROPANEL"]("dump")
+local blind = table.concat(log, "\n", before + 1)
+check(string.find(blind, "nothing resolved", 1, true) ~= nil,
+    "/hp dump should say when the walk resolved nothing")
+check(string.find(blind, "hidden", 1, true) ~= nil,
+    "/hp dump should report the hidden frames it visited, got:\n" .. blind)
+for _, line in ipairs(trackerLines) do line:Show() end
+
 -- An error anywhere in the addon must reach the player, not just the debug log.
 ns.DEBUG = false
 local exploded = false

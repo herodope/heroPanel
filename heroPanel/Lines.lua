@@ -499,6 +499,70 @@ function lines.ClearBlocks()
 end
 
 --------------------------------------------------------------------------------
+-- Dump
+--
+-- What the walk resolved, and when it resolved nothing, what it actually
+-- visited. The second half is the interesting one: a tracker whose lines are
+-- hidden or live somewhere else looks, from the outside, exactly like a walk
+-- that is broken.
+--------------------------------------------------------------------------------
+
+local DUMP_LIMIT = 24
+
+function lines.Dump()
+    local watch = ns.GetTrackerFrame("watch")
+    if not watch then return end
+
+    local found = Collect(watch)
+    local minLeft
+    for i = 1, #found do
+        if not minLeft or found[i].left < minLeft then minLeft = found[i].left end
+    end
+    minLeft = minLeft or 0
+
+    ns.Print("  walk resolved %.0f line(s)%s", #found, #found > 0 and ":" or "")
+    for i = 1, math.min(#found, DUMP_LIMIT) do
+        local line = found[i]
+        ns.Print("    %.0f |cFFC2C6D8%s|r top %.0f left %.0f dash %s: %s",
+            i, Classify(line, minLeft), line.top, line.left,
+            (line.dash and line.dash:IsShown()) and "yes" or "no",
+            string.sub(line.raw, 1, 42))
+    end
+
+    if #found > 0 then return end
+
+    ns.Print("  |cFFFFAA00nothing resolved|r - frames the walk visited:")
+    local count = 0
+    ns.WalkFrameTree(watch, function(object, info)
+        count = count + 1
+        if count > DUMP_LIMIT then return false end
+
+        local shown, empty = 0, 0
+        local ok, regions = pcall(function() return { object:GetRegions() } end)
+        if ok then
+            for r = 1, #regions do
+                local region = regions[r]
+                if region.GetObjectType and region:GetObjectType() == "FontString" then
+                    if region:IsShown() and (region:GetText() or "") ~= "" then
+                        shown = shown + 1
+                    else
+                        empty = empty + 1
+                    end
+                end
+            end
+        end
+
+        ns.Print("    d%.0f %s %s - %.0f text, %.0f empty",
+            info.depth,
+            tostring((object.GetName and object:GetName()) or "unnamed"),
+            (object.IsShown and object:IsShown()) and "shown" or "|cFFFFAA00hidden|r",
+            shown, empty)
+    end, { maxDepth = 3, includeRegions = false })
+
+    if count == 0 then ns.Print("    |cFFFFAA00the tracker has no child frames at all|r") end
+end
+
+--------------------------------------------------------------------------------
 -- Restore
 --
 -- Puts every line back the way the tracker had it. Blizzard would restore the

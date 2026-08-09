@@ -260,6 +260,7 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp mode <auto|own|holder|yield>|r - who positions the trackers")
     ns.Print("  |cFFC2C6D8/hp skin [on|off]|r - skin the trackers, or hand them back to Blizzard")
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
+    ns.Print("  |cFFC2C6D8/hp dump|r - report the geometry the skin measured")
     ns.Print("  |cFFC2C6D8/hp debug|r - toggle debug output (currently %s)",
         ns.DEBUG and "|cFF79C68DON|r" or "|cFF8B8FA3OFF|r")
 end
@@ -309,6 +310,12 @@ SlashCmdList["HEROPANEL"] = function(input)
         end
     elseif cmd == "status" then
         ns.PrintStatus()
+    elseif cmd == "dump" then
+        if ns.Skin and ns.Skin.Dump then
+            ns.Skin.Dump()
+        else
+            ns.Print("the skin module is not loaded.")
+        end
     elseif cmd == "debug" then
         ns.DEBUG = not ns.DEBUG
         if ns.db then ns.db.debug = ns.DEBUG end

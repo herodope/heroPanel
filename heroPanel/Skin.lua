@@ -67,6 +67,7 @@ local hooksInstalled  = false
 local refreshQueued   = false
 local hookedUpdate    = false
 local lastBlockCount  = 0
+local lastContentBottom     -- what the last line walk measured, for /hp dump
 
 function skin.GetPlate() return plate end
 function skin.GetOverlay() return plate and plate.overlay or nil end
@@ -643,7 +644,7 @@ local function Refresh(reason)
                 ns.Lines.ClearBlocks()
             else
                 local count, contentBottom = ns.Lines.Apply(watch)
-                lastBlockCount = count or 0
+                lastBlockCount, lastContentBottom = count or 0, contentBottom
                 LayoutPlate(watch, contentBottom)
             end
         end
@@ -872,6 +873,66 @@ function skin.PrintStatus()
     ns.Print("    glyphs: lock |cFF8B8FA3%s|r, caret |cFF8B8FA3%s|r",
         tostring(header.lockIcon and header.lockIcon:GetTexture()),
         tostring(header.caret and header.caret:GetTexture()))
+end
+
+--------------------------------------------------------------------------------
+-- Geometry dump
+--
+-- /hp dump. The panel is sized from what the tracker's lines measure, so when
+-- it comes out the wrong size the question is always "what did the walk
+-- actually find, and where does the client think it is". Guessing at that from
+-- a screenshot does not work, especially with another skin in play.
+--------------------------------------------------------------------------------
+
+local function Describe(frame, label)
+    if not frame then
+        ns.Print("  %s: |cFFFFAA00missing|r", label)
+        return
+    end
+
+    local parent = frame:GetParent()
+    local parentName = parent and (parent:GetName() or "unnamed") or "none"
+
+    ns.Print("  %s: %s, parent %s, level %.0f, strata %s",
+        label,
+        frame:IsVisible() and "visible" or "|cFFFFAA00not visible|r",
+        tostring(parentName),
+        frame:GetFrameLevel() or 0,
+        tostring(frame:GetFrameStrata()))
+    ns.Print("    top %s bottom %s left %s right %s, %s x %s",
+        tostring(frame:GetTop() and string.format("%.0f", frame:GetTop())),
+        tostring(frame:GetBottom() and string.format("%.0f", frame:GetBottom())),
+        tostring(frame:GetLeft() and string.format("%.0f", frame:GetLeft())),
+        tostring(frame:GetRight() and string.format("%.0f", frame:GetRight())),
+        tostring(frame:GetWidth() and string.format("%.0f", frame:GetWidth())),
+        tostring(frame:GetHeight() and string.format("%.0f", frame:GetHeight())))
+    ns.Print("    scale %.2f, effective %.2f",
+        frame:GetScale() or 1, frame:GetEffectiveScale() or 1)
+end
+
+function skin.Dump()
+    local watch = ns.GetTrackerFrame("watch")
+    ns.Print("geometry dump")
+
+    Describe(watch, "WatchFrame")
+    Describe(plate, "panel")
+    Describe(blizz.collapse, "collapse button")
+
+    if watch then
+        local native = NativeHeaderHeight(watch)
+        ns.Print("  native header %.0f, our header %.0f, extra top %.0f, collapsed %s",
+            native, ns.db.header.show and HEADER_HEIGHT or 0,
+            math.max(0, (ns.db.header.show and HEADER_HEIGHT or 0) - native),
+            tostring(ns.IsCollapsed("watch")))
+    end
+
+    ns.Print("  last line walk: %s, %.0f block(s)",
+        lastContentBottom
+            and string.format("content bottom %.0f", lastContentBottom)
+            or "|cFFFFAA00nothing measured|r",
+        lastBlockCount)
+
+    if ns.Lines and ns.Lines.Dump then ns.Lines.Dump() end
 end
 
 --------------------------------------------------------------------------------
