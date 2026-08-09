@@ -67,12 +67,9 @@ local STRATA_BELOW = {
     BACKGROUND        = "BACKGROUND",
 }
 
--- Client textures used as glyphs, most preferred first. heroPanel ships no art,
--- and which of these exist varies between 3.3.5a builds, so each is a fallback
--- chain ending at a plain square - see ns.SetTextureFile.
-local TEX_LOCKED   = { "Interface\\Buttons\\LockButton-Locked-Up",   "Interface\\Buttons\\UI-CheckBox-Check" }
-local TEX_UNLOCKED = { "Interface\\Buttons\\LockButton-Unlocked-Up", "Interface\\Buttons\\UI-CheckBox-Check" }
-local TEX_CARET    = { "Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up", "Interface\\Buttons\\Arrow-Down-Up" }
+-- Glyphs are drawn from solids by ns.NewGlyph rather than taken from client
+-- art. The design fixes their colours and a tint cannot reach those from
+-- Blizzard's coloured icons - see the glyph notes in Util.lua.
 
 --------------------------------------------------------------------------------
 -- State
@@ -195,9 +192,7 @@ local function BuildPlate(watch)
     header.lock = CreateFrame("Button", nil, plate)
     header.lock:SetWidth(ICON_SIZE + 4)
     header.lock:SetHeight(ICON_SIZE + 4)
-    header.lockIcon = NewTexture(header.lock, "ARTWORK")
-    header.lockIcon:SetWidth(ICON_SIZE)
-    header.lockIcon:SetHeight(ICON_SIZE)
+    header.lockIcon = ns.NewGlyph(header.lock, ICON_SIZE)
     header.lockIcon:SetPoint("CENTER")
 
     header.label     = NewFontString(plate)
@@ -212,10 +207,7 @@ local function BuildPlate(watch)
     header.caretHover:SetHeight(20)
     header.caretHover:Hide()
 
-    header.caret = NewTexture(plate, "ARTWORK")
-    header.caret:SetWidth(ICON_SIZE)
-    header.caret:SetHeight(ICON_SIZE)
-    ns.SetTextureFile(header.caret, TEX_CARET[1], TEX_CARET[2])
+    header.caret = ns.NewGlyph(plate, ICON_SIZE)
 
     return plate
 end
@@ -335,6 +327,15 @@ end
 -- quest lines are drawn below the band, not inside it.
 local BAND_DEPTH = 3
 
+local function EachRegion(frame, fn)
+    if not (frame and frame.GetRegions) then return end
+    local ok, regions = pcall(function() return { frame:GetRegions() } end)
+    if not ok then return end
+    for i = 1, #regions do
+        if regions[i] then fn(regions[i]) end
+    end
+end
+
 local function FadeHeaderBand(watch)
     if not watch then return end
 
@@ -342,8 +343,11 @@ local function FadeHeaderBand(watch)
     local bandBottom = HeaderBandBottom(watch)
     if not (top and bandBottom) then return end
 
-    blizz.bandBottom = bandBottom
-    blizz.bandCount  = 0
+    blizz.bandBottom  = bandBottom
+    blizz.bandCount   = 0
+    blizz.headerCount = 0
+    blizz.headerFrames = blizz.headerFrames or {}
+    wipe(blizz.headerFrames)
 
     ns.WalkFrameTree(watch, function(region, info)
         if info.kind ~= "region" then return end
@@ -355,11 +359,30 @@ local function FadeHeaderBand(watch)
 
         blizz.bandCount = blizz.bandCount + 1
         FadeRegion(region)
+
+        -- A frame that draws inside the band is a header frame, and the rest of
+        -- what it draws is header too - the divider art under this tracker's
+        -- title hangs a few pixels below the band and survived a purely
+        -- geometric pass. Quest lines never draw inside the band, so nothing
+        -- that carries quest text can be promoted this way, and only the owning
+        -- frame's own regions are taken, never its children's.
+        --
+        -- The tracker itself is excluded: it is the root of everything, and
+        -- "all of WatchFrame's regions" is a different and much larger claim.
+        local owner = info.parent
+        if owner and owner ~= watch and not blizz.headerFrames[owner] then
+            blizz.headerFrames[owner] = true
+            blizz.headerCount = blizz.headerCount + 1
+        end
     end, { maxDepth = BAND_DEPTH, includeRegions = true })
 
-    -- A button's textures are regions of the button and are covered by the walk
-    -- above, but only while the button is shown and measurable. This is the
-    -- belt-and-braces pass for the one widget heroPanel draws over itself.
+    for owner in pairs(blizz.headerFrames) do
+        EachRegion(owner, FadeRegion)
+    end
+
+    -- A button's textures are regions of the button and are covered above, but
+    -- only while the button is shown and measurable. This is the belt-and-braces
+    -- pass for the one widget heroPanel draws over itself.
     EachButtonTexture(blizz.collapse, FadeRegion)
 end
 
@@ -368,7 +391,9 @@ local function RestoreBlizzardChrome()
         pcall(region.SetAlpha, region, alpha)
     end
     wipe(blizz.alpha)
-    blizz.bandCount = 0
+    blizz.bandCount   = 0
+    blizz.headerCount = 0
+    if blizz.headerFrames then wipe(blizz.headerFrames) end
 end
 
 --------------------------------------------------------------------------------
@@ -548,8 +573,8 @@ local function StylePlate()
     header.lock:SetPoint("LEFT", plate, "TOPLEFT", HEADER_PAD_X, -HEADER_HEIGHT / 2)
 
     local ir, ig, ib = ns.HexToRGB(ns.PALETTE.icon)
-    header.lockIcon:SetVertexColor(ir, ig, ib, 1)
-    header.caret:SetVertexColor(ir, ig, ib, 1)
+    header.lockIcon:SetColor(ir, ig, ib, 1)
+    header.caret:SetColor(ir, ig, ib, 1)
 
     local lr, lg, lb = ns.HexToRGB(ns.PALETTE.headerLabel)
     header.label:SetFont(ns.GetFontFile(), ns.GetFontSize(-0.5))
@@ -666,17 +691,11 @@ local function UpdateHeader(watch)
     if not plate then return end
 
     local locked = ns.IsLocked()
-    ns.SetTextureFile(header.lockIcon,
-        locked and TEX_LOCKED[1] or TEX_UNLOCKED[1],
-        locked and TEX_LOCKED[2] or TEX_UNLOCKED[2])
+    header.lockIcon:SetShape(locked and "locked" or "unlocked")
 
-    -- The base caret art points down, which is the collapsed state; flipping it
-    -- vertically gives the expanded one.
-    if ns.IsCollapsed("watch") then
-        header.caret:SetTexCoord(0, 1, 0, 1)
-    else
-        header.caret:SetTexCoord(0, 1, 1, 0)
-    end
+    -- Caret up when the tracker is expanded, down when it is collapsed: it
+    -- points at what a click would do.
+    header.caret:SetShape(ns.IsCollapsed("watch") and "caretDown" or "caretUp")
 
     local count = TrackedQuestCount()
     header.badgeText:SetText(tostring(count))
@@ -994,9 +1013,9 @@ function skin.PrintStatus()
         (blizz.bandCount or 0) > 0
             and string.format("|cFF79C68D%.0f|r", blizz.bandCount)
             or "|cFFFFAA000|r")
-    ns.Print("    glyphs: lock |cFF8B8FA3%s|r, caret |cFF8B8FA3%s|r",
-        tostring(header.lockIcon and header.lockIcon:GetTexture()),
-        tostring(header.caret and header.caret:GetTexture()))
+    ns.Print("    glyphs: lock |cFF8B8FA3%s|r, caret |cFF8B8FA3%s|r, drawn from solids",
+        tostring(header.lockIcon and header.lockIcon.shape),
+        tostring(header.caret and header.caret.shape))
 end
 
 --------------------------------------------------------------------------------
@@ -1128,28 +1147,36 @@ local function DumpChrome(watch)
     end
 
     local bandBottom = HeaderBandBottom(watch)
-    ns.Print("  header band: top %.0f bottom %.0f (%.0f tall), %.0f region(s) faded",
-        top, bandBottom or top, top - (bandBottom or top), blizz.bandCount or 0)
+    ns.Print("  header band: top %.0f bottom %.0f (%.0f tall), %.0f in band, %.0f header frame(s)",
+        top, bandBottom or top, top - (bandBottom or top),
+        blizz.bandCount or 0, blizz.headerCount or 0)
 
+    -- Regions outside the band are listed too when their owner draws inside it.
+    -- That is the whole point of the promotion: art anchored a few pixels below
+    -- the band is still header art, and the only way to see whether heroPanel
+    -- reached it is to print it next to the band it did not fall in.
     local count = 0
     ns.WalkFrameTree(watch, function(region, info)
         if info.kind ~= "region" then return end
         if info.objectType ~= "FontString" and info.objectType ~= "Texture" then return end
 
+        local owner     = info.parent
+        local promoted  = owner and blizz.headerFrames and blizz.headerFrames[owner]
         local regionTop = region:GetTop()
-        if not regionTop or not bandBottom then return end
-        if regionTop < bandBottom or regionTop > top + 2 then return end
+        local inBand    = regionTop and bandBottom
+            and regionTop >= bandBottom and regionTop <= top + 2
+        if not (inBand or promoted) then return end
 
         count = count + 1
         if count > CHROME_LIMIT then return end
 
-        local alpha = (region.GetAlpha and region:GetAlpha()) or 1
-        ns.Print("    d%.0f %s %s %s a%.2f %s %s",
+        ns.Print("    d%.0f %s %s %s a%.2f %s %s %s",
             info.depth,
-            tostring((info.parent.GetName and info.parent:GetName()) or "unnamed"),
+            tostring((owner and owner.GetName and owner:GetName()) or "unnamed"),
             info.objectType == "FontString" and "text" or "art ",
             (region.IsShown and region:IsShown()) and "shown" or "|cFF8B8FA3hidden|r",
-            alpha,
+            (region.GetAlpha and region:GetAlpha()) or 1,
+            inBand and "band" or "|cFF8B8FA3below|r",
             blizz.alpha[region] ~= nil and "|cFF79C68Dfaded|r" or "|cFFFFAA00left alone|r",
             RegionSummary(region, info.objectType))
     end, { maxDepth = BAND_DEPTH, includeRegions = true })

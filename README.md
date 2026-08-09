@@ -189,12 +189,26 @@ heroPanel/
   collapse button and everything the tracker draws inside it is faded. The walk
   reaches as deep as the line walk does, deliberately: anything the line walk can
   mistake for a quest title has to be something the fade can reach.
+  A frame that draws inside the band is a header frame, and the rest of what it
+  draws is header too — the divider art under this tracker's title hangs a few
+  pixels below the band and survived a purely geometric pass. Only the owning
+  frame's own regions are taken, never its children's, and never the tracker's,
+  so nothing carrying quest text can be caught this way.
 * **Nothing on a Blizzard region is destroyed.** Header chrome is faded with
   `SetAlpha`, not hidden — `Show`/`Hide` on a frame the game manages is what gets
   refused in combat — and every font, colour, alpha and rewritten string is
   remembered so `/hp skin off` can put it back exactly. The original alpha is
   recorded once but the fade is re-applied on every refresh, because the tracker
   will happily show a region again on its next update.
+* **Glyphs are drawn, not textured.** The lock, caret and completed-objective
+  check are built from `WHITE8X8` blocks on a small cell grid by `ns.NewGlyph`,
+  the same approximation the panel's chamfered corners use. Client art cannot
+  work here: `SetVertexColor` multiplies, so Blizzard's gold padlock tinted
+  `#75798C` comes out muted gold rather than `#75798C`, and nothing in the
+  client's icon set is neutral enough to tint cleanly. White tints exactly,
+  there is no art to ship, and no path that might be missing on a given build.
+  Shapes live in `ns.GLYPHS` as `{ column, row, columnSpan, rowSpan }` cells and
+  scale to whatever size they are given.
 * **Texture paths are candidate lists.** heroPanel ships no art, and which
   client textures exist varies between 3.3.5a builds, so `ns.SetTextureFile`
   tries each path and falls back to a plain square. It probes once whether the

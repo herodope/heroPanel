@@ -41,7 +41,9 @@ local STRIP_WIDTH   = 2    -- accent strip on the hovered block's left edge
 local CHECK_SIZE    = 11
 local DASH_MAX_W    = 16   -- widest a FontString can be and still be a dash
 
-local TEX_CHECK = { "Interface\\Buttons\\UI-CheckBox-Check", "Interface\\RaidFrame\\ReadyCheck-Ready" }
+-- The check is drawn from solids by ns.NewGlyph. Blizzard's tick textures are
+-- yellow and green respectively, and the design wants the completed-objective
+-- colour exactly - a tint multiplies, so coloured art cannot get there.
 
 --------------------------------------------------------------------------------
 -- State
@@ -175,9 +177,16 @@ end
 
 local COUNTER = "(%d+)%s*/%s*(%d+)"
 
+-- A dash counts only when it is shown *and* has something in it. The tracker
+-- keeps an empty dash FontString on lines that do not have one, so testing
+-- IsShown alone calls every line an objective.
+local function HasDash(line)
+    return (line.dash and line.dash:IsShown() and (line.dash:GetText() or "") ~= "") and true or false
+end
+
 local function Classify(line, minLeft)
     local done, total = string.match(line.raw, COUNTER)
-    local hasDash     = line.dash and line.dash:IsShown() and (line.dash:GetText() or "") ~= ""
+    local hasDash     = HasDash(line)
     local indented    = line.left > minLeft + 3
 
     if not (hasDash or done or indented) then return "title" end
@@ -270,10 +279,8 @@ local function GetGlyph(index)
     local overlay = ns.Skin.GetOverlay()
     if not overlay then return nil end
 
-    glyph = overlay:CreateTexture(nil, "ARTWORK")
-    glyph:SetWidth(CHECK_SIZE)
-    glyph:SetHeight(CHECK_SIZE)
-    ns.SetTextureFile(glyph, TEX_CHECK[1], TEX_CHECK[2])
+    glyph = ns.NewGlyph(overlay, CHECK_SIZE)
+    glyph:SetShape("check")
     glyphs[index] = glyph
     return glyph
 end
@@ -288,7 +295,7 @@ local function PlaceGlyph(index, line, r, g, b)
     else
         glyph:SetPoint("RIGHT", line.label, "LEFT", -2, 0)
     end
-    glyph:SetVertexColor(r, g, b, 1)
+    glyph:SetColor(r, g, b, 1)
     glyph:Show()
 end
 
@@ -533,9 +540,12 @@ function lines.Dump()
     ns.Print("  walk resolved %.0f line(s)%s", #found, #found > 0 and ":" or "")
     for i = 1, math.min(#found, DUMP_LIMIT) do
         local line = found[i]
+        -- The dash column has to answer the same question Classify asks, or a
+        -- line reported as "dash yes" but classified as a title reads as a bug
+        -- in the classifier when it is an empty dash FontString.
         ns.Print("    %.0f |cFFC2C6D8%s|r top %.0f left %.0f dash %s: %s",
             i, Classify(line, minLeft), line.top, line.left,
-            (line.dash and line.dash:IsShown()) and "yes" or "no",
+            HasDash(line) and "yes" or "no",
             string.sub(line.raw, 1, 42))
     end
 

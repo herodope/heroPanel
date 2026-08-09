@@ -258,6 +258,134 @@ function ns.SetTextureFile(texture, ...)
 end
 
 --------------------------------------------------------------------------------
+-- Glyphs
+--
+-- heroPanel ships no art and the design fixes exact glyph colours, and client
+-- textures cannot satisfy both. SetVertexColor multiplies: Blizzard's gold
+-- padlock tinted #75798C comes out muted gold, not #75798C, which is why the
+-- header's lock and caret read as gold squares however they were tinted.
+-- Nothing in the client's icon set is neutral enough to tint cleanly, and which
+-- paths exist varies between 3.3.5a builds anyway.
+--
+-- So glyphs are drawn from WHITE8X8 blocks on a small cell grid - the same
+-- approximation the panel's chamfered corners use. White tints exactly, the
+-- shapes stay crisp at the sizes the header needs, and there is no art to ship
+-- and none to miss.
+--
+--     local glyph = ns.NewGlyph(parent, 12)
+--     glyph:SetShape("caretDown")
+--     glyph:SetColor(ns.HexToRGB("#75798C"))
+--------------------------------------------------------------------------------
+
+-- Each shape is a list of cells: { column, row, columnSpan, rowSpan }, spans
+-- defaulting to 1, row 0 at the top. The grid is only as wide and as tall as
+-- the cells used and is scaled to fit whatever size the glyph is given, so a
+-- shape is written once at whatever proportions read best.
+ns.GLYPHS = {
+    -- Chevrons, 6 x 4, two cells across the apex so it does not come to a
+    -- single-pixel point at header sizes.
+    caretUp   = { {0,2}, {1,1}, {2,0,2,1}, {4,1}, {5,2} },
+    caretDown = { {0,0}, {1,1}, {2,2,2,1}, {4,1}, {5,0} },
+
+    -- Tick: a short arm down and a long arm up, which is what separates a
+    -- check from a V.
+    check     = { {0,2}, {1,3}, {2,4}, {3,3}, {4,2}, {5,1}, {6,0} },
+
+    -- Padlock: a shackle over a solid body. Unlocked opens the shackle's left
+    -- side rather than drawing a different padlock, so the two states read as
+    -- the same object.
+    locked    = { {1,0,4,1}, {1,1}, {4,1}, {1,2}, {4,2}, {0,3,6,4} },
+    unlocked  = { {1,0,4,1},         {4,1},        {4,2}, {0,3,6,4} },
+}
+
+local function Round(value)
+    return math.floor(value + 0.5)
+end
+
+local GlyphSetColor
+
+local function GlyphSetShape(glyph, name)
+    local cells = ns.GLYPHS[name]
+    if not cells or #cells == 0 then return false end
+    glyph.shape = name
+
+    local columns, rows = 0, 0
+    for i = 1, #cells do
+        local cell = cells[i]
+        columns = math.max(columns, cell[1] + (cell[3] or 1))
+        rows    = math.max(rows,    cell[2] + (cell[4] or 1))
+    end
+    if columns == 0 or rows == 0 then return false end
+
+    -- One unit for both axes, so the shape keeps its proportions, then centred
+    -- in the glyph's box - a shape that is not square would sit in a corner.
+    local size    = glyph.glyphSize
+    local unit    = math.min(size / columns, size / rows)
+    local originX = (size - columns * unit) / 2
+    local originY = (size - rows    * unit) / 2
+
+    for i = 1, #cells do
+        local cell = cells[i]
+        local part = glyph.parts[i]
+        if not part then
+            part = glyph:CreateTexture(nil, "ARTWORK")
+            ns.SetTextureFile(part, ns.SOLID)
+            glyph.parts[i] = part
+        end
+
+        -- Round each block's edges rather than its width and height, so blocks
+        -- that share an edge meet exactly instead of leaving a seam or
+        -- overlapping by a pixel.
+        local left   = Round(originX + cell[1] * unit)
+        local right  = Round(originX + (cell[1] + (cell[3] or 1)) * unit)
+        local top    = Round(originY + cell[2] * unit)
+        local bottom = Round(originY + (cell[2] + (cell[4] or 1)) * unit)
+
+        part:ClearAllPoints()
+        part:SetPoint("TOPLEFT", glyph, "TOPLEFT", left, -top)
+        part:SetWidth(math.max(1, right - left))
+        part:SetHeight(math.max(1, bottom - top))
+        part:Show()
+    end
+
+    for i = #cells + 1, #glyph.parts do glyph.parts[i]:Hide() end
+
+    -- A shape change rebuilds the blocks, and new ones start white.
+    GlyphSetColor(glyph, glyph.r, glyph.g, glyph.b, glyph.a)
+    return true
+end
+
+function GlyphSetColor(glyph, r, g, b, a)
+    glyph.r, glyph.g, glyph.b, glyph.a = r or 1, g or 1, b or 1, a or 1
+    for i = 1, #glyph.parts do
+        glyph.parts[i]:SetVertexColor(glyph.r, glyph.g, glyph.b, glyph.a)
+    end
+end
+
+local function GlyphSetGlyphSize(glyph, size)
+    glyph.glyphSize = math.max(4, tonumber(size) or 12)
+    glyph:SetWidth(glyph.glyphSize)
+    glyph:SetHeight(glyph.glyphSize)
+    if glyph.shape then GlyphSetShape(glyph, glyph.shape) end
+end
+
+-- Methods are attached as fields rather than through a metatable: a frame
+-- brings its own, and replacing it is not something to do to a widget the
+-- client owns.
+function ns.NewGlyph(parent, size)
+    local glyph = CreateFrame("Frame", nil, parent)
+    glyph.parts = {}
+    glyph.r, glyph.g, glyph.b, glyph.a = 1, 1, 1, 1
+
+    glyph.SetShape     = GlyphSetShape
+    glyph.SetColor     = GlyphSetColor
+    glyph.SetGlyphSize = GlyphSetGlyphSize
+
+    GlyphSetGlyphSize(glyph, size)
+    return glyph
+end
+
+--------------------------------------------------------------------------------
 -- Fonts
 --
 -- Phase 4 swaps this for LibSharedMedia. Until then the configured face is

@@ -360,6 +360,13 @@ local nativeHeaderText = nativeHeader:CreateFontString(nil, "ARTWORK")
 nativeHeaderText:SetText("Objectives (1)")
 nativeHeaderText.__rect = { left = 1002, right = 1080, top = 796, bottom = 784 }
 
+-- The header's divider art, anchored a few pixels *below* the band. Geometry
+-- alone never reaches it, which is how it survived on the live client and left
+-- a gold streak across the panel. It is header art all the same, and the only
+-- thing that says so is that its owner draws inside the band.
+local nativeHeaderDivider = nativeHeader:CreateTexture(nil, "ARTWORK")
+nativeHeaderDivider.__rect = { left = 1000, right = 1204, top = 782, bottom = 780 }
+
 local WatchFrameLines = new("Frame", "WatchFrameLines", WatchFrame)
 WatchFrameLines.__level = 3
 WatchFrameLines.__rect = { left = 1000, right = 1204, top = 780, bottom = 300 }
@@ -502,6 +509,9 @@ check(nativeHeaderText:GetAlpha() == 0,
 check(nativeHeaderArt:GetAlpha() == 0,
     "the tracker's own header art should be faded, got " .. tostring(nativeHeaderArt:GetAlpha()))
 check(nativeHeaderText:IsShown(), "header text should be faded, not hidden")
+check(nativeHeaderDivider:GetAlpha() == 0,
+    "header divider art below the band should be faded through its owner, got "
+    .. tostring(nativeHeaderDivider:GetAlpha()))
 
 -- Line styling
 local function colourOf(fontString)
@@ -540,6 +550,90 @@ for _, region in ipairs(plate and plate.__regions or {}) do
     if region.__kind == "FontString" and region:GetText() == "3" then badge = region end
 end
 check(badge ~= nil, "count badge should read 3")
+
+--------------------------------------------------------------------------------
+-- Glyphs
+--
+-- Drawn from solids rather than client art because SetVertexColor multiplies:
+-- Blizzard's gold padlock tinted #75798C comes out muted gold, not #75798C,
+-- which is what put gold squares in the header. Three things have to hold - a
+-- shape fills the box it is given, never spills out of it, and comes out the
+-- exact colour asked for. The last one is the entire reason for not using art,
+-- so it is the one worth asserting hardest.
+--------------------------------------------------------------------------------
+
+local hp = HeroPanel
+
+local glyphHost = new("Frame", nil, UIParent)
+glyphHost.__rect = { left = 500, right = 600, top = 500, bottom = 400 }
+
+local glyph = hp.NewGlyph(glyphHost, 12)
+check(glyph ~= nil, "NewGlyph returned nothing")
+glyph:SetPoint("TOPLEFT", glyphHost, "TOPLEFT", 0, 0)
+
+local shapeNames = {}
+for name in pairs(hp.GLYPHS) do table.insert(shapeNames, name) end
+table.sort(shapeNames)
+check(#shapeNames >= 5, "expected the full glyph set, got " .. tostring(#shapeNames))
+
+for _, name in ipairs(shapeNames) do
+    check(glyph:SetShape(name) ~= false, "SetShape rejected " .. name)
+
+    local boxLeft, boxRight = glyph:GetLeft(), glyph:GetRight()
+    local boxTop, boxBottom = glyph:GetTop(), glyph:GetBottom()
+
+    local shown, minLeft, maxRight, maxTop, minBottom = 0
+    for _, part in ipairs(glyph.parts) do
+        if part:IsShown() then
+            shown = shown + 1
+            local l, r = part:GetLeft(), part:GetRight()
+            local t, b = part:GetTop(), part:GetBottom()
+
+            check(l >= boxLeft - 0.01 and r <= boxRight + 0.01
+              and t <= boxTop + 0.01 and b >= boxBottom - 0.01,
+                name .. " spills outside its box")
+            check(r - l >= 1 and t - b >= 1, name .. " has a block thinner than a pixel")
+
+            minLeft   = math.min(minLeft   or l, l)
+            maxRight  = math.max(maxRight  or r, r)
+            maxTop    = math.max(maxTop    or t, t)
+            minBottom = math.min(minBottom or b, b)
+        end
+    end
+
+    check(shown == #hp.GLYPHS[name],
+        name .. " drew " .. tostring(shown) .. " of " .. tostring(#hp.GLYPHS[name]) .. " blocks")
+
+    -- The grid scales to fit, so the longer axis must reach the full 12px.
+    -- A shape rendering at a few pixels inside a 12px box is what getting the
+    -- unit maths wrong looks like, and it would pass every other check here.
+    local reach = math.max(maxRight - minLeft, maxTop - minBottom)
+    check(reach >= 11.99, name .. " does not fill its box, longest axis " .. tostring(reach))
+end
+
+-- Colour is exact, and survives a shape change: SetShape builds blocks it has
+-- not built before, and a new block starts white. This is the check the whole
+-- approach exists for - a tint over Blizzard's art could never assert it.
+local function glyphHex(part)
+    local c = part.__color or {}
+    return string.format("%02X%02X%02X",
+        math.floor((c[1] or 1) * 255 + 0.5),
+        math.floor((c[2] or 1) * 255 + 0.5),
+        math.floor((c[3] or 1) * 255 + 0.5))
+end
+
+glyph:SetShape("caretUp")
+glyph:SetColor(hp.HexToRGB("#75798C"))
+check(glyphHex(glyph.parts[1]) == "75798C",
+    "glyph colour should be exact, got " .. glyphHex(glyph.parts[1]))
+
+-- "locked" has more blocks than "caretUp", so the last one is built by this
+-- call and has never been coloured before.
+glyph:SetShape("locked")
+local lastBlock = glyph.parts[#hp.GLYPHS.locked]
+check(#hp.GLYPHS.locked > #hp.GLYPHS.caretUp, "the shape swap must add blocks to be a test")
+check(glyphHex(lastBlock) == "75798C",
+    "a block built by a shape change should take the glyph's colour, got " .. glyphHex(lastBlock))
 
 --------------------------------------------------------------------------------
 -- Hover
