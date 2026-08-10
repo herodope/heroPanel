@@ -72,7 +72,16 @@ function methods:UnregisterEvent(e) self.__events[e] = nil end
 function methods:IsEnabled() return true end
 function methods:SetHitRectInsets() end
 function methods:SetTexCoord(...) self.__texCoord = { ... } end
-function methods:SetTexture(path) self.__texture = path; return true end
+-- The mock accepts every path, which would mean heroPanel's shipped glyph art
+-- always loads and its block fallback was never once exercised. HP_NOMEDIA
+-- fails the addon's own media the way a client that cannot read .tga would.
+local NOMEDIA = os.getenv("HP_NOMEDIA")
+
+function methods:SetTexture(path)
+    if NOMEDIA and path and string.find(path, "\\media\\", 1, true) then return false end
+    self.__texture = path
+    return true
+end
 function methods:GetTexture() return self.__texture end
 function methods:SetVertexColor(r, g, b, a) self.__color = { r, g, b, a } end
 function methods:SetGradientAlpha(...) self.__gradient = { ... } end
@@ -159,6 +168,12 @@ function methods:SetPoint(point, a, b, c, d)
         x = x or 0, y = y or 0,
     })
 end
+function methods:GetNumPoints() return #self.__points end
+function methods:GetPoint(index)
+    local p = self.__points[index or 1]
+    if not p then return nil end
+    return p.point, p.relTo, p.relPoint, p.x, p.y
+end
 function methods:SetAllPoints(other)
     other = other or self.__parent
     self:ClearAllPoints()
@@ -191,7 +206,16 @@ local function rectOf(obj, depth)
         local target = rectOf(p.relTo, (depth or 0) + 1)
         local ax, ay = anchorPoint(target, p.relPoint)
         if ax then
-            local px, py = ax + p.x, ay + p.y
+            -- An anchor target's coordinates are in *its* scale, the offsets
+            -- are in the anchored object's, and the result is in the object's.
+            -- Ignoring that made every frame look as though it shared one
+            -- coordinate space, which is the bug this mock most needs to be
+            -- able to reproduce.
+            local targetScale = (p.relTo and p.relTo.GetEffectiveScale
+                and p.relTo:GetEffectiveScale()) or 1
+            local ownScale = (obj.GetEffectiveScale and obj:GetEffectiveScale()) or 1
+            local px = (ax * targetScale) / ownScale + p.x
+            local py = (ay * targetScale) / ownScale + p.y
             if string.find(p.point, "LEFT")   then left   = px end
             if string.find(p.point, "RIGHT")  then right  = px end
             if string.find(p.point, "TOP")    then top    = py end
@@ -207,10 +231,19 @@ local function rectOf(obj, depth)
         end
     end
 
-    if left and not right and obj.__width then right = left + obj.__width end
-    if right and not left and obj.__width then left = right - obj.__width end
-    if top and not bottom and obj.__height then bottom = top - obj.__height end
-    if bottom and not top and obj.__height then top = bottom + obj.__height end
+    -- A FontString with no explicit size measures itself, the way the client
+    -- does. Without this, one anchored only by TOPRIGHT - which is what
+    -- right-aligning a count looks like - can resolve no edge but its own.
+    local width, height = obj.__width, obj.__height
+    if obj.__kind == "FontString" then
+        width  = width  or obj:GetStringWidth()
+        height = height or (obj.__font and obj.__font[2]) or 12
+    end
+
+    if left and not right and width  then right  = left + width end
+    if right and not left and width  then left   = right - width end
+    if top and not bottom and height then bottom = top - height end
+    if bottom and not top and height then top    = bottom + height end
 
     resolving[obj] = nil
     if not (left and right and top and bottom) then return nil end
@@ -367,9 +400,39 @@ nativeHeaderText.__rect = { left = 1002, right = 1080, top = 796, bottom = 784 }
 local nativeHeaderDivider = nativeHeader:CreateTexture(nil, "ARTWORK")
 nativeHeaderDivider.__rect = { left = 1000, right = 1204, top = 782, bottom = 780 }
 
+-- The tracker's own background art: on WatchFrame itself, overhanging the top
+-- edge and running the height of the panel. This is what was actually left on
+-- the live client, and it evaded two guards for two different reasons - it is
+-- the root's own region, so header-frame promotion skips it, and its top edge
+-- is *above* the tracker's, so a top-inside-the-band test threw it out for
+-- being too high. Only overlapping the band catches it.
+local trackerArt = WatchFrame:CreateTexture(nil, "BACKGROUND")
+trackerArt:SetTexture("Interface\\QuestFrame\\ObjectiveTracker")
+trackerArt.__rect = { left = 1003, right = 1300, top = 813, bottom = 727 }
+
+-- The quest item button. Parented to WatchFrame rather than to the line it
+-- belongs to, and anchored across to that line's text - which is how this
+-- client keeps it, and why a scan that only followed the quest lines never
+-- found it.
+local questItem = new("Button", "WatchFrameItem1", WatchFrame)
+questItem.__level = 3
+questItem:SetWidth(26)
+questItem:SetHeight(26)
+questItem:Hide()
+
 local WatchFrameLines = new("Frame", "WatchFrameLines", WatchFrame)
 WatchFrameLines.__level = 3
 WatchFrameLines.__rect = { left = 1000, right = 1204, top = 780, bottom = 300 }
+
+-- A quest POI button, parented to the line container rather than to the
+-- tracker or to the line it points at. This is where the live client keeps it
+-- - /framestack named it poiWatchFrameLines3_1 - and it is a level below both
+-- of the places earlier versions of the tuck went looking.
+local poiButton = new("Button", "poiWatchFrameLines3_1", WatchFrameLines)
+poiButton.__level = 4
+poiButton:SetWidth(22)
+poiButton:SetHeight(22)
+poiButton:Hide()
 
 local lineDefs = {
     { text = "Wolves at the Gate",        dash = nil,  top = 770, left = 1010 },
@@ -390,6 +453,20 @@ for i, def in ipairs(lineDefs) do
     dash:SetText(def.dash or "")
     dash.__rect = { left = def.left, right = def.left + 8, top = def.top, bottom = def.top - 12 }
     if not def.dash then dash:Hide() end
+
+    -- The turn-in question mark and its icon border. The tracker shows these
+    -- when a quest becomes ready to hand in, so they start hidden: heroPanel
+    -- has to fade art that appears long after it first saw the line.
+    -- Anchored rather than given a fixed rect, because where it ends up is the
+    -- whole point: it hangs off the *left* of the line's text, which is outside
+    -- the panel, since the panel's left edge is inset from the tracker's.
+    local statusIcon = line:CreateTexture(nil, "OVERLAY")
+    statusIcon:SetTexture("Interface\\QuestFrame\\AutoQuestIcon")
+    statusIcon:SetWidth(16)
+    statusIcon:SetHeight(16)
+    statusIcon:SetPoint("TOPRIGHT", line, "TOPLEFT", -60, 0)
+    statusIcon:Hide()
+    line.__statusIcon = statusIcon
 
     local text = line:CreateFontString(nil, "ARTWORK")
     text:SetText(def.text)
@@ -481,7 +558,8 @@ check(plate ~= nil, "plate was never created")
 
 if plate then
     check(plate:IsShown(), "plate is not shown")
-    check(plate:GetWidth() == 204 + 28, "plate width follows the tracker: got " .. tostring(plate:GetWidth()))
+    check(plate:GetWidth() == 204 + 34 + 14,
+        "plate width follows the tracker plus its padding: got " .. tostring(plate:GetWidth()))
 
     -- Content runs from y=770 down to y=656; the plate must be sized to that,
     -- not to WatchFrame's 500px drawing region.
@@ -512,6 +590,18 @@ check(nativeHeaderText:IsShown(), "header text should be faded, not hidden")
 check(nativeHeaderDivider:GetAlpha() == 0,
     "header divider art below the band should be faded through its owner, got "
     .. tostring(nativeHeaderDivider:GetAlpha()))
+check(trackerArt:GetAlpha() == 0,
+    "the tracker's own art drawn through the band should be faded, got "
+    .. tostring(trackerArt:GetAlpha()))
+
+-- The other half of widening the band to overlap: quest lines are drawn below
+-- it and are a line tall, so none of them may be caught by it. If this ever
+-- fails the band is eating content, which is far worse than leaving art on
+-- screen.
+for i = 1, #trackerLines do
+    check(trackerLines[i].__text:GetAlpha() == 1,
+        "quest line " .. i .. " must not be faded by the header band")
+end
 
 -- Line styling
 local function colourOf(fontString)
@@ -525,12 +615,200 @@ check(colourOf(trackerLines[2].__text) == "C2C6D8", "objective should be normal,
 check(colourOf(trackerLines[5].__text) == "79C68D", "completed objective should be green, got " .. colourOf(trackerLines[5].__text))
 check(colourOf(trackerLines[7].__text) == "C2C6D8", "text objective should be normal, got " .. colourOf(trackerLines[7].__text))
 
-check(string.find(trackerLines[2].__text:GetText(), "|cFFE9E9ED6/8|r", 1, true) ~= nil,
-    "counter should be highlighted, got " .. tostring(trackerLines[2].__text:GetText()))
-check(trackerLines[5].__text:GetText() == "Iron ore collected: 12/12",
-    "completed line should not be recoloured inline, got " .. tostring(trackerLines[5].__text:GetText()))
+-- The count is taken out of the tracker's string and drawn right-aligned in a
+-- region of heroPanel's own, which is what the design asks for. The label that
+-- is left keeps its separator stripped.
+check(trackerLines[2].__text:GetText() == "Dire wolves slain",
+    "the count should be taken out of the line, got " .. tostring(trackerLines[2].__text:GetText()))
+check(trackerLines[5].__text:GetText() == "Iron ore collected",
+    "a completed line's count should come out too, got " .. tostring(trackerLines[5].__text:GetText()))
+
+local overlay = ns.Skin.GetOverlay()
+local counterText = {}
+for _, region in ipairs(overlay and overlay.__regions or {}) do
+    if region.__kind == "FontString" and region:IsShown() then
+        counterText[region:GetText() or ""] = region
+    end
+end
+check(counterText["6/8"] ~= nil, "the count should be drawn in its own region")
+check(counterText["12/12"] ~= nil, "a completed count should be drawn too")
+check(colourOf(counterText["6/8"] or trackerLines[1].__text) == "E9E9ED",
+    "an outstanding count takes the count highlight")
+check(colourOf(counterText["12/12"] or trackerLines[1].__text) == "79C68D",
+    "a completed count reads in the done colour")
+
+-- Right-aligned means against the panel's right edge, not the line's end.
+local countRight = counterText["6/8"] and counterText["6/8"]:GetRight()
+check(countRight ~= nil and math.abs(countRight - (plate:GetRight() - 14)) < 0.01,
+    "the count should sit against the panel's right edge, got " .. tostring(countRight))
 check(trackerLines[5].__dash:GetAlpha() == 0, "completed objective's dash should be faded for the check glyph")
 check(trackerLines[7].__dash:GetAlpha() == 1, "text objective keeps its dash")
+
+-- Art the tracker hangs off a quest line is brought back inside the panel.
+--
+-- It only appears once a quest is ready to turn in, which is long after
+-- heroPanel first saw that line, so showing it now is the case that matters.
+local icon = trackerLines[1].__statusIcon
+check(icon:GetLeft() < plate:GetLeft(), "the icon should start outside the panel")
+
+icon:Show()
+ns.Skin.Refresh("quest became ready")
+tick(); tick()
+
+check(icon:GetLeft() >= plate:GetLeft() and icon:GetRight() <= plate:GetRight(),
+    "line art should be tucked inside the panel, got left "
+    .. tostring(icon:GetLeft()) .. " panel left " .. tostring(plate:GetLeft()))
+-- Inside the panel's content box, not merely inside the panel: the two differ
+-- by the padding, and art sitting in that margin reads as outside the skin.
+check(math.abs(icon:GetLeft() - (plate:GetLeft() + 4)) < 0.01,
+    "it should sit in the panel's left margin, beside the title, got "
+    .. tostring(icon:GetLeft() - plate:GetLeft()) .. " in from the panel")
+
+-- ...and having been tucked there, it must read as settled, or every refresh
+-- would move it again.
+ns.Skin.Refresh("second pass over a tucked icon")
+tick(); tick()
+check(math.abs(icon:GetLeft() - (plate:GetLeft() + 4)) < 0.01,
+    "a tucked icon must stay put on the next pass, got "
+    .. tostring(icon:GetLeft() - plate:GetLeft()) .. " in from the panel")
+
+-- Its size has to survive being re-anchored: something anchored by two corners
+-- loses its size the moment its points are cleared.
+check(icon:GetWidth() == 16 and icon:GetHeight() == 16,
+    "the icon should keep its size, got " .. tostring(icon:GetWidth())
+    .. "x" .. tostring(icon:GetHeight()))
+
+-- ...and it stays on its own row rather than being stacked somewhere generic.
+check(math.abs(icon:GetTop() - trackerLines[1].__text:GetTop()) < 0.01,
+    "the icon should stay level with its line, got " .. tostring(icon:GetTop())
+    .. " against " .. tostring(trackerLines[1].__text:GetTop()))
+
+-- An object in a different scale chain from the panel.
+--
+-- This is what the live client does: the line container carries a scale of its
+-- own, so a POI button sits at effective 0.64 against a panel at 0.71. Its
+-- GetLeft then reads as comfortably inside the panel's range while on screen it
+-- is off the panel's left edge, and comparing the two directly compares two
+-- different coordinate spaces.
+-- The offset is chosen so the item lands at own-space 1100..1126, numerically
+-- inside the panel's 986..1218, while at half scale its screen span is 550..563
+-- and nowhere near the panel's 986..1218 pixels. An object merely outside in
+-- both spaces does not test anything: it gets tucked either way, which is what
+-- a first version of this check did.
+questItem:SetScale(0.5)
+questItem:ClearAllPoints()
+questItem:SetPoint("TOPRIGHT", trackerLines[4], "TOPLEFT", -894, 0)
+questItem:Show()
+
+local itemScale = questItem:GetEffectiveScale()
+local panelScale = plate:GetEffectiveScale()
+check(math.abs(itemScale - panelScale) > 0.01, "the two must be in different scale chains to be a test")
+check(questItem:GetLeft() > plate:GetLeft() and questItem:GetRight() < plate:GetRight(),
+    "in its own units the item must look inside the panel, got "
+    .. tostring(questItem:GetLeft()) .. ".." .. tostring(questItem:GetRight()))
+check(questItem:GetLeft() * itemScale < plate:GetLeft() * panelScale,
+    "on screen it must actually be outside, got "
+    .. tostring(questItem:GetLeft() * itemScale))
+
+ns.Skin.Refresh("scaled item appeared")
+tick(); tick()
+
+check(questItem:GetLeft() * itemScale >= plate:GetLeft() * panelScale,
+    "a scaled object must be judged on screen, not in its own units - got screen left "
+    .. tostring(questItem:GetLeft() * itemScale)
+    .. " panel " .. tostring(plate:GetLeft() * panelScale))
+
+questItem:SetScale(1)
+questItem:Hide()
+
+-- The quest item button, which hangs off the tracker rather than off the line
+-- it points at. Same treatment, reached by a different route.
+questItem:ClearAllPoints()
+questItem:SetPoint("TOPRIGHT", trackerLines[4], "TOPLEFT", -40, 0)
+questItem:Show()
+check(questItem:GetLeft() < plate:GetLeft(), "the quest item should start outside the panel")
+
+ns.Skin.Refresh("quest item appeared")
+tick(); tick()
+
+check(questItem:GetLeft() >= plate:GetLeft() and questItem:GetRight() <= plate:GetRight(),
+    "a quest item on the tracker should be tucked in too, got left "
+    .. tostring(questItem:GetLeft()) .. " panel left " .. tostring(plate:GetLeft()))
+check(questItem:GetWidth() == 26 and questItem:GetHeight() == 26,
+    "the quest item should keep its size, got " .. tostring(questItem:GetWidth()))
+
+-- The tracker's own big furniture must not be dragged in with it.
+check(WatchFrameLines:GetLeft() == 1000,
+    "the line container must not be tucked, got " .. tostring(WatchFrameLines:GetLeft()))
+check(collapseBtn:GetLeft() == 1186,
+    "the collapse button is already inside and must not move, got "
+    .. tostring(collapseBtn:GetLeft()))
+
+questItem:Hide()
+
+-- ...and the POI button, which hangs off the line container - a level below
+-- both of the places the earlier, narrower versions of this searched.
+poiButton:ClearAllPoints()
+poiButton:SetPoint("TOPRIGHT", trackerLines[6], "TOPLEFT", -50, 0)
+poiButton:Show()
+check(poiButton:GetLeft() < plate:GetLeft(), "the POI button should start outside the panel")
+
+ns.Skin.Refresh("poi button appeared")
+tick(); tick()
+
+check(poiButton:GetLeft() >= plate:GetLeft() and poiButton:GetRight() <= plate:GetRight(),
+    "a POI button under the line container should be tucked in, got left "
+    .. tostring(poiButton:GetLeft()) .. " panel left " .. tostring(plate:GetLeft()))
+check(poiButton:GetWidth() == 22 and poiButton:GetHeight() == 22,
+    "the POI button should keep its size, got " .. tostring(poiButton:GetWidth()))
+
+-- Text is never moved, whatever else the walk touches.
+check(trackerLines[6].__text:GetLeft() == 1010,
+    "quest text must not be tucked, got " .. tostring(trackerLines[6].__text:GetLeft()))
+
+-- The walk has to be able to say what it saw and what it decided. Three
+-- attempts at this icon were wrong about where it lived, and from the outside
+-- each failure looked identical: nothing moved.
+-- Interrogating one frame by name. The wide reports sort by position and
+-- truncate, so the object being chased falls off the end; once /framestack has
+-- named it, the question is narrow and deserves a narrow tool.
+local frameLogFrom = #log
+SlashCmdList["HEROPANEL"]("frame poiWatchFrameLines3_1")
+local frameReport = table.concat(log, "\n", frameLogFrom + 1)
+check(string.find(frameReport, "poiWatchFrameLines3_1", 1, true) ~= nil,
+    "/hp frame should name the frame it was asked about")
+check(string.find(frameReport, "parents:", 1, true) ~= nil,
+    "/hp frame should report the parent chain, got:\n" .. frameReport)
+check(string.find(frameReport, "on screen", 1, true) ~= nil,
+    "/hp frame should convert to screen pixels, since /framestack reports those")
+
+frameLogFrom = #log
+SlashCmdList["HEROPANEL"]("frame NoSuchFrameName")
+check(string.find(table.concat(log, "\n", frameLogFrom + 1), "no frame called", 1, true) ~= nil,
+    "/hp frame should say so when the name resolves to nothing")
+
+local tuckLogFrom = #log
+SlashCmdList["HEROPANEL"]("dump")
+local tuckDump = table.concat(log, "\n", tuckLogFrom + 1)
+check(string.find(tuckDump, "tuck walk", 1, true) ~= nil,
+    "/hp dump should report what the tuck walk saw")
+check(string.find(tuckDump, "poiWatchFrameLines3_1", 1, true) ~= nil,
+    "the tuck report must name what it moved, got:\n" .. tuckDump)
+
+poiButton:Hide()
+
+-- Something already inside the panel is left exactly where the tracker put it.
+local inside = trackerLines[3].__statusIcon
+inside:ClearAllPoints()
+inside:SetPoint("TOPLEFT", trackerLines[3], "TOPLEFT", 4, 0)
+inside:Show()
+local insideLeft = inside:GetLeft()
+ns.Skin.Refresh("icon already inside")
+tick(); tick()
+check(inside:GetLeft() == insideLeft,
+    "art already inside the panel must not be moved, got " .. tostring(inside:GetLeft())
+    .. " was " .. tostring(insideLeft))
+inside:Hide()
 
 -- The tracker's own header text must not come back from the line walk as a
 -- quest title. In minimal mode the badge below counts blocks, so a phantom
@@ -538,11 +816,26 @@ check(trackerLines[7].__dash:GetAlpha() == 1, "text objective keeps its dash")
 check(colourOf(nativeHeaderText) ~= "E7C67C",
     "the tracker's header text was styled as a quest title by the line walk")
 
--- Fonts never grow past what the tracker measured
+-- Fonts may grow past what the tracker measured, but only so far. Clamping to
+-- the original meant the objective size - half a point under the base - could
+-- only ever come out smaller than Blizzard's, so the skin made its own text
+-- harder to read than the text it replaced.
 local _, titleSize = trackerLines[1].__text:GetFont()
 local _, lineSize  = trackerLines[2].__text:GetFont()
-check(titleSize <= 13, "title font must not exceed the original 13, got " .. tostring(titleSize))
-check(lineSize == 11.5, "objective font should be 11.5, got " .. tostring(lineSize))
+check(titleSize == 13.5, "title font should be base + 0.5, got " .. tostring(titleSize))
+check(lineSize == 12.5, "objective font should be base - 0.5, got " .. tostring(lineSize))
+
+-- ...and the bound holds however large the config goes. Unbounded growth would
+-- run lines into each other, since the tracker placed them on its own pitch.
+local restoreSize = ns.db.font.size
+SlashCmdList["HEROPANEL"]("font 20")
+tick(); tick()
+local _, hugeTitle = trackerLines[1].__text:GetFont()
+local _, hugeLine  = trackerLines[2].__text:GetFont()
+check(hugeTitle == 13 + 2, "title font must stop 2 past the original 13, got " .. tostring(hugeTitle))
+check(hugeLine == 12 + 2, "objective font must stop 2 past the original 12, got " .. tostring(hugeLine))
+SlashCmdList["HEROPANEL"]("font " .. tostring(restoreSize))
+tick(); tick()
 
 -- Header badge
 local badge
@@ -550,6 +843,57 @@ for _, region in ipairs(plate and plate.__regions or {}) do
     if region.__kind == "FontString" and region:GetText() == "3" then badge = region end
 end
 check(badge ~= nil, "count badge should read 3")
+
+-- Where the caret sits.
+--
+-- It used to be anchored to Blizzard's collapse button, which put it wherever
+-- the tracker kept that button - on the live client seven pixels below the
+-- header row's centre, hard against the divider and reading as though it had
+-- slipped into the body. It belongs to heroPanel's header, so it is placed
+-- against the panel, and that is what this pins down.
+local caretGlyph
+for _, child in ipairs(plate and plate.__children or {}) do
+    if child.shape == "caretUp" or child.shape == "caretDown" then caretGlyph = child end
+end
+check(caretGlyph ~= nil, "the header caret should be a child of the panel")
+
+if caretGlyph then
+    local HEADER_PAD_X, HEADER_HEIGHT = 13, 30
+    check(math.abs(caretGlyph:GetRight() - (plate:GetRight() - HEADER_PAD_X)) < 0.01,
+        "the caret should sit HEADER_PAD_X in from the panel's right edge, got "
+        .. tostring(plate:GetRight() - caretGlyph:GetRight()))
+
+    local caretMid = (caretGlyph:GetTop() + caretGlyph:GetBottom()) / 2
+    check(math.abs(caretMid - (plate:GetTop() - HEADER_HEIGHT / 2)) < 0.01,
+        "the caret should be centred in the header row, got "
+        .. tostring(plate:GetTop() - caretMid) .. " from the top")
+
+    -- The symptom that started this: a caret tall enough or low enough to
+    -- cross the divider reads as belonging to the body, not the header.
+    check(caretGlyph:GetBottom() > plate:GetTop() - HEADER_HEIGHT,
+        "the caret must stay above the header divider")
+
+    -- A texture path has to survive the slash dispatcher exactly as typed. It
+    -- used to fold the whole input to lower case, which is harmless for the
+    -- keyword commands and destroys Interface\AddOns\... outright.
+    local probePath = "Interface\\AddOns\\WeakAuras\\Media\\Textures\\Circle_White.tga"
+    SlashCmdList["HEROPANEL"]("texture " .. probePath)
+    check(caretGlyph.artPath == probePath,
+        "a texture path must reach the addon as typed, got " .. tostring(caretGlyph.artPath))
+    check(caretGlyph.art:GetTexture() == probePath, "the test texture should be set")
+
+    -- ...and a refresh must not wipe the test out from under whoever is
+    -- looking at it.
+    ns.Skin.Refresh("while testing a texture")
+    tick(); tick()
+    check(caretGlyph.art:GetTexture() == probePath,
+        "a refresh must leave the test texture alone, got " .. tostring(caretGlyph.art:GetTexture()))
+
+    SlashCmdList["HEROPANEL"]("texture")
+    tick(); tick()
+    check(caretGlyph.shape == "caretUp" or caretGlyph.shape == "caretDown",
+        "clearing the test should put the caret back, got " .. tostring(caretGlyph.shape))
+end
 
 --------------------------------------------------------------------------------
 -- Glyphs
@@ -579,36 +923,55 @@ check(#shapeNames >= 5, "expected the full glyph set, got " .. tostring(#shapeNa
 for _, name in ipairs(shapeNames) do
     check(glyph:SetShape(name) ~= false, "SetShape rejected " .. name)
 
-    local boxLeft, boxRight = glyph:GetLeft(), glyph:GetRight()
-    local boxTop, boxBottom = glyph:GetTop(), glyph:GetBottom()
-
-    local shown, minLeft, maxRight, maxTop, minBottom = 0
+    -- Shipped art when the client can read it, blocks when it cannot. Exactly
+    -- one of the two may be visible, and both have to draw something.
+    local blocksShown = 0
     for _, part in ipairs(glyph.parts) do
-        if part:IsShown() then
-            shown = shown + 1
-            local l, r = part:GetLeft(), part:GetRight()
-            local t, b = part:GetTop(), part:GetBottom()
-
-            check(l >= boxLeft - 0.01 and r <= boxRight + 0.01
-              and t <= boxTop + 0.01 and b >= boxBottom - 0.01,
-                name .. " spills outside its box")
-            check(r - l >= 1 and t - b >= 1, name .. " has a block thinner than a pixel")
-
-            minLeft   = math.min(minLeft   or l, l)
-            maxRight  = math.max(maxRight  or r, r)
-            maxTop    = math.max(maxTop    or t, t)
-            minBottom = math.min(minBottom or b, b)
-        end
+        if part:IsShown() then blocksShown = blocksShown + 1 end
     end
 
-    check(shown == #hp.GLYPHS[name],
-        name .. " drew " .. tostring(shown) .. " of " .. tostring(#hp.GLYPHS[name]) .. " blocks")
+    if glyph.usingArt then
+        check(glyph.art:IsShown(), name .. " claims art but does not show it")
+        check(glyph.art:GetTexture() ~= nil, name .. " art has no texture")
+        check(blocksShown == 0, name .. " draws art and blocks at once")
 
-    -- The grid scales to fit, so the longer axis must reach the full 12px.
-    -- A shape rendering at a few pixels inside a 12px box is what getting the
-    -- unit maths wrong looks like, and it would pass every other check here.
-    local reach = math.max(maxRight - minLeft, maxTop - minBottom)
-    check(reach >= 11.99, name .. " does not fill its box, longest axis " .. tostring(reach))
+        -- One spelling per glyph, with nothing to fall through to. A chain
+        -- meant a green square said nothing about which file produced it.
+        check(string.sub(glyph.art:GetTexture() or "", -4) == ".tga",
+            name .. " should come from its .tga, got " .. tostring(glyph.art:GetTexture()))
+    else
+        check(not glyph.art:IsShown(), name .. " fell back to blocks but still shows art")
+        check(blocksShown == #hp.GLYPHS[name],
+            name .. " drew " .. tostring(blocksShown) .. " of "
+            .. tostring(#hp.GLYPHS[name]) .. " blocks")
+
+        local boxLeft, boxRight = glyph:GetLeft(), glyph:GetRight()
+        local boxTop, boxBottom = glyph:GetTop(), glyph:GetBottom()
+
+        local minLeft, maxRight, maxTop, minBottom
+        for _, part in ipairs(glyph.parts) do
+            if part:IsShown() then
+                local l, r = part:GetLeft(), part:GetRight()
+                local t, b = part:GetTop(), part:GetBottom()
+
+                check(l >= boxLeft - 0.01 and r <= boxRight + 0.01
+                  and t <= boxTop + 0.01 and b >= boxBottom - 0.01,
+                    name .. " spills outside its box")
+                check(r - l >= 1 and t - b >= 1, name .. " has a block thinner than a pixel")
+
+                minLeft   = math.min(minLeft   or l, l)
+                maxRight  = math.max(maxRight  or r, r)
+                maxTop    = math.max(maxTop    or t, t)
+                minBottom = math.min(minBottom or b, b)
+            end
+        end
+
+        -- The grid scales to fit, so the longer axis must reach the full 12px.
+        -- A shape rendering at a few pixels inside a 12px box is what getting
+        -- the unit maths wrong looks like, and every other check here passes.
+        local reach = math.max(maxRight - minLeft, maxTop - minBottom)
+        check(reach >= 11.99, name .. " does not fill its box, longest axis " .. tostring(reach))
+    end
 end
 
 -- Colour is exact, and survives a shape change: SetShape builds blocks it has
@@ -622,18 +985,65 @@ local function glyphHex(part)
         math.floor((c[3] or 1) * 255 + 0.5))
 end
 
-glyph:SetShape("caretUp")
-glyph:SetColor(hp.HexToRGB("#75798C"))
-check(glyphHex(glyph.parts[1]) == "75798C",
-    "glyph colour should be exact, got " .. glyphHex(glyph.parts[1]))
+-- Smallest shape then largest, so the swap is guaranteed to build blocks that
+-- have never been coloured. Chosen by size rather than named, because which
+-- shape has the most cells is a detail of how they are drawn and has already
+-- changed once.
+local fewest, most
+for _, name in ipairs(shapeNames) do
+    if not fewest or #hp.GLYPHS[name] < #hp.GLYPHS[fewest] then fewest = name end
+    if not most   or #hp.GLYPHS[name] > #hp.GLYPHS[most]   then most   = name end
+end
+check(#hp.GLYPHS[most] > #hp.GLYPHS[fewest], "the shape swap must add blocks to be a test")
 
--- "locked" has more blocks than "caretUp", so the last one is built by this
--- call and has never been coloured before.
-glyph:SetShape("locked")
-local lastBlock = glyph.parts[#hp.GLYPHS.locked]
-check(#hp.GLYPHS.locked > #hp.GLYPHS.caretUp, "the shape swap must add blocks to be a test")
-check(glyphHex(lastBlock) == "75798C",
-    "a block built by a shape change should take the glyph's colour, got " .. glyphHex(lastBlock))
+-- Forcing a route. Which one is live is invisible in a screenshot and the two
+-- look very different, so being able to pin it is how a bad glyph gets
+-- diagnosed in one step rather than three.
+local restoreGlyphMode = ns.db.glyph.mode
+
+SlashCmdList["HEROPANEL"]("glyphs blocks")
+glyph:SetShape("caretUp")
+check(not glyph.usingArt, "/hp glyphs blocks must force the drawn shapes")
+check(not glyph.art:IsShown(), "forced blocks must not leave art showing")
+
+SlashCmdList["HEROPANEL"]("glyphs art")
+glyph:SetShape("caretUp")
+check(glyph.usingArt, "/hp glyphs art must force the shipped art")
+check(glyph.art:IsShown(), "forced art must show it")
+
+-- Forcing one file at a time, and reporting which one is on screen. Two files
+-- can fail identically here - the client draws green for anything it resolves
+-- and will not decode - so the mode has to be able to pin a single file and
+-- the addon has to be able to name it.
+SlashCmdList["HEROPANEL"]("glyphs tga")
+glyph:SetShape("caretUp")
+check(glyph.usingArt, "/hp glyphs tga must use the art")
+check(string.sub(glyph.artPath or "", -4) == ".tga",
+    "/hp glyphs tga must pin that file, got " .. tostring(glyph.artPath))
+
+SlashCmdList["HEROPANEL"]("glyphs " .. restoreGlyphMode)
+tick(); tick()
+
+glyph:SetShape(fewest)
+glyph:SetColor(hp.HexToRGB("#75798C"))
+
+if glyph.usingArt then
+    check(glyphHex(glyph.art) == "75798C",
+        "glyph art colour should be exact, got " .. glyphHex(glyph.art))
+    glyph:SetShape(most)
+    check(glyphHex(glyph.art) == "75798C",
+        "art should keep the glyph's colour across a shape change, got " .. glyphHex(glyph.art))
+else
+    check(glyphHex(glyph.parts[1]) == "75798C",
+        "glyph colour should be exact, got " .. glyphHex(glyph.parts[1]))
+
+    glyph:SetShape(most)
+    local lastBlock = glyph.parts[#hp.GLYPHS[most]]
+    check(lastBlock ~= nil, "the shape change should have built the extra blocks")
+    check(glyphHex(lastBlock) == "75798C",
+        "a block built by a shape change should take the glyph's colour, got "
+        .. glyphHex(lastBlock))
+end
 
 --------------------------------------------------------------------------------
 -- Hover
@@ -692,6 +1102,9 @@ check(HEROPANEL_DB.enabled == false, "the flag should be stored")
 check(plate:IsShown() == false, "plate should be hidden when the skin is off")
 check(titleFS:GetAlpha() == 1, "Blizzard title should be back")
 check(collapseBtn.__normal:GetAlpha() == 1, "collapse button art should be back")
+check(trackerLines[1].__statusIcon:GetLeft() < plate:GetLeft(),
+    "art tucked into the panel should be back where the tracker had it, got left "
+    .. tostring(trackerLines[1].__statusIcon:GetLeft()))
 check(trackerLines[2].__text:GetText() == "Dire wolves slain: 6/8",
     "counter highlight should be removed, got " .. tostring(trackerLines[2].__text:GetText()))
 check(colourOf(trackerLines[1].__text) == "FFFFFF", "title colour should be restored, got " .. colourOf(trackerLines[1].__text))
@@ -829,6 +1242,41 @@ check(string.find(neighbours, "Objectives %(1%)") ~= nil,
 check(string.find(neighbours, "SomeOtherAddonTrackerHeader", 1, true) ~= nil,
     "/hp dump should name the frame that owns that text")
 ns.trackers.watch.holderFrame = nil
+
+-- Art drawn over the panel by a frame that is neither the tracker nor heroPanel
+-- and that draws nothing in the header band. The band dump cannot see it by
+-- construction - it only looks at regions in the band and at the frames that
+-- draw there - and that blind spot is the whole reason /hp probe exists.
+local strayOwner = new("Frame", "SomeOtherAddonDecor", UIParent)
+strayOwner.__rect = { left = 1000, right = 1204, top = 795, bottom = 700 }
+local strayArt = strayOwner:CreateTexture(nil, "ARTWORK")
+strayArt.__rect = { left = 1000, right = 1204, top = 794, bottom = 790 }
+strayArt:SetTexture("Interface\\SomeAddon\\GoldSwoosh")
+
+before = #log
+SlashCmdList["HEROPANEL"]("probe")
+local probed = table.concat(log, "\n", before + 1)
+check(string.find(probed, "SomeOtherAddonDecor", 1, true) ~= nil,
+    "/hp probe should name whatever draws over the panel, got:\n" .. probed)
+check(string.find(probed, "GoldSwoosh", 1, true) ~= nil,
+    "/hp probe should report the texture path that names the art")
+
+-- heroPanel's own regions are the majority - the panel is solid blocks and the
+-- glyphs are dozens more - so by default they are counted and not listed. Left
+-- in, they would fill the listing before it reached what is being looked for.
+check(string.find(probed, "ours", 1, true) == nil,
+    "/hp probe should not list heroPanel's own regions by default, got:\n" .. probed)
+check(string.find(probed, "not listed", 1, true) ~= nil,
+    "/hp probe should say how many of its own regions it left out, got:\n" .. probed)
+
+-- ...but "that streak is ours" is an answer worth being able to get.
+before = #log
+SlashCmdList["HEROPANEL"]("probe all")
+local probedAll = table.concat(log, "\n", before + 1)
+check(string.find(probedAll, "ours", 1, true) ~= nil,
+    "/hp probe all should mark heroPanel's own regions, got:\n" .. probedAll)
+check(string.find(probedAll, "SomeOtherAddonDecor", 1, true) ~= nil,
+    "/hp probe all should still name foreign art")
 
 -- An error anywhere in the addon must reach the player, not just the debug log.
 ns.DEBUG = false

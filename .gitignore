@@ -23,3 +23,7 @@ design_handoff_heroPanel/
 # Test harness dependencies
 node_modules/
 package-lock.json
+
+# Python bytecode from the glyph generator
+__pycache__/
+*.pyc

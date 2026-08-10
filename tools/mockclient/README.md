@@ -19,7 +19,13 @@ JavaScript. From this directory:
 npm install fengari
 node run.js harness.lua          # a client with every global heroPanel expects
 HP_MINIMAL=1 node run.js harness.lua   # a client with none of them
+HP_NOMEDIA=1 node run.js harness.lua   # a client that cannot read heroPanel's art
 ```
+
+The three switches are independent, so there are four runs; all of them should
+pass. `HP_NOMEDIA` matters because the mock accepts every texture path, which
+would mean the shipped glyph art always loads and the block fallback was never
+once exercised.
 
 `HP_ADDON` overrides where the addon files are read from; it defaults to
 `../../heroPanel/`.
@@ -47,4 +53,7 @@ is always the path under test.
   a flag the harness sets, which is enough to check that the combat paths are
   taken, not that they were necessary.
 * The mock returns a texture-load result for every path, so the fallback chains
-  in `ns.SetTextureFile` are structurally exercised but never actually miss.
+  in `ns.SetTextureFile` are structurally exercised but never actually miss —
+  except for heroPanel's own media under `HP_NOMEDIA`.
+* Text is measured as five pixels per character. Enough to tell a right-aligned
+  count from a left-aligned one; not enough to say anything about wrapping.

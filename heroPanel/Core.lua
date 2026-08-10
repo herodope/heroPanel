@@ -106,7 +106,10 @@ ns.defaults = {
 
     font = {
         face = "Friz Quadrata TT",
-        size = 12,
+        -- A point over the tracker's own 12, so the objective size - half a
+        -- point under this - still lands above what Blizzard drew rather than
+        -- under it. Lines.lua bounds how far this can actually be applied.
+        size = 13,
     },
 
     text = {
@@ -117,6 +120,13 @@ ns.defaults = {
 
     header = {
         show = true,
+    },
+
+    glyph = {
+        -- auto | art | blocks. See the glyph notes in Util.lua; "auto" uses the
+        -- shipped art when the client will load it and falls back to drawing
+        -- the shapes from solids when it will not.
+        mode = "auto",
     },
 }
 
@@ -258,9 +268,14 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp scale <watch|mplus> <0.5-1.5>|r - set tracker scale")
     ns.Print("  |cFFC2C6D8/hp reset [watch|mplus]|r - clear saved position and scale")
     ns.Print("  |cFFC2C6D8/hp mode <auto|own|holder|yield>|r - who positions the trackers")
+    ns.Print("  |cFFC2C6D8/hp font <8-20>|r - set the base text size")
+    ns.Print("  |cFFC2C6D8/hp glyphs <auto|art|blocks>|r - where the lock and caret come from")
     ns.Print("  |cFFC2C6D8/hp skin [on|off]|r - skin the trackers, or hand them back to Blizzard")
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
     ns.Print("  |cFFC2C6D8/hp dump|r - report the geometry the skin measured")
+    ns.Print("  |cFFC2C6D8/hp probe [all]|r - report what else draws inside the panel; |cFF8B8FA3all|r adds heroPanel's own")
+    ns.Print("  |cFFC2C6D8/hp frame <name>|r - everything about one named frame (use the name /framestack gives)")
+    ns.Print("  |cFFC2C6D8/hp texture <path>|r - put any texture in the caret's slot, untinted (no path resets)")
     ns.Print("  |cFFC2C6D8/hp debug|r - toggle debug output (currently %s)",
         ns.DEBUG and "|cFF79C68DON|r" or "|cFF8B8FA3OFF|r")
 end
@@ -269,8 +284,13 @@ SLASH_HEROPANEL1 = "/hp"
 SLASH_HEROPANEL2 = "/heropanel"
 
 SlashCmdList["HEROPANEL"] = function(input)
-    input = string.lower(string.gsub(input or "", "^%s*(.-)%s*$", "%1"))
-    local cmd, rest = string.match(input, "^(%S*)%s*(.-)$")
+    -- Only the command word is lowercased. The argument is kept as typed,
+    -- because one of them is a texture path and Interface\AddOns\... does not
+    -- survive being folded to lower case.
+    input = string.gsub(input or "", "^%s*(.-)%s*$", "%1")
+    local cmd, rawRest = string.match(input, "^(%S*)%s*(.-)$")
+    cmd = string.lower(cmd)
+    local rest = string.lower(rawRest)
 
     if cmd == "lock" then
         ns.SetLocked(true)
@@ -298,6 +318,50 @@ SlashCmdList["HEROPANEL"] = function(input)
             ns.Print("  |cFF8B8FA3holder|r - move the other addon's holder frame instead")
             ns.Print("  |cFF8B8FA3yield|r  - never position; skin only")
         end
+    elseif cmd == "glyphs" then
+        local valid = false
+        for i = 1, #(ns.GLYPH_MODES or {}) do
+            if ns.GLYPH_MODES[i] == rest then valid = true end
+        end
+
+        if ns.db and valid then
+            -- Defended, and answered before the work rather than after it.
+            -- ns.db.glyph is missing on a store written by a build that did not
+            -- have it, and indexing that throws - which on this client means the
+            -- command does nothing at all and says nothing either, because
+            -- script errors are off by default. A slash command must always
+            -- reply.
+            if type(ns.db.glyph) ~= "table" then ns.db.glyph = {} end
+            ns.db.glyph.mode = rest
+            ns.Print("glyphs: |cFFC2C6D8%s|r.", rest)
+            if ns.Skin then
+                pcall(ns.Skin.Restyle)
+                pcall(ns.Skin.Refresh, "glyph mode changed")
+            end
+        else
+            ns.Print("usage: /hp glyphs <auto|art|tga|blocks>  (currently |cFFC2C6D8%s|r)",
+                (ns.db and ns.db.glyph and ns.db.glyph.mode) or "auto")
+            ns.Print("  |cFF8B8FA3auto|r   - shipped art if the client loads it, drawn shapes if not")
+            ns.Print("  |cFF8B8FA3art|r    - always the shipped art, even if it did not report loading")
+            ns.Print("  |cFF8B8FA3tga|r    - force the .tga, to see that one file on its own")
+            ns.Print("  |cFF8B8FA3blocks|r - always the drawn shapes")
+        end
+    elseif cmd == "font" then
+        -- Until the options panel exists there is no other way to reach this,
+        -- and a changed default does not reach a store that already has the
+        -- key - ApplyDefaults only fills in what is missing, by design.
+        local size = tonumber(rest)
+        if ns.db and size and size >= 8 and size <= 20 then
+            ns.db.font.size = size
+            if ns.Skin then
+                ns.Skin.Restyle()
+                ns.Skin.Refresh("font size changed")
+            end
+            ns.Print("font size set to |cFFC2C6D8%.1f|r.", size)
+        else
+            ns.Print("usage: /hp font <8-20>  (currently %.1f)",
+                (ns.db and ns.db.font.size) or 12)
+        end
     elseif cmd == "skin" then
         local wanted
         if rest == "on" then wanted = true
@@ -313,6 +377,24 @@ SlashCmdList["HEROPANEL"] = function(input)
     elseif cmd == "dump" then
         if ns.Skin and ns.Skin.Dump then
             ns.Skin.Dump()
+        else
+            ns.Print("the skin module is not loaded.")
+        end
+    elseif cmd == "frame" then
+        if ns.Skin and ns.Skin.DescribeFrame then
+            ns.Skin.DescribeFrame(rawRest)
+        else
+            ns.Print("the skin module is not loaded.")
+        end
+    elseif cmd == "texture" then
+        if ns.Skin and ns.Skin.TestTexture then
+            ns.Skin.TestTexture(rawRest)
+        else
+            ns.Print("the skin module is not loaded.")
+        end
+    elseif cmd == "probe" then
+        if ns.Skin and ns.Skin.Probe then
+            ns.Skin.Probe(rest == "all")
         else
             ns.Print("the skin module is not loaded.")
         end

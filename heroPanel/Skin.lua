@@ -34,13 +34,20 @@ local ADDON_NAME, ns = ...
 
 local PANEL_MIN_WIDTH = 288
 local HEADER_HEIGHT   = 30
-local PAD_LEFT        = 14
+-- Wider than the design's 14 on purpose. The tracker's quest titles start flush
+-- against the panel's content edge, so a quest's status icon has nowhere to go
+-- on the left without either overlapping the title or being shrunk to the point
+-- of illegibility. This margin is what it sits in.
+local PAD_LEFT        = 34
 local PAD_RIGHT       = 14
 local PAD_BOTTOM      = 13
 local HEADER_PAD_X    = 13
 local DIVIDER_FADE    = 24    -- the divider fades out over this much at each end
 local MAX_NOTCH       = 3     -- corner steps at the largest supported radius
 local ICON_SIZE       = 12
+-- The caret is a chevron: wide and shallow, so it needs a little more box than
+-- a lock to carry the same weight on screen - but only a little.
+local CARET_SIZE      = 13
 local BADGE_HEIGHT    = 14
 local BADGE_PAD_X     = 6
 local HOVER_INTERVAL  = 0.1
@@ -207,7 +214,7 @@ local function BuildPlate(watch)
     header.caretHover:SetHeight(20)
     header.caretHover:Hide()
 
-    header.caret = ns.NewGlyph(plate, ICON_SIZE)
+    header.caret = ns.NewGlyph(plate, CARET_SIZE)
 
     return plate
 end
@@ -319,6 +326,25 @@ function skin.HeaderBandBottom(watch)
     return HeaderBandBottom(watch or ns.GetTrackerFrame("watch"))
 end
 
+-- The band is a strip of screen, so what belongs to it is what is drawn through
+-- it - not what happens to start inside it.
+--
+-- Testing the top edge alone missed the tracker's own background art, which
+-- overhangs the frame's top edge and runs the height of the panel: its top was
+-- *above* the tracker, so a top-inside-the-band test threw it out for being too
+-- high, and it is the root's own region, so the header-frame promotion skipped
+-- it as well. Two guards, each excluding it for a different reason.
+--
+-- Overlap does not widen this as much as it looks. Quest lines are drawn below
+-- the band and are only a line tall, so none of them reaches into it; what
+-- overlap adds is exactly the large art that spans the header, which is chrome
+-- by definition - heroPanel draws its own background over that space.
+local function OverlapsBand(region, bandBottom, bandTop)
+    local top, bottom = region:GetTop(), region:GetBottom()
+    if not (top and bottom) then return false end
+    return top > bandBottom and bottom < bandTop
+end
+
 -- Deliberately the same reach as Lines.Collect's walk. The two have to agree:
 -- anything the line walk can pick up and mistake for a quest title is something
 -- this has to be able to fade, and a header nested one frame deeper than the
@@ -353,9 +379,7 @@ local function FadeHeaderBand(watch)
         if info.kind ~= "region" then return end
         if info.objectType ~= "FontString" and info.objectType ~= "Texture" then return end
         if not (region.IsShown and region:IsShown()) then return end
-
-        local regionTop = region:GetTop()
-        if not regionTop or regionTop < bandBottom or regionTop > top + 2 then return end
+        if not OverlapsBand(region, bandBottom, top) then return end
 
         blizz.bandCount = blizz.bandCount + 1
         FadeRegion(region)
@@ -404,20 +428,25 @@ end
 -- per-trigger refresh stays as cheap as possible.
 --------------------------------------------------------------------------------
 
--- The caret rides on the real collapse button when there is one, so the glyph
--- the player clicks is the glyph heroPanel drew. Re-run on every refresh rather
--- than once at Enable: the button is not always there the first time the skin
--- looks, and a caret parked in the plate's corner never found its way back.
+-- The caret belongs to heroPanel's header row, so it is placed against the
+-- panel: centred in the row, HEADER_PAD_X in from the right, mirroring the lock
+-- on the left. That is where the design puts it.
+--
+-- It used to ride Blizzard's collapse button instead, on the reasoning that the
+-- glyph the player clicks should be the glyph heroPanel drew. That put it
+-- wherever the tracker happened to keep its button - on this client seven
+-- pixels below the row's centre, hard against the divider and reading as though
+-- it had slipped into the body. The reasoning was wrong anyway: the header's
+-- click strip spans the whole row and collapses on click, and the tracker's own
+-- button still takes its own clicks underneath, so both work wherever the
+-- glyph is drawn.
 local function AnchorCaret()
     if not plate then return end
 
     header.caret:ClearAllPoints()
+    header.caret:SetPoint("RIGHT", plate, "TOPRIGHT", -HEADER_PAD_X, -HEADER_HEIGHT / 2)
+
     header.caretHover:ClearAllPoints()
-    if blizz.collapse and blizz.collapse:IsShown() then
-        header.caret:SetPoint("CENTER", blizz.collapse, "CENTER", 0, 0)
-    else
-        header.caret:SetPoint("RIGHT", plate, "TOPRIGHT", -HEADER_PAD_X, -HEADER_HEIGHT / 2)
-    end
     header.caretHover:SetPoint("CENTER", header.caret, "CENTER", 0, 0)
 end
 
@@ -694,8 +723,11 @@ local function UpdateHeader(watch)
     header.lockIcon:SetShape(locked and "locked" or "unlocked")
 
     -- Caret up when the tracker is expanded, down when it is collapsed: it
-    -- points at what a click would do.
-    header.caret:SetShape(ns.IsCollapsed("watch") and "caretDown" or "caretUp")
+    -- points at what a click would do. Left alone while /hp texture is holding
+    -- a test texture there, or the next refresh would wipe the test out.
+    if not skin.textureTest then
+        header.caret:SetShape(ns.IsCollapsed("watch") and "caretDown" or "caretUp")
+    end
 
     local count = TrackedQuestCount()
     header.badgeText:SetText(tostring(count))
@@ -1013,9 +1045,24 @@ function skin.PrintStatus()
         (blizz.bandCount or 0) > 0
             and string.format("|cFF79C68D%.0f|r", blizz.bandCount)
             or "|cFFFFAA000|r")
-    ns.Print("    glyphs: lock |cFF8B8FA3%s|r, caret |cFF8B8FA3%s|r, drawn from solids",
+    -- Which route the glyphs took is the first question when they look wrong,
+    -- and *which file* is the second. Two different files fail the same way on
+    -- screen - this client draws green for anything it resolves and will not
+    -- decode - so "shipped art" on its own says nothing about which one is
+    -- being looked at.
+    ns.Print("    glyphs: lock |cFF8B8FA3%s|r, caret |cFF8B8FA3%s|r, mode |cFFC2C6D8%s|r",
         tostring(header.lockIcon and header.lockIcon.shape),
-        tostring(header.caret and header.caret.shape))
+        tostring(header.caret and header.caret.shape),
+        (ns.db.glyph and ns.db.glyph.mode) or "auto")
+
+    if header.caret and header.caret.usingArt then
+        ns.Print("      drawn from |cFF79C68Dshipped art|r: |cFF8B8FA3%s|r",
+            tostring(header.caret.artPath))
+        ns.Print("      |cFF8B8FA3a green square here means the client resolved that file "
+            .. "and would not decode it|r")
+    else
+        ns.Print("      drawn from |cFFFFAA00solid blocks|r - no art file was accepted")
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -1063,6 +1110,22 @@ end
 -- turns out to be.
 local NEIGHBOUR_LIMIT = 20
 
+-- What a region is, in one column: the text for a FontString, the tail of the
+-- texture path for a Texture. The tail rather than the head because the leading
+-- "Interface\\..." is the same on every path and the filename is what names it.
+local function RegionSummary(region, objectType)
+    if objectType == "FontString" then
+        local ok, text = pcall(region.GetText, region)
+        return string.format("\"%s\"", string.sub((ok and text) or "", 1, 26))
+    end
+    local ok, path = pcall(region.GetTexture, region)
+    if ok and path then
+        path = tostring(path)
+        return string.sub(path, math.max(1, #path - 29))
+    end
+    return "-"
+end
+
 local function DescribeChain(frame, label)
     if not frame then return end
     local names, guard, current = {}, 0, frame
@@ -1098,17 +1161,22 @@ local function DumpNeighbourhood()
         ns.Print("  text drawn under |cFFC2C6D8%s|r:",
             tostring((root.GetName and root:GetName()) or "unnamed"))
 
+        -- Textures as well as text. Reporting only FontStrings answered "who
+        -- drew this header" and stayed silent about art, which is the half that
+        -- actually went missing.
         local count = 0
         ns.WalkFrameTree(root, function(object, info)
-            if info.objectType ~= "FontString" then return end
-            local text = object:GetText()
-            if not text or text == "" then return end
+            if info.kind ~= "region" then return end
+            local isText = info.objectType == "FontString"
+            if not isText and info.objectType ~= "Texture" then return end
+            if isText and (object:GetText() or "") == "" then return end
 
             count = count + 1
             if count > NEIGHBOUR_LIMIT then return false end
-            ns.Print("    d%.0f %s: %s", info.depth,
+            ns.Print("    d%.0f %s %s: %s", info.depth,
                 tostring((info.parent.GetName and info.parent:GetName()) or "unnamed"),
-                string.sub(text, 1, 34))
+                isText and "text" or "art ",
+                RegionSummary(object, info.objectType))
         end, { maxDepth = 4 })
 
         if count == 0 then ns.Print("    none") end
@@ -1125,19 +1193,6 @@ end
 -- other. Listing the band region by region, with the owner that draws it and
 -- whether heroPanel has its alpha, says which.
 local CHROME_LIMIT = 24
-
-local function RegionSummary(region, objectType)
-    if objectType == "FontString" then
-        local ok, text = pcall(region.GetText, region)
-        return string.format("\"%s\"", string.sub((ok and text) or "", 1, 26))
-    end
-    local ok, path = pcall(region.GetTexture, region)
-    if ok and path then
-        path = tostring(path)
-        return string.sub(path, math.max(1, #path - 29))
-    end
-    return "-"
-end
 
 local function DumpChrome(watch)
     local top = watch and watch:GetTop()
@@ -1160,11 +1215,9 @@ local function DumpChrome(watch)
         if info.kind ~= "region" then return end
         if info.objectType ~= "FontString" and info.objectType ~= "Texture" then return end
 
-        local owner     = info.parent
-        local promoted  = owner and blizz.headerFrames and blizz.headerFrames[owner]
-        local regionTop = region:GetTop()
-        local inBand    = regionTop and bandBottom
-            and regionTop >= bandBottom and regionTop <= top + 2
+        local owner    = info.parent
+        local promoted = owner and blizz.headerFrames and blizz.headerFrames[owner]
+        local inBand   = bandBottom and OverlapsBand(region, bandBottom, top)
         if not (inBand or promoted) then return end
 
         count = count + 1
@@ -1221,6 +1274,297 @@ function skin.Dump()
 end
 
 --------------------------------------------------------------------------------
+-- Texture test
+--
+-- /hp texture <path>. Puts an arbitrary texture in the caret's slot, untinted.
+--
+-- Everything about heroPanel's own glyph files can be checked from outside the
+-- game and has been: the header and footer are byte-identical to textures this
+-- client demonstrably loads, and the pixel data round-trips through an
+-- independent decoder. That leaves two possibilities which no amount of
+-- staring at the file can separate - the file is wrong in some way that does
+-- not show up in its bytes, or the file is fine and heroPanel is doing
+-- something to it that no other addon does.
+--
+-- Pointing the same slot at a texture that is known to work answers that in one
+-- step. Untinted on purpose: a green square multiplied by the glyph colour is
+-- not obviously green, and this test is only useful if its failure is
+-- unmistakable.
+--------------------------------------------------------------------------------
+
+function skin.TestTexture(path)
+    if not (plate and header.caret) then
+        ns.Print("the panel is not built yet.")
+        return false
+    end
+
+    if not path or path == "" then
+        skin.textureTest = nil
+        UpdateHeader(ns.GetTrackerFrame("watch"))
+        StylePlate()
+        ns.Print("caret glyph restored.")
+        return true
+    end
+
+    skin.textureTest = path
+
+    local caret = header.caret
+    for i = 1, #caret.parts do caret.parts[i]:Hide() end
+    caret.usingArt = true
+    caret.artPath  = path
+    caret.art:SetTexCoord(0, 1, 0, 1)
+
+    local ok, loaded = pcall(caret.art.SetTexture, caret.art, path)
+    caret.art:SetVertexColor(1, 1, 1, 1)
+    caret.art:Show()
+
+    ns.Print("caret texture: |cFF8B8FA3%s|r", path)
+    ns.Print("  SetTexture returned |cFFC2C6D8%s|r; the glyph is untinted, so green means "
+        .. "the client would not decode it", tostring(ok and loaded))
+    return true
+end
+
+--------------------------------------------------------------------------------
+-- One frame, by name
+--
+-- /hp frame <name>. Everything known about a single named frame.
+--
+-- The wide reports have repeatedly failed at this: they sort by position and
+-- truncate, so the one object being chased falls off the end, and a listing
+-- that buries its answer reads as though it answered. When /framestack has
+-- already named the frame, the remaining question is narrow - where is it,
+-- is it drawn, what is it parented to - and that deserves a narrow tool.
+--------------------------------------------------------------------------------
+
+function skin.DescribeFrame(name)
+    if not name or name == "" then
+        ns.Print("usage: /hp frame <FrameName>  (the name /framestack reports)")
+        return
+    end
+
+    local frame = _G[name]
+    if type(frame) ~= "table" or type(frame.GetObjectType) ~= "function" then
+        ns.Print("|cFFFFAA00no frame called|r |cFFC2C6D8%s|r", tostring(name))
+        return
+    end
+
+    ns.Print("frame |cFFC2C6D8%s|r (%s)", name, tostring(frame:GetObjectType()))
+
+    local shown   = frame.IsShown and frame:IsShown()
+    local visible = frame.IsVisible and frame:IsVisible()
+    ns.Print("  shown %s, visible %s, alpha %.2f, strata %s, level %.0f",
+        shown and "|cFF79C68Dyes|r" or "|cFFFFAA00no|r",
+        visible and "|cFF79C68Dyes|r" or "|cFFFFAA00no|r",
+        (frame.GetAlpha and frame:GetAlpha()) or 1,
+        tostring(frame.GetFrameStrata and frame:GetFrameStrata()),
+        (frame.GetFrameLevel and frame:GetFrameLevel()) or 0)
+
+    local left, right = frame:GetLeft(), frame:GetRight()
+    local top, bottom = frame:GetTop(), frame:GetBottom()
+    if left and right and top and bottom then
+        ns.Print("  x %.0f..%.0f, y %.0f..%.0f, %.0f x %.0f, effective scale %.2f",
+            left, right, bottom, top, right - left, top - bottom,
+            (frame.GetEffectiveScale and frame:GetEffectiveScale()) or 1)
+
+        -- Screen pixels as well as UI units, because /framestack reports the
+        -- cursor in pixels and everything here is in UI units. Comparing the
+        -- two by hand is exactly where this went wrong.
+        local scale = (frame.GetEffectiveScale and frame:GetEffectiveScale()) or 1
+        ns.Print("  on screen: x %.0f..%.0f, y %.0f..%.0f pixels",
+            left * scale, right * scale, bottom * scale, top * scale)
+    else
+        ns.Print("  |cFFFFAA00no rectangle - the frame has no resolvable anchors|r")
+    end
+
+    if plate then
+        local panelLeft, panelRight = plate:GetLeft(), plate:GetRight()
+        if panelLeft and panelRight then
+            ns.Print("  panel x %.0f..%.0f, on screen %.0f..%.0f pixels",
+                panelLeft, panelRight,
+                panelLeft * plate:GetEffectiveScale(), panelRight * plate:GetEffectiveScale())
+        end
+    end
+
+    local names, guard, current = {}, 0, frame:GetParent()
+    while current and guard < 8 do
+        table.insert(names, (current.GetName and current:GetName()) or "unnamed")
+        current = current.GetParent and current:GetParent() or nil
+        guard = guard + 1
+    end
+    ns.Print("  parents: %s", #names > 0 and table.concat(names, " < ") or "none")
+
+    local points = (frame.GetNumPoints and frame:GetNumPoints()) or 0
+    for i = 1, points do
+        local point, relTo, relPoint, x, y = frame:GetPoint(i)
+        ns.Print("  anchor %.0f: %s to %s %s at %.0f, %.0f", i,
+            tostring(point),
+            tostring((relTo and relTo.GetName and relTo:GetName()) or relTo or "nil"),
+            tostring(relPoint), x or 0, y or 0)
+    end
+    if points == 0 then ns.Print("  |cFFFFAA00no anchors|r") end
+end
+
+--------------------------------------------------------------------------------
+-- Probe
+--
+-- /hp probe. Everything drawn inside the panel's rectangle, whoever owns it.
+--
+-- The band dump answers "did heroPanel get hold of the header", and it answers
+-- it well. It cannot answer "then what is this", because it only looks where
+-- chrome is already expected: at regions inside the band, and at the frames
+-- that draw there. Art anchored anywhere else - on the tracker itself, on a
+-- frame that draws nothing in the band, on another addon's frame entirely - is
+-- invisible to it, and guessing which of those it is has now been wrong.
+--
+-- So this searches the panel's rectangle rather than the frame hierarchy, and
+-- reports every region overlapping it with the frame that owns it, its draw
+-- layer, its alpha and its texture path. heroPanel's own regions are marked
+-- rather than skipped, because "that streak is ours" is an answer too.
+--------------------------------------------------------------------------------
+
+local PROBE_LIMIT  = 40
+local PROBE_DEPTH  = 4
+-- Frames visited before giving up, so a probe of a busy UIParent cannot hang
+-- the client. The tracker and its holder are walked before UIParent, so a
+-- budget hit costs the least likely candidates rather than the most likely
+-- ones - but it does mean the listing is incomplete, which is why it says so.
+local PROBE_BUDGET = 50000
+
+local function Overlaps(region, rect)
+    local left, right  = region:GetLeft(), region:GetRight()
+    local top, bottom  = region:GetTop(), region:GetBottom()
+    if not (left and right and top and bottom) then return false end
+    return left < rect.right and right > rect.left
+       and bottom < rect.top and top > rect.bottom
+end
+
+local function IsOurs(frame)
+    local guard = 0
+    while frame and guard < 8 do
+        if frame == plate then return true end
+        frame = frame.GetParent and frame:GetParent() or nil
+        guard = guard + 1
+    end
+    return false
+end
+
+function skin.Probe(includeOurs)
+    if not plate then
+        ns.Print("the panel is not built yet - nothing to probe.")
+        return
+    end
+
+    local rect = {
+        left   = plate:GetLeft(),   right  = plate:GetRight(),
+        top    = plate:GetTop(),    bottom = plate:GetBottom(),
+    }
+    if not (rect.left and rect.right and rect.top and rect.bottom) then
+        ns.Print("the panel has no rectangle to probe.")
+        return
+    end
+
+    local panelWidth  = plate:GetWidth() or 0
+    local panelHeight = plate:GetHeight() or 0
+    ns.Print("probe: %.0f x %.0f panel at %.0f, %.0f (shown regions only)",
+        panelWidth, panelHeight, rect.left, rect.top)
+
+    -- The tracker, whatever holder it was docked into, and the frame it hangs
+    -- off. The last one is what catches art that belongs to neither heroPanel
+    -- nor the tracker.
+    local record = ns.trackers and ns.trackers.watch
+    local roots, rooted = {}, {}
+    local function AddRoot(frame)
+        if frame and not rooted[frame] then
+            rooted[frame] = true
+            table.insert(roots, frame)
+        end
+    end
+    AddRoot(record and record.frame)
+    AddRoot(record and record.holderFrame)
+    AddRoot(record and record.frame and record.frame:GetParent())
+
+    local found, seen, visited = {}, {}, 0
+    for i = 1, #roots do
+        ns.WalkFrameTree(roots[i], function(object, info)
+            visited = visited + 1
+            if visited > PROBE_BUDGET then return false end
+            if info.kind ~= "region" then return end
+            if info.objectType ~= "FontString" and info.objectType ~= "Texture" then return end
+            if seen[object] or not Overlaps(object, rect) then return end
+
+            -- Hidden regions, and art far larger than the panel, are noise.
+            -- A first pass without these filters returned 154 regions, most of
+            -- them full-screen backgrounds belonging to frames that were not
+            -- even shown, and the one thing being looked for fell past the
+            -- listing limit. A diagnostic that buries its answer is worse than
+            -- none, because it looks like it answered.
+            if not (object.IsShown and object:IsShown()) then return end
+            local width, height = object:GetWidth() or 0, object:GetHeight() or 0
+            if width > panelWidth * 2 and height > panelHeight * 2 then return end
+
+            seen[object] = true
+            table.insert(found, { region = object, info = info })
+        end, { maxDepth = PROBE_DEPTH, includeRegions = true })
+    end
+
+    -- Top down, which is how the panel is read.
+    table.sort(found, function(a, b)
+        local aTop, bTop = a.region:GetTop() or 0, b.region:GetTop() or 0
+        if aTop == bTop then return (a.region:GetLeft() or 0) < (b.region:GetLeft() or 0) end
+        return aTop > bTop
+    end)
+
+    -- heroPanel's own regions are the majority and they are the least
+    -- interesting: the panel is made of solid blocks, and the glyphs alone are
+    -- dozens of them. Left in by default they would fill the listing before it
+    -- reached whatever is being looked for. They are counted, not dropped, and
+    -- "/hp probe all" puts them back for when the answer is "that is ours".
+    local mine, shown = 0, 0
+    ns.Print("  %.0f region(s) overlap the panel, from %.0f root(s), %.0f frame(s) visited%s",
+        #found, #roots, visited, visited > PROBE_BUDGET and " |cFFFFAA00(budget hit)|r" or "")
+
+    for i = 1, #found do
+        local region = found[i].region
+        local info   = found[i].info
+        local owner  = info.parent
+        local ours   = IsOurs(owner)
+
+        if ours then mine = mine + 1 end
+
+        if (includeOurs or not ours) and shown < PROBE_LIMIT then
+            shown = shown + 1
+
+            local layer = "?"
+            local ok, drawLayer = pcall(region.GetDrawLayer, region)
+            if ok and drawLayer then layer = tostring(drawLayer) end
+
+            ns.Print("    %s d%.0f %s %s %s %s a%.2f top %.0f left %.0f %.0fx%.0f %s",
+                ours and "|cFF9184D9ours|r" or "|cFFC2C6D8them|r",
+                info.depth,
+                tostring((owner and owner.GetName and owner:GetName()) or "unnamed"),
+                info.objectType == "FontString" and "text" or "art ",
+                layer,
+                (region.IsShown and region:IsShown()) and "shown" or "|cFF8B8FA3hidden|r",
+                (region.GetAlpha and region:GetAlpha()) or 1,
+                region:GetTop() or 0, region:GetLeft() or 0,
+                region:GetWidth() or 0, region:GetHeight() or 0,
+                RegionSummary(region, info.objectType))
+        end
+    end
+
+    local listable = includeOurs and #found or (#found - mine)
+    if listable > shown then
+        ns.Print("    ... and %.0f more", listable - shown)
+    end
+    if not includeOurs and mine > 0 then
+        ns.Print("    %.0f of heroPanel's own region(s) not listed - |cFFC2C6D8/hp probe all|r to include them", mine)
+    end
+    if listable == 0 then
+        ns.Print("    |cFFFFAA00nothing but heroPanel draws inside the panel|r")
+    end
+end
+
+--------------------------------------------------------------------------------
 -- Wiring
 --------------------------------------------------------------------------------
 
@@ -1245,4 +1589,8 @@ ns:On("PLAYER_LOGIN", function()
 end)
 
 ns:On("PLAYER_ENTERING_WORLD", function() Refresh("entering world") end)
+-- Anchoring the tracker's own children is protected, so the line pass skips it
+-- in combat. This is how it catches up rather than waiting for a quest to
+-- change.
+ns:On("PLAYER_REGEN_ENABLED", function() Refresh("combat ended") end)
 ns:On("QUEST_WATCH_UPDATE", function() Refresh("quest watch") end)
