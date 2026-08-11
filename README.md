@@ -547,6 +547,27 @@ worse than saying nothing — and it says out loud when it does throw something
 away. `ns.ApplyDefaults` then fills in whatever is missing, which is what every
 login after a small change needs.
 
+**`frame` and `options` are carried across a discard.** Geometry is the
+exception to "settings are cheap to set again", twice over: dragging three
+panels into place and sizing them is the only part of configuring this addon
+that costs real effort, and it is the part least likely to be what a discard is
+*for* — those keys have not changed shape once, while the colour and font blocks
+have changed four times between them. That covers each tracker's point, offsets
+and scale, the lock state and ownership mode, and where the options window was
+left and at what size.
+
+Exempting them is not trusting them blindly. Tracker geometry carries its own
+stamp — `GEOMETRY_VERSION` in `Move.lua` — and `GetSaved` drops a position
+written in an older shape independently of any of this, so the two versions
+guard different things and neither has to know about the other. Whatever
+survives is still put through `ApplyDefaults`, so a half-filled `frame` block is
+completed rather than believed.
+
+The upshot for a normal update: adding, removing or retyping a setting costs
+nothing — `ApplyDefaults` handles the first two and coerces the third, losing
+only that one value. Bumping `DB_VERSION` is the deliberate, all-or-nothing
+lever, and even then it costs colours and fonts rather than layout.
+
 ```
 enabled  debug  dbVersion
 frame    locked, ownership, and per tracker: point, x, y, scale

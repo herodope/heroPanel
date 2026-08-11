@@ -3547,7 +3547,7 @@ end
 do
     local saved = HEROPANEL_DB
 
-    -- An old store goes, whatever was in it.
+    -- An old store goes, whatever was in it - except the geometry.
     HEROPANEL_DB = {
         dbVersion = 1,
         enabled   = false,
@@ -3555,6 +3555,9 @@ do
         border    = { color = "#E7C67C", alpha = 1, style = "inset" },
         radius    = 12,
         font      = { face = "Some Old Face", size = 14 },
+        frame     = { locked = false, ownership = "own",
+                      watch = { point = "TOPLEFT", x = 500, y = -300, scale = 1.3, v = 2 } },
+        options   = { point = "TOPLEFT", x = 120, y = -90, scale = 1.2 },
     }
     local before = #log
     ns.InitDB()
@@ -3572,6 +3575,31 @@ do
     check(ns.db.dbVersion == 4, "...and stamped, so it is not discarded twice")
     check(string.find(said, "older build", 1, true) ~= nil,
         "throwing settings away is not something to do silently, got:\n" .. said)
+
+    -- ...but the geometry is carried across. Dragging three panels into place
+    -- and sizing them is the only part of configuring this addon that costs
+    -- real effort, and these keys have never changed shape - while the colour
+    -- and font blocks have changed four times between them.
+    check(ns.db.frame.watch.x == 500 and ns.db.frame.watch.y == -300,
+        "a discard must keep the tracker's position, got "
+        .. tostring(ns.db.frame.watch.x) .. "," .. tostring(ns.db.frame.watch.y))
+    check(ns.db.frame.watch.point == "TOPLEFT", "...including its anchor")
+    check(math.abs(ns.db.frame.watch.scale - 1.3) < 0.001,
+        "...and its scale, got " .. tostring(ns.db.frame.watch.scale))
+    check(ns.db.frame.locked == false, "...and the lock state, which lives in the same block")
+    check(ns.db.options.x == 120 and math.abs(ns.db.options.scale - 1.2) < 0.001,
+        "...and where the options window was left, at the size it was left at")
+    check(string.find(said, "were kept", 1, true) ~= nil,
+        "...and it should say so, got:\n" .. said)
+
+    -- Exempting geometry is not trusting it blindly. A frame block missing keys
+    -- is completed by ApplyDefaults rather than believed as-is.
+    HEROPANEL_DB = { dbVersion = 1, frame = { watch = { x = 42 } } }
+    ns.InitDB()
+    check(ns.db.frame.watch.x == 42, "a partial frame block keeps what it had")
+    check(ns.db.frame.mplus ~= nil and ns.db.frame.mplus.scale == 1.0,
+        "...and is completed from the defaults, not carried over half-built")
+    check(ns.db.frame.locked == true, "...including keys the old block never had")
 
     -- A fresh install is not a stale store. It has no stamp either, and warning
     -- someone that their nonexistent settings were reset is worse than saying

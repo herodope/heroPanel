@@ -338,6 +338,26 @@ ns.ApplyDefaults = ApplyDefaults
 
 local DB_VERSION = 4
 
+-- Carried across a discard rather than thrown away with the rest.
+--
+-- Geometry is the exception to "settings are cheap to set again", and it is the
+-- exception twice over. Dragging three panels into place and sizing them is the
+-- only part of configuring this addon that takes real effort, and it is the
+-- part least likely to be what a discard is *for*: these keys have not changed
+-- shape once in the addon's history, while the colour and font blocks have
+-- changed four times between them.
+--
+-- Exempting them is not trusting them blindly. Tracker geometry carries its own
+-- stamp - GEOMETRY_VERSION in Move.lua - and ns.GetSaved drops a position
+-- written in an older shape independently of anything here, so the two versions
+-- guard different things and neither has to know about the other. Whatever
+-- survives this is still put through ApplyDefaults afterwards, so a half-filled
+-- frame block is completed rather than believed.
+--
+--   frame    lock state, ownership mode, and each tracker's point/x/y/scale
+--   options  where the options window was left, and its scale
+local KEEP_ACROSS_DISCARD = { "frame", "options" }
+
 -- Empty is not stale. A first login has no version stamp either, and a fresh
 -- store is not something to announce the discarding of.
 local function DiscardStaleStore()
@@ -345,11 +365,18 @@ local function DiscardStaleStore()
     if HEROPANEL_DB.dbVersion == DB_VERSION then return false end
     if next(HEROPANEL_DB) == nil then return false end
 
-    local was = HEROPANEL_DB.dbVersion
-    HEROPANEL_DB = {}
+    local was  = HEROPANEL_DB.dbVersion
+    local kept = {}
+    for i = 1, #KEEP_ACROSS_DISCARD do
+        local key = KEEP_ACROSS_DISCARD[i]
+        if type(HEROPANEL_DB[key]) == "table" then kept[key] = HEROPANEL_DB[key] end
+    end
+    HEROPANEL_DB = kept
+
     ns.Warn("your settings were written by an older build and have been reset "
         .. "(store %s, this build wants %d). heroPanel is pre-release and does not "
-        .. "carry settings between shapes.", tostring(was or "unstamped"), DB_VERSION)
+        .. "carry settings between shapes - but your frame positions and sizes "
+        .. "were kept.", tostring(was or "unstamped"), DB_VERSION)
     return true
 end
 

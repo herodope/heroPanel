@@ -83,17 +83,34 @@ keep for one that is not released, because each step had to go on working and
 being tested forever, to protect settings that take a minute to set again.
 
 What has to be true is that the rule is **narrow**. It should fire on a
-mismatch, stay quiet on a fresh install, and never touch a current store.
+mismatch, stay quiet on a fresh install, never touch a current store, and never
+take the geometry with it.
 
 With a SavedVariables file written by an earlier build:
 
-- [ ] Everything comes up at **the defaults**, not at what the old store said
+- [ ] Colours, fonts and toggles come up at **the defaults**, not at what the
+      old store said
+- [ ] **Your tracker positions, tracker sizes and options window placement
+      survive.** Those are exempt: dragging three panels into place and sizing
+      them is the only part of configuring this addon that costs real effort,
+      and the geometry keys have never changed shape while the colour and font
+      blocks have changed four times between them
+- [ ] The lock state survives too — it lives in the same block
 - [ ] A chat line says the settings were written by an older build and have been
-      reset, naming the version it found. Throwing settings away is not
-      something to do silently
+      reset, naming the version it found, **and says the frame positions were
+      kept**. Throwing settings away is not something to do silently, and nor is
+      keeping some of it
 - [ ] `/reload` and the message does **not** come back — the new store is
       stamped, so it is discarded once and not on every login
 - [ ] No Lua error on the way through
+
+Exempting the geometry is not trusting it blindly. Tracker positions carry their
+own stamp — `GEOMETRY_VERSION` in `Move.lua` — and a position written in an
+older shape is dropped by that, independently of any of this.
+
+- [ ] Hand-edit `["v"] = 1` into a saved tracker position and log in: that
+      tracker returns to where the game wants it, while the rest of the store is
+      untouched
 
 On a genuinely fresh install (no SavedVariables at all):
 
