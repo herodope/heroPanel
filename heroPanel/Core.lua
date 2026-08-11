@@ -105,11 +105,21 @@ ns.defaults = {
     radius = 8,
 
     font = {
+        -- Resolved through LibSharedMedia by Media.lua. This value is the one
+        -- face 3.3.5a always has, and it is answered without asking the library
+        -- so the default cannot depend on LSM being installed.
         face = "Friz Quadrata TT",
-        -- A point over the tracker's own 12, so the objective size - half a
-        -- point under this - still lands above what Blizzard drew rather than
-        -- under it. Lines.lua bounds how far this can actually be applied.
-        size = 13,
+        -- 12, as the design's spec sheet has it.
+        --
+        -- This was 13 for a while, on the reasoning that objectives draw half a
+        -- point under the base and 12 would therefore put them at 11.5 - under
+        -- the tracker's own 12, so the skin would make its own text smaller than
+        -- the text it replaced. That is true and it is still the trade, but the
+        -- handoff fixes 12 as the default and the slider's marked default has to
+        -- mean something. Anyone who wants the old behaviour sets 13 in the
+        -- options panel and gets exactly it; Lines.lua's growth clamp is what
+        -- bounds how far up this can usefully go.
+        size = 12,
     },
 
     text = {
@@ -119,8 +129,19 @@ ns.defaults = {
     },
 
     header = {
+        -- The quest tracker's header row. The Mythic+ panel's header is not
+        -- covered by this: it carries the dungeon name, the keystone level, the
+        -- affix icons and that panel's own lock button, and turning all four off
+        -- from a control labelled "show header" would be a surprise rather than
+        -- a setting. The options panel labels it "Show quest header" for the
+        -- same reason.
         show = true,
     },
+
+    -- Where the options window was left. point = nil means "never moved", which
+    -- centres it - deliberately away from where either tracker lives, so the
+    -- config never opens on top of the frames it configures.
+    options = { point = nil, x = 0, y = 0 },
 
     glyph = {
         -- auto | art | blocks. See the glyph notes in Util.lua; "auto" uses the
@@ -270,12 +291,15 @@ end)
 
 local function PrintUsage()
     ns.Print("commands:")
+    ns.Print("  |cFFC2C6D8/hp|r - open the options window (|cFF8B8FA3also Interface -> AddOns -> heroPanel|r)")
+    ns.Print("  |cFFC2C6D8/hp help|r - this list")
     ns.Print("  |cFFC2C6D8/hp lock|r - lock both trackers in place")
     ns.Print("  |cFFC2C6D8/hp unlock|r - unlock both trackers for dragging")
     ns.Print("  |cFFC2C6D8/hp scale <watch|mplus> <0.5-1.5>|r - set tracker scale")
     ns.Print("  |cFFC2C6D8/hp reset [watch|mplus]|r - clear saved position and scale")
     ns.Print("  |cFFC2C6D8/hp mode <auto|own|holder|yield>|r - who positions the trackers")
     ns.Print("  |cFFC2C6D8/hp font <8-20>|r - set the base text size")
+    ns.Print("  |cFFC2C6D8/hp fontface <name>|r - set the LibSharedMedia face by name")
     ns.Print("  |cFFC2C6D8/hp glyphs <auto|art|blocks>|r - where the lock and caret come from")
     ns.Print("  |cFFC2C6D8/hp skin [on|off]|r - skin the trackers, or hand them back to Blizzard")
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
@@ -300,7 +324,19 @@ SlashCmdList["HEROPANEL"] = function(input)
     cmd = string.lower(cmd)
     local rest = string.lower(rawRest)
 
-    if cmd == "lock" then
+    -- A bare /hp opens the options window; that is what the design puts on the
+    -- command and what a player who has not read the list will type. The full
+    -- list moved to /hp help, and an unrecognised word still prints it.
+    if cmd == "" or cmd == "config" or cmd == "options" then
+        if ns.Options then
+            ns.Options.Toggle()
+        else
+            ns.Print("the options module is not loaded - check for a Lua error at login "
+                .. "(|cFFC2C6D8/console scriptErrors 1|r, then /reload). |cFFC2C6D8/hp help|r still works.")
+        end
+    elseif cmd == "help" then
+        PrintUsage()
+    elseif cmd == "lock" then
         ns.SetLocked(true)
     elseif cmd == "unlock" then
         ns.SetLocked(false)
@@ -359,24 +395,36 @@ SlashCmdList["HEROPANEL"] = function(input)
             ns.Print("  |cFF8B8FA3blocks|r - always the drawn shapes")
         end
     elseif cmd == "font" then
-        -- Until the options panel exists there is no other way to reach this,
-        -- and a changed default does not reach a store that already has the
-        -- key - ApplyDefaults only fills in what is missing, by design.
+        -- Kept alongside the options panel's slider rather than replaced by it.
+        -- A changed default does not reach a store that already has the key -
+        -- ApplyDefaults only fills in what is missing, by design - so this is
+        -- also the quickest way to move a store written by an older build.
         local size = tonumber(rest)
         if ns.db and size and size >= 8 and size <= 20 then
             ns.db.font.size = size
-            if ns.Skin then
-                ns.Skin.Restyle()
-                ns.Skin.Refresh("font size changed")
-            end
-            if ns.Mplus then
-                pcall(ns.Mplus.Restyle)
-                pcall(ns.Mplus.Refresh, "font size changed")
-            end
+            ns.Media.Apply("font size changed")
+            if ns.Options then pcall(ns.Options.Sync) end
             ns.Print("font size set to |cFFC2C6D8%.1f|r.", size)
         else
             ns.Print("usage: /hp font <8-20>  (currently %.1f)",
                 (ns.db and ns.db.font.size) or 12)
+        end
+    elseif cmd == "fontface" then
+        -- The face is chosen from the options panel's dropdown, which previews
+        -- each one. This is here for the case the dropdown cannot answer: a
+        -- face registered by an addon that loads after everything, or a name
+        -- with a character that is awkward to click past.
+        if ns.db and rawRest ~= "" then
+            ns.db.font.face = rawRest
+            ns.Media.Apply("font face changed")
+            if ns.Options then pcall(ns.Options.Sync) end
+            ns.Print("font face set to |cFFC2C6D8%s|r, drawing from |cFF8B8FA3%s|r.",
+                rawRest, tostring(ns.GetFontFile()))
+        else
+            local faces = ns.Media.ListFonts()
+            ns.Print("usage: /hp fontface <name>  (currently |cFFC2C6D8%s|r)",
+                (ns.db and ns.db.font.face) or ns.DEFAULT_FONT_FACE)
+            ns.Print("  %d face(s) registered with LibSharedMedia.", #faces)
         end
     elseif cmd == "skin" then
         local wanted
@@ -386,6 +434,9 @@ SlashCmdList["HEROPANEL"] = function(input)
 
         if ns.Skin and ns.Skin.SetEnabled then
             ns.Skin.SetEnabled(wanted)
+            -- The options window shows this as a pill and a toggle, so it has
+            -- to follow the command as well as the other way round.
+            if ns.Options then pcall(ns.Options.Sync) end
             ns.Print("skin %s.", wanted and "|cFF79C68Don|r" or "|cFF8B8FA3off - Blizzard's tracker restored|r")
         end
     elseif cmd == "status" then

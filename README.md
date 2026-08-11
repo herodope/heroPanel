@@ -12,13 +12,14 @@ protected frames while the player is in combat.
 
 ## Status
 
-**Both trackers are skinned.** Move, lock and rescale work; `WatchFrame` gets
+**Feature complete for 0.1.** Move, lock and rescale work; `WatchFrame` gets
 the panel, the header row, the text treatment, right-aligned counts and
 heroPanel's own glyph art, and the tracker's own header chrome and stray icons
 are dealt with. `MythicPlusObjectiveTracker` gets the same plate with its own
-header, keystone timer, threshold bar, enemy-forces meter and boss rows. The
-options panel is still to come, so colours and sizes are read from
-`HEROPANEL_DB` or set with `/hp font` rather than edited in a UI.
+header, keystone timer, threshold bar, enemy-forces meter and boss rows. Fonts
+come from LibSharedMedia, and everything configurable is edited in the options
+window — `/hp`, or Interface → AddOns → heroPanel — which applies changes live
+rather than on the next reload.
 
 | Phase | Scope | State |
 |---|---|---|
@@ -26,7 +27,7 @@ options panel is still to come, so colours and sizes are read from
 | 2 | Panel skin — background, border, radius, backdrop texture | done (quest tracker) |
 | 3 | Text — fonts, per-state colours, header chrome, collapse caret, right-aligned counts, glyph art | done (quest tracker) |
 | 4 | Mythic+ panel — header, keystone timer, chest tiers, threshold bar, enemy forces, boss rows | done |
-| 5 | Options panel, LibSharedMedia fonts | planned |
+| 5 | Options panel, LibSharedMedia fonts | done |
 
 Known-good on the Ascension client this was built against. The notes below
 record what that client does differently from a stock 3.3.5a one — several of
@@ -46,7 +47,10 @@ exists. Restart the client or `/reload`.
 | `/hp unlock` | Unlock both trackers — drag with the left mouse button |
 | `/hp scale <watch\|mplus> <0.5-1.5>` | Set a tracker's scale |
 | `/hp reset [watch\|mplus]` | Clear saved position and scale |
+| `/hp` | Open the options window |
+| `/hp help` | List the commands |
 | `/hp font <8-20>` | Set the base text size |
+| `/hp fontface <name>` | Set the LibSharedMedia face by name |
 | `/hp glyphs <auto\|art\|tga\|blocks>` | Where the lock and caret come from |
 | `/hp texture <path>` | Put any texture in the caret's slot, untinted; no path resets it |
 | `/hp mplus` | Report what the Mythic+ panel resolved, and which source each number came from |
@@ -59,7 +63,9 @@ exists. Restart the client or `/reload`.
 | `/hp debug` | Toggle debug chat output (off by default) |
 
 Unlock, drag a tracker with the left mouse button, and the position is saved.
-Scale is 0.5–1.5 in 0.1 steps; it moves into the options panel in Phase 4.
+Scale is 0.5–1.5 in 0.1 steps, from the slash command or the options window —
+both go through the same `ns.SetScale`, so they cannot disagree. There is
+deliberately no mousewheel binding on the tracker frames.
 
 `/hp skin off` sets `HEROPANEL_DB.enabled = false` and puts the tracker back the
 way Blizzard had it — fonts, colours, header art and all — rather than hiding
@@ -142,6 +148,84 @@ that. So:
   collapse state and re-skins the button; it never drives `WatchFrame`'s state
   itself, and it refuses to collapse in combat rather than force it.
 
+## The options window
+
+`/hp`, or Interface → AddOns → heroPanel. 440px, centred, in its own frame
+strata.
+
+**Everything applies live.** A control writes `HEROPANEL_DB` and re-skins on the
+spot, so the tracker behind the window shows the setting as it is being dragged.
+There is no pending-changes buffer, which makes "Save & close" a close button
+that says out loud nothing was left uncommitted. Reset puts the defaults back
+and re-applies them — it clears the saved positions too, so a `/reload` is what
+finally returns the frames to where the game wants them, the same as `/hp reset`.
+
+**The window's own chrome is fixed, not configured.** It is painted from the
+design's tokens through `ns.StylePlateChrome`'s style override rather than from
+`HEROPANEL_DB`, because this is the window those colours are changed in: a panel
+that restyles itself as you drag its own background swatch makes it impossible to
+see what you are setting. Everything rounded in it — toggles, pills, swatches,
+buttons, tiles — is a frame given the shared plate chrome, so the corner chamfer
+is written once and the window steps its corners the way the tracker panels do.
+
+**It will not open on top of a tracker.** Centring is the rule but not the
+guarantee: a 440px window in the middle of a 1600px screen reaches x 1020, and a
+tracker parked at 1000 is under it. So the centred position is measured against
+whatever is actually on screen — both trackers *and* heroPanel's own plates,
+which are wider than the frames they skin — and slid clear if it is not, to
+whichever side has room. If neither side has room it stays centred: covering a
+tracker beats opening off the edge of the screen where it cannot be reached.
+Once the window has been dragged, that position is remembered and never
+second-guessed.
+
+**Two controls do not do what their labels might suggest.**
+
+* **Backdrop texture** offers Flat, Noise, Gradient and Glow, and only Flat
+  draws. heroPanel ships no texture art, so the other three are greyed and say
+  so on hover. They are present rather than absent because a control that is
+  missing reads as a build that is behind, and one that silently does nothing
+  reads as a bug.
+* **Show quest header** is `header.show`, and it is the *quest* tracker's header
+  row. The Mythic+ panel's header carries the dungeon name, the keystone level,
+  the affix icons and that panel's own lock button, and turning all four off from
+  a control labelled "show header" would be a surprise rather than a setting.
+
+The window height is a fixed budget. `UIParent` is about 768 units tall whatever
+the monitor is, because the client scales the UI to suit; laid out at the
+design's spacing the panel came to 752, which fits by eight pixels a side and
+does not fit at all once a player nudges their UI scale up. It is tightened to
+684, and the mock client fails the run if it ever goes over 768.
+
+## Fonts
+
+`HEROPANEL_DB.font.face` is resolved through **LibSharedMedia-3.0**, which is
+embedded rather than required — a player installing a skin should not have to go
+and find a library first, and `## Dependencies` on a 3.3.5a client is a hard
+failure rather than a warning. LibStub keeps one instance per major version and
+the highest minor wins, so if another addon already loaded a newer
+LibSharedMedia heroPanel's copy is a no-op and heroPanel uses theirs — which is
+how faces registered by SharedMediaAdditionalFonts, SharedMedia_Causese or ElvUI
+turn up in the font dropdown without heroPanel knowing they exist. See
+`heroPanel/libs/README.md` for versions and licences.
+
+Two things `Media.lua` is careful about:
+
+* **Friz Quadrata TT is the fallback and it does not come from the library.**
+  It is the face 3.3.5a always has, so "the default works" must not depend on
+  LibSharedMedia being present, on it having that key registered, or on the
+  player's locale — LSM registers the name per locale and a non-western client
+  gets a different key entirely. The path is read off `GameFontNormal`, so no
+  asset path is written down.
+* **A font path is validated before it is handed out.** `SetFont` on a file the
+  client will not read leaves the FontString blank, and blank text on a dark
+  panel looks exactly like a skin that did not run. The probe has the same shape
+  as `ns.SetTextureFile`'s: ask the client once whether it reports failures at
+  all, because believing a client that always answers `nil` would reject every
+  path including the good one.
+
+The dropdown draws each row in its own face. A font list you cannot see is a
+list of names, and picking a face by name is guesswork.
+
 ## Compatibility
 
 Other addons — **ElvUI** and **DeModal** among them — also want to place the
@@ -188,7 +272,10 @@ heroPanel/
   Lines.lua       line styling, quest blocks, right-aligned counts, hover
   Mplus.lua       the Mythic+ panel — keystone timer, chest tiers, threshold
                   bar, enemy forces and boss rows
+  Options.lua     the options window and the Interface → AddOns category
   Compat.lua      conflict detection
+  Media.lua       fonts, by way of LibSharedMedia
+  libs/           embedded LibStub, CallbackHandler-1.0, LibSharedMedia-3.0
   media/          glyph art — generated, see tools/glyphgen
 ```
 
@@ -446,6 +533,44 @@ tools/
   tries each path and falls back to a plain square. It probes once whether the
   client reports texture load failures at all, because believing a client that
   always answers `nil` would reject every path.
+
+* **`ns.StylePlateChrome(plate, style)` takes an optional override.** The
+  trackers paint from `HEROPANEL_DB`; the options window passes its own fixed
+  tokens. Zero is a meaningful value for opacity, radius and alpha, and zero is
+  truthy in Lua, so the plain `or` fallbacks do the right thing with it.
+* **`border.style = "inset"` is a real style now**, not a synonym for hairline:
+  the 1px line moves one pixel in and the dark contour moves from outside the
+  plate onto the pixel it vacated. Two rows — dark outside, coloured inside — is
+  what reads as recessed at this size. A genuine bevel needs two tones on
+  opposite corners, which needs art heroPanel does not ship, so this is the cheap
+  read of the same idea, the way the chamfer stands in for a radius.
+* **Frame level beats draw layer between two frames.** The options window's
+  accent-tinted "Enable skin" row is a child frame laid over the window, and
+  with the row's labels drawn on the *window* they were simply not there — the
+  tint covered them however high their layer. Anything drawn inside a tinted row
+  has to be a child of that row. Sibling frames on the same level have no defined
+  draw order either, which is why the toggle's knob states its level rather than
+  relying on being created after its track.
+* **`string.format("%d", x)` on a float is an error under Lua 5.3.** The game is
+  5.1 and truncates silently; the mock client runs fengari, which is 5.3 and
+  throws. Slider values arrive as floats even with a whole-number step, so they
+  are floored before formatting. This is the one direction the caveat runs the
+  wrong way — a bug the harness catches that the game would have hidden.
+* **The mock client reads the load order out of the `.toc`.** It used to hold its
+  own list, which went stale the moment a file was added: the new file was not
+  loaded and the run failed somewhere unrelated, on a nil where a helper that had
+  moved into it used to be. fengari has no `io.open`, so `run.js` reads the
+  manifest and hands it over as a string.
+* **The embedded libraries need 5.1 and FrameXML globals the addon itself never
+  used.** `getfenv`, `bit.band` and `loadstring` are 5.1 and gone in 5.3;
+  `strmatch`, `geterrorhandler` and `GetLocale` are FrameXML's rather than Lua's.
+  The mock provides all of them. `loadstring` in particular stayed hidden until
+  the harness registered a font, because CallbackHandler only builds its
+  dispatchers when a callback actually fires.
+* **CallbackHandler's `RegisterCallback` is a dot call whose first argument is
+  the registering object, not the library.** `lib:RegisterCallback(...)` is an
+  error — the library reads itself as the event name. heroPanel passes its addon
+  name, which is a supported `self` and avoids the question.
 
 ## Diagnosing the skin
 

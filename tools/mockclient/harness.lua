@@ -69,6 +69,35 @@ function methods:StopMovingOrSizing() end
 function methods:RegisterForDrag() end
 function methods:RegisterForClicks() end
 function methods:SetClampedToScreen() end
+function methods:SetToplevel(v) self.__toplevel = v end
+
+-- Slider. Enough of one to drive the options panel's sliders: a value that is
+-- clamped and stepped the way the client's is, and an OnValueChanged that fires
+-- on every set - including the ones the panel makes itself while syncing from
+-- the store, which is the case its re-entry guard exists for.
+function methods:SetOrientation(o) self.__orientation = o end
+function methods:SetMinMaxValues(minValue, maxValue)
+    self.__min, self.__max = minValue, maxValue
+end
+function methods:GetMinMaxValues() return self.__min, self.__max end
+function methods:SetValueStep(step) self.__step = step end
+function methods:SetValue(value)
+    local minValue, maxValue = self.__min or 0, self.__max or 100
+    if value < minValue then value = minValue end
+    if value > maxValue then value = maxValue end
+    if self.__step and self.__step > 0 then
+        value = math.floor(value / self.__step + 0.5) * self.__step
+    end
+    self.__value = value
+    local fn = self.__scripts.OnValueChanged
+    if fn then fn(self, value) end
+end
+function methods:GetValue() return self.__value or self.__min or 0 end
+function methods:SetThumbTexture(path)
+    self.__thumb = self:CreateTexture()
+    self.__thumb:SetTexture(path)
+end
+function methods:GetThumbTexture() return self.__thumb end
 function methods:SetUserPlaced(v) self.__userPlaced = v end
 function methods:IsUserPlaced() return self.__userPlaced end
 function methods:RegisterEvent(e) self.__events[e] = true end
@@ -286,6 +315,59 @@ end
 
 _G = _ENV or _G
 
+--------------------------------------------------------------------------------
+-- 5.1 and FrameXML globals the embedded libraries expect
+--
+-- heroPanel's own files use plain Lua and the frame API, so the mock never
+-- needed these. LibStub, CallbackHandler and LibSharedMedia are ordinary
+-- WoW libraries and do: getfenv and the bit library are 5.1 and are gone in
+-- the 5.3 fengari runs on, and strmatch / geterrorhandler / GetLocale are
+-- FrameXML's rather than Lua's.
+--------------------------------------------------------------------------------
+
+if not getfenv then
+    -- The libraries only ever call getfenv(0), meaning "the globals table".
+    function getfenv() return _G end
+end
+
+if not bit then
+    -- Only band is used, and only on the locale mask. Written with arithmetic
+    -- rather than 5.3's & so this file stays loadable under 5.1 as well.
+    bit = {
+        band = function(a, b)
+            local result, place = 0, 1
+            while a > 0 and b > 0 do
+                if (a % 2 == 1) and (b % 2 == 1) then result = result + place end
+                a, b, place = math.floor(a / 2), math.floor(b / 2), place * 2
+            end
+            return result
+        end,
+    }
+end
+
+-- CallbackHandler builds its dispatchers with loadstring, which 5.1 has and
+-- 5.3 renamed. Only reached once a callback actually fires, so it stayed hidden
+-- until the harness registered a font.
+loadstring = loadstring or load
+
+strmatch = strmatch or string.match
+strupper = strupper or string.upper
+strlower = strlower or string.lower
+strfind  = strfind  or string.find
+strsub   = strsub   or string.sub
+tinsert  = tinsert  or table.insert
+tremove  = tremove  or table.remove
+
+function geterrorhandler()
+    return function(err) fail("library error: " .. tostring(err)) end
+end
+
+function GetLocale() return "enUS" end
+
+-- Escape-to-close registry. Real, so the options panel adding itself twice
+-- across a rebuild would be visible rather than silent.
+UISpecialFrames = {}
+
 local frames = {}
 
 function CreateFrame(kind, name, parent, template)
@@ -312,6 +394,20 @@ GameFontNormal.__font = { "Fonts\\FRIZQT__.TTF", 12, "" }
 
 UIPARENT_MANAGED_FRAME_POSITIONS = { WatchFrame = {} }
 function UIParent_ManageFramePositions() end
+
+-- Blizzard's interface options, enough for heroPanel to register a category in
+-- and for the category's own OnShow to be driven. MINIMAL leaves all of it out,
+-- which is the client where /hp is the only way in.
+if not MINIMAL then
+    InterfaceOptionsFrame = new("Frame", "InterfaceOptionsFrame", UIParent)
+    InterfaceOptionsFrame:Hide()
+    InterfaceOptionsFramePanelContainer = new("Frame", "InterfaceOptionsFramePanelContainer", InterfaceOptionsFrame)
+
+    INTERFACE_CATEGORIES = {}
+    function InterfaceOptions_AddCategory(panel)
+        table.insert(INTERFACE_CATEGORIES, panel)
+    end
+end
 
 local combat = false
 function InCombatLockdown() return combat end
@@ -797,12 +893,44 @@ end
 -- Boot heroPanel
 --------------------------------------------------------------------------------
 
+-- The load order is read out of the .toc rather than written down here.
+--
+-- It used to be a list in this file, and that list quietly went stale the
+-- moment a file was added to the addon: the new file simply was not loaded, and
+-- the run failed somewhere unrelated - a nil where a helper that moved into it
+-- used to be - with nothing pointing at the real cause. Reading the manifest
+-- means a file the addon loads is a file the harness loads.
+--
+-- Library paths use backslashes in a .toc and are directories on disk, so they
+-- are translated. LibStub and friends are loaded as ordinary chunks with no
+-- addon-name/namespace pair, which is how the client loads them too.
+--
+-- The manifest arrives as a string from run.js: fengari's io library has no
+-- `open`, so Lua here can load a chunk but cannot read a text file.
+local function ReadTocFiles()
+    if type(HP_TOC) ~= "string" then
+        error("HP_TOC was not set - run this through run.js, not directly")
+    end
+
+    local list = {}
+    for line in HP_TOC:gmatch("[^\r\n]+") do
+        line = line:gsub("^%s+", ""):gsub("%s+$", "")
+        if line ~= "" and not line:match("^#") and line:match("%.lua$") then
+            table.insert(list, (line:gsub("\\", "/")))
+        end
+    end
+    return list
+end
+
 local ns = {}
-local files = { "Core.lua", "Util.lua", "Plate.lua", "Trackers.lua", "Move.lua", "Skin.lua", "Lines.lua", "Mplus.lua", "Compat.lua" }
-for _, file in ipairs(files) do
+for _, file in ipairs(ReadTocFiles()) do
     local chunk, err = loadfile(ADDON .. file)
     if not chunk then error("load " .. file .. ": " .. tostring(err)) end
-    chunk("heroPanel", ns)
+    if file:match("^libs/") then
+        chunk()
+    else
+        chunk("heroPanel", ns)
+    end
 end
 
 HEROPANEL_DB = { debug = true }
@@ -1103,10 +1231,17 @@ check(colourOf(nativeHeaderText) ~= "E7C67C",
 -- the original meant the objective size - half a point under the base - could
 -- only ever come out smaller than Blizzard's, so the skin made its own text
 -- harder to read than the text it replaced.
+--
+-- Stated against the configured base rather than against the numbers that base
+-- happened to produce. These were literals - 13.5 and 12.5 - and changing the
+-- default from 13 to 12 broke both, which is a test measuring the default
+-- rather than the offsets it is supposed to be checking.
 local _, titleSize = trackerLines[1].__text:GetFont()
 local _, lineSize  = trackerLines[2].__text:GetFont()
-check(titleSize == 13.5, "title font should be base + 0.5, got " .. tostring(titleSize))
-check(lineSize == 12.5, "objective font should be base - 0.5, got " .. tostring(lineSize))
+check(titleSize == ns.GetFontSize(0.5),
+    "title font should be base + 0.5 (" .. tostring(ns.GetFontSize(0.5)) .. "), got " .. tostring(titleSize))
+check(lineSize == ns.GetFontSize(-0.5),
+    "objective font should be base - 0.5 (" .. tostring(ns.GetFontSize(-0.5)) .. "), got " .. tostring(lineSize))
 
 -- ...and the bound holds however large the config goes. Unbounded growth would
 -- run lines into each other, since the tracker placed them on its own pitch.
@@ -2164,6 +2299,458 @@ check(mplusTracker.HeaderText:GetAlpha() == 0, "re-enabling should fade the head
 -- The reports have to work whether or not a keystone is running.
 ns.Mplus.Dump()
 ns.Mplus.PrintStatus()
+
+--------------------------------------------------------------------------------
+-- Fonts through LibSharedMedia
+--------------------------------------------------------------------------------
+
+check(ns.GetFontFile() ~= nil, "there must always be a font path to draw with")
+
+do
+    local lsm = ns.Media.GetLSM()
+    check(lsm ~= nil, "the embedded LibSharedMedia should resolve")
+
+    local faces = ns.Media.ListFonts()
+    check(#faces > 0, "the font list must never be empty")
+
+    local hasDefault = false
+    for i = 1, #faces do
+        if faces[i] == ns.DEFAULT_FONT_FACE then hasDefault = true end
+    end
+    check(hasDefault, "the default face has to be listed whatever else is")
+
+    -- The default is answered without going through Fetch, so it survives a
+    -- library that never registered it and a locale that names it differently.
+    ns.db.font.face = ns.DEFAULT_FONT_FACE
+    ns.Media.Invalidate()
+    check(ns.GetFontFile() == ns.Media.ClientFontFile(),
+        "the default face should come from the client, not from the library")
+
+    -- A registered face is fetched and used.
+    if lsm then lsm:Register("font", "HeroPanel Test Face", "Fonts\\MORPHEUS.TTF") end
+    ns.db.font.face = "HeroPanel Test Face"
+    ns.Media.Invalidate()
+    check(ns.GetFontFile() == "Fonts\\MORPHEUS.TTF",
+        "a registered face should be fetched from the library, got " .. tostring(ns.GetFontFile()))
+
+    -- A face nobody registered falls back rather than handing out nil, which
+    -- would blank every string on both panels.
+    ns.db.font.face = "No Such Face At All"
+    ns.Media.Invalidate()
+    check(ns.GetFontFile() == ns.Media.ClientFontFile(),
+        "an unknown face must fall back to the client's own")
+
+    ns.db.font.face = ns.DEFAULT_FONT_FACE
+    ns.Media.Apply("harness restoring the default face")
+    tick(); tick()
+end
+
+--------------------------------------------------------------------------------
+-- Options panel
+--------------------------------------------------------------------------------
+
+check(ns.Options ~= nil, "the options module should be loaded")
+
+-- A bare /hp opens it. That is the command the design puts on the panel and
+-- what someone who has not read the command list will type.
+SlashCmdList["HEROPANEL"]("")
+tick(); tick()
+check(ns.Options.IsShown(), "/hp should open the options window")
+check(HeroPanelOptionsFrame ~= nil, "the window needs a global name for escape-to-close")
+
+do
+    local optionsFrame = HeroPanelOptionsFrame
+
+    check(optionsFrame:GetWidth() == 440,
+        "the window is 440 wide, got " .. tostring(optionsFrame:GetWidth()))
+    check(optionsFrame:GetFrameStrata() == "DIALOG",
+        "the window belongs in its own strata, got " .. tostring(optionsFrame:GetFrameStrata()))
+
+    -- It has to fit on screen. UIParent is about 768 units tall whatever the
+    -- monitor is, because the client scales the UI to suit, so this is a fixed
+    -- budget rather than a property of the mock's 900-pixel screen - which is
+    -- why the number is written down here rather than read off UIParent.
+    check(optionsFrame:GetHeight() <= 768,
+        "the window must fit inside UIParent's 768 units, got "
+        .. tostring(optionsFrame:GetHeight()))
+    note("options window: " .. tostring(optionsFrame:GetWidth()) .. " x "
+        .. tostring(optionsFrame:GetHeight()))
+    check(optionsFrame:GetHeight() > 400,
+        "...and it should not have collapsed to nothing, got "
+        .. tostring(optionsFrame:GetHeight()))
+
+    -- It must not open on top of the frames it configures. Both trackers live
+    -- down one edge; the window defaults to the centre. Checked as an actual
+    -- rectangle overlap rather than by trusting the anchor.
+    local function Overlaps(a, b)
+        if not (a and b) then return false end
+        if not (a:GetLeft() and b:GetLeft()) then return false end
+        return a:GetLeft() < b:GetRight() and a:GetRight() > b:GetLeft()
+           and a:GetBottom() < b:GetTop() and a:GetTop() > b:GetBottom()
+    end
+
+    check(not Overlaps(optionsFrame, HeroPanelWatchPlate),
+        "the options window must not cover the quest tracker at default positions")
+    check(not Overlaps(optionsFrame, HeroPanelMplusPlate),
+        "the options window must not cover the Mythic+ tracker at default positions")
+
+    -- Escape-to-close is registered exactly once, however many times the window
+    -- is opened and closed.
+    ns.Options.Hide()
+    ns.Options.Show()
+    ns.Options.Hide()
+    ns.Options.Show()
+    local registrations = 0
+    for i = 1, #UISpecialFrames do
+        if UISpecialFrames[i] == "HeroPanelOptionsFrame" then registrations = registrations + 1 end
+    end
+    check(registrations == 1,
+        "the window should register for escape once, got " .. registrations)
+end
+
+-- Every control gets clicked.
+--
+-- Building the window and syncing it exercises almost none of what a control
+-- actually does: the writes, the live re-skin and the selection redraws all
+-- hang off OnClick, and a panel that draws perfectly and does nothing on click
+-- looks identical in a screenshot. So each kind of control is driven here and
+-- checked against the store afterwards.
+do
+    ns.Options.Show()
+    tick(); tick()
+
+    -- Walk the window for the widgets, rather than having Options.lua export
+    -- handles purely so a test can reach them.
+    local clickable = {}
+    ns.WalkFrameTree(HeroPanelOptionsFrame, function(object, info)
+        if info.kind == "child" and object.GetScript and object:GetScript("OnClick") then
+            table.insert(clickable, object)
+        end
+    end, { maxDepth = 4, includeRegions = false })
+
+    check(#clickable >= 15,
+        "the window should have a good number of clickable controls, found " .. #clickable)
+
+    -- Background colour: pick a swatch that is not the current one and confirm
+    -- the store followed and the tracker was re-skinned rather than merely
+    -- recorded.
+    local wanted = "#0D0E14"
+    local hit = false
+    for i = 1, #clickable do
+        if clickable[i].colour == wanted then
+            clickable[i]:Click()
+            hit = true
+        end
+    end
+    check(hit, "a background swatch for " .. wanted .. " should exist")
+    check(ns.db.bg.color == wanted,
+        "clicking a swatch should write the store, got " .. tostring(ns.db.bg.color))
+
+    -- The store following is only half of it: a swatch that writes the config
+    -- and does not re-skin is exactly the "changes need a reload" behaviour the
+    -- panel exists to avoid, and it is invisible until you reload.
+    local painted = HeroPanelWatchPlate.bg.main.__color
+    check(painted ~= nil, "the plate should have been painted at all")
+    if painted then
+        local wr, wg, wb = ns.HexToRGB(wanted)
+        check(math.abs(painted[1] - wr) < 0.01
+          and math.abs(painted[2] - wg) < 0.01
+          and math.abs(painted[3] - wb) < 0.01,
+            "the plate should be repainted live, not on next reload; got "
+            .. ns.RGBToHex(painted[1], painted[2], painted[3]))
+    end
+
+    -- Border style: the segmented control writes a key the plate understands,
+    -- and "inset" has to actually draw differently from "hairline" now that it
+    -- is a real style rather than a synonym.
+    local hairlineTop = HeroPanelWatchPlate.edge.top:GetTop()
+    ns.db.border.style = "inset"
+    ns.Skin.Restyle()
+    local insetTop = HeroPanelWatchPlate.edge.top:GetTop()
+    check(insetTop ~= hairlineTop,
+        "an inset border should sit a pixel inside a hairline one, both at "
+        .. tostring(insetTop))
+
+    ns.db.border.style = "none"
+    ns.Skin.Restyle()
+    check(not HeroPanelWatchPlate.edge.top:IsShown(), "border style none draws no edge")
+
+    ns.db.border.style = "hairline"
+    ns.Skin.Restyle()
+    check(HeroPanelWatchPlate.edge.top:IsShown(), "border style hairline draws an edge")
+
+    -- The font dropdown: open it, and pick a face off it.
+    if ns.Media.GetLSM() then
+        ns.Media.GetLSM():Register("font", "Harness Clickable Face", "Fonts\\ARIALN.TTF")
+    end
+
+    local opened, picked = false, false
+    for i = 1, #clickable do
+        local before = ns.db.font.face
+        clickable[i]:Click()
+        -- Opening the dropdown reveals its rows, which are a level deeper.
+        ns.WalkFrameTree(HeroPanelOptionsFrame, function(object, info)
+            if picked then return false end
+            if info.kind == "child" and object.face == "Harness Clickable Face" then
+                opened = true
+                object:Click()
+                picked = true
+            end
+        end, { maxDepth = 5, includeRegions = false })
+        if picked then break end
+        -- Undo anything else the click did to the face.
+        ns.db.font.face = before
+    end
+
+    check(opened, "the font dropdown should list a newly registered face")
+    check(ns.db.font.face == "Harness Clickable Face",
+        "picking a face should write the store, got " .. tostring(ns.db.font.face))
+    check(ns.GetFontFile() == "Fonts\\ARIALN.TTF",
+        "...and it should be the file the trackers now draw with, got " .. tostring(ns.GetFontFile()))
+
+    -- Put everything back and confirm the round trip left nothing broken.
+    ns.Options.Reset()
+    tick(); tick()
+    check(ns.db.bg.color == ns.defaults.bg.color, "reset should undo the swatch click")
+    check(ns.db.font.face == ns.DEFAULT_FONT_FACE, "reset should undo the font pick")
+    check(ns.GetFontFile() == ns.Media.ClientFontFile(),
+        "reset should put the client's own face back on the trackers")
+
+    ns.Options.Hide()
+end
+
+-- Every control reads the store when the window opens, so a value changed by a
+-- slash command while it was shut is what comes back on screen.
+do
+    SlashCmdList["HEROPANEL"]("font 17")
+    tick(); tick()
+    ns.Options.Hide()
+    ns.Options.Show()
+    check(ns.db.font.size == 17, "the slash command should still own the store")
+
+    -- Scale is the one the design's brief calls out: it can be changed from
+    -- outside while the window is shut, so the slider has to re-read it rather
+    -- than push its own stale value back.
+    ns.SetScale("watch", 1.3)
+    ns.SetScale("mplus", 0.7)
+    ns.Options.Hide()
+    ns.Options.Show()
+    tick()
+    check(math.abs(ns.db.frame.watch.scale - 1.3) < 0.001,
+        "opening the window must not overwrite a scale set from elsewhere, got "
+        .. tostring(ns.db.frame.watch.scale))
+    check(math.abs(ns.db.frame.mplus.scale - 0.7) < 0.001,
+        "the Mythic+ scale should survive the same round trip, got "
+        .. tostring(ns.db.frame.mplus.scale))
+
+    SlashCmdList["HEROPANEL"]("font 12")
+    tick(); tick()
+end
+
+-- The enable toggle restores and re-applies live, in both directions, with no
+-- reload. This is the escape hatch, so it is the one that must not be subtly
+-- broken.
+do
+    local watchTitle = trackerLines[1].__text
+    local skinnedColour = colourOf(watchTitle)
+
+    ns.Skin.SetEnabled(false)
+    tick(); tick()
+    check(not ns.db.enabled, "disabling should write the store")
+    check(not HeroPanelWatchPlate:IsShown(), "disabling should hide the quest panel")
+    check(not HeroPanelMplusPlate:IsShown(), "disabling should hide the Mythic+ panel too")
+    check(colourOf(watchTitle) ~= skinnedColour,
+        "disabling should hand the quest title's colour back to Blizzard")
+
+    ns.Options.Sync()
+    ns.Skin.SetEnabled(true)
+    tick(); tick()
+    check(ns.db.enabled, "re-enabling should write the store")
+    check(HeroPanelWatchPlate:IsShown(), "re-enabling should bring the quest panel back")
+    check(colourOf(watchTitle) == skinnedColour,
+        "re-enabling should put the skin's colour back, got " .. tostring(colourOf(watchTitle)))
+end
+
+-- Reset puts the defaults back and re-applies them, rather than only writing
+-- the store and waiting for a reload.
+do
+    ns.db.bg.color   = "#232532"
+    ns.db.radius     = 16
+    ns.db.font.size  = 19
+    ns.db.header.show = false
+
+    ns.Options.Reset()
+    tick(); tick()
+
+    check(ns.db.bg.color == ns.defaults.bg.color,
+        "reset should restore the background colour, got " .. tostring(ns.db.bg.color))
+    check(ns.db.radius == ns.defaults.radius,
+        "reset should restore the radius, got " .. tostring(ns.db.radius))
+    check(ns.db.font.size == ns.defaults.font.size,
+        "reset should restore the font size, got " .. tostring(ns.db.font.size))
+    check(ns.db.header.show == true, "reset should restore the header")
+    check(ns.db.enabled == true, "reset should leave the skin enabled")
+
+    local _, titleAfterReset = trackerLines[1].__text:GetFont()
+    check(titleAfterReset == ns.GetFontSize(0.5),
+        "reset should re-apply the skin, not just write the store; got " .. tostring(titleAfterReset))
+end
+
+-- Interface -> AddOns registers one category, and its button opens the same
+-- window rather than a second copy of the controls.
+if not MINIMAL then
+    check(#INTERFACE_CATEGORIES == 1,
+        "exactly one interface options category, got " .. #INTERFACE_CATEGORIES)
+    check(INTERFACE_CATEGORIES[1] and INTERFACE_CATEGORIES[1].name == "heroPanel",
+        "the category should be named heroPanel")
+end
+
+ns.Options.Hide()
+check(not ns.Options.IsShown(), "Save & close should hide the window")
+
+--------------------------------------------------------------------------------
+-- Combat, with both panels up and the options window open
+--
+-- Not a taint test - the mock does not model taint, and nothing here can stand
+-- in for a live pull. What it does check is that every path taken while the
+-- protected calls are refused still runs, and that the work deferred by
+-- ns.RunWhenSafe is actually flushed afterwards rather than dropped. The log
+-- scan at the bottom turns anything that threw into a failure.
+--------------------------------------------------------------------------------
+
+do
+    ns.Options.Show()
+    tick(); tick()
+
+    combat = true
+    fire("PLAYER_REGEN_DISABLED")
+
+    -- The settings a player would reach for mid-pull.
+    ns.Skin.Refresh("combat started")
+    ns.Mplus.Refresh("combat started")
+    ns.db.bg.color = "#0D0E14"
+    ns.Options.Apply("colour changed in combat")
+    ns.SetScale("watch", 1.1)
+    ns.SetLocked(false)
+    ns.SetLocked(true)
+    tick(); tick(); tick()
+
+    check(HeroPanelOptionsFrame:IsShown(), "the options window stays up through combat")
+    check(HeroPanelWatchPlate:IsShown(), "the quest panel stays up through combat")
+
+    combat = false
+    fire("PLAYER_REGEN_ENABLED")
+    tick(); tick(); tick()
+
+    check(math.abs(ns.db.frame.watch.scale - 1.1) < 0.001,
+        "a scale set in combat should be applied once combat ends, got "
+        .. tostring(ns.db.frame.watch.scale))
+    check(math.abs(WatchFrame:GetScale() - 1.1) < 0.001,
+        "the deferred SetScale should have reached the frame, got "
+        .. tostring(WatchFrame:GetScale()))
+
+    ns.SetScale("watch", 1.0)
+    ns.db.bg.color = ns.defaults.bg.color
+    ns.Options.Apply("restoring after the combat test")
+    ns.Options.Hide()
+    tick(); tick()
+end
+
+--------------------------------------------------------------------------------
+-- Enabling twice does not stack
+--
+-- Enable() builds the plate and installs the hooks on first call and must be a
+-- no-op for both afterwards. A second plate is invisible on screen - it is the
+-- same size in the same place - so this is checked by counting frames rather
+-- than by looking at one.
+--------------------------------------------------------------------------------
+
+do
+    local plateBefore  = ns.Skin.GetPlate()
+    local framesBefore = #frames
+
+    ns.Skin.Enable()
+    ns.Skin.Enable()
+    ns.Skin.Enable()
+    tick(); tick()
+
+    check(ns.Skin.GetPlate() == plateBefore, "re-enabling must reuse the plate, not build another")
+    check(#frames == framesBefore,
+        "re-enabling must not create frames; " .. tostring(#frames - framesBefore) .. " appeared")
+end
+
+--------------------------------------------------------------------------------
+-- Another tracker addon in the same UI
+--
+-- heroPanel installs its own hooks regardless, and says so once. Twice is a
+-- chat spam bug, and never is a player left wondering why two addons are
+-- fighting over the tracker.
+--------------------------------------------------------------------------------
+
+do
+    ElvUI = {}
+    ns.conflictsWarned = false
+
+    local function CountElvUINotices()
+        local n = 0
+        for _, line in ipairs(log) do
+            if string.find(line, "ElvUI", 1, true) then n = n + 1 end
+        end
+        return n
+    end
+
+    local before = CountElvUINotices()
+    ns.CheckConflicts()
+    ns.CheckConflicts()
+    ns.CheckConflicts()
+    local after = CountElvUINotices()
+
+    check(after - before == 1,
+        "the conflict notice should be said exactly once, got " .. tostring(after - before))
+
+    -- ...and heroPanel's own hooks still work with it loaded.
+    ns.Skin.Refresh("with ElvUI present")
+    tick(); tick()
+    check(HeroPanelWatchPlate:IsShown(), "the skin keeps working with another tracker addon loaded")
+    check(colourOf(trackerLines[1].__text) == "E7C67C",
+        "heroPanel's own line styling survives another addon being present")
+
+    ElvUI = nil
+end
+
+--------------------------------------------------------------------------------
+-- A store written by nothing at all
+--
+-- What a new player's first login looks like. Every default has to land with no
+-- error, which is the one case that cannot be checked by editing an existing
+-- store: a missing sub-table and a sub-table with a missing key are different
+-- shapes, and ApplyDefaults has to survive both.
+--------------------------------------------------------------------------------
+
+do
+    HEROPANEL_DB = nil
+    local ok, err = pcall(ns.InitDB)
+    check(ok, "a fresh install must initialise without error: " .. tostring(err))
+    check(type(HEROPANEL_DB) == "table", "InitDB should create the store")
+    check(HEROPANEL_DB.enabled == true, "a fresh store is enabled")
+    check(HEROPANEL_DB.font.face == ns.DEFAULT_FONT_FACE, "a fresh store gets the default face")
+    check(HEROPANEL_DB.font.size == 12, "a fresh store gets the design's 12px base")
+    check(HEROPANEL_DB.frame.locked == true, "a fresh store is locked")
+    check(HEROPANEL_DB.options ~= nil, "a fresh store has somewhere to remember the window")
+
+    -- Half a store, as written by an older build that had fewer keys.
+    HEROPANEL_DB = { enabled = false, font = { size = 15 } }
+    local ok2, err2 = pcall(ns.InitDB)
+    check(ok2, "a partial store must be filled in without error: " .. tostring(err2))
+    check(HEROPANEL_DB.enabled == false, "an existing value must not be clobbered")
+    check(HEROPANEL_DB.font.size == 15, "an existing font size must not be clobbered")
+    check(HEROPANEL_DB.font.face == ns.DEFAULT_FONT_FACE, "a missing face is filled in")
+    check(HEROPANEL_DB.text.title == ns.defaults.text.title, "a missing sub-table is filled in")
+
+    -- Put the run's store back so the report below is about the real one.
+    HEROPANEL_DB = nil
+    ns.InitDB()
+end
 
 --------------------------------------------------------------------------------
 -- Report

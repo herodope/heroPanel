@@ -4,17 +4,28 @@
 ## Version: 0.1.0
 ## Notes: Skin, mover and lock controls for the objective tracker and the Mythic+ tracker.
 ## SavedVariables: HEROPANEL_DB
-## OptionalDeps: Ascension_MythicPlus
+## OptionalDeps: Ascension_MythicPlus, SharedMediaAdditionalFonts, SharedMedia_Causese
 ## X-Website: https://github.com/herodope/heroPanel
 ## X-Category: Quests & Leveling
+## X-Embeds: LibStub, CallbackHandler-1.0, LibSharedMedia-3.0
 ## DefaultState: enabled
+
+# Embedded libraries. LibStub keeps one instance per major version and the
+# highest minor wins, so if the player already has a newer LibSharedMedia these
+# are no-ops and heroPanel uses theirs - which is how fonts registered by other
+# addons turn up in the font dropdown. See libs/README.md.
+libs\LibStub\LibStub.lua
+libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+libs\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
 
 Core.lua
 Util.lua
+Media.lua
 Plate.lua
 Trackers.lua
 Move.lua
 Skin.lua
 Lines.lua
 Mplus.lua
+Options.lua
 Compat.lua

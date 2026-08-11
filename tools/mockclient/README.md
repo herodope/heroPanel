@@ -30,6 +30,13 @@ once exercised.
 `HP_ADDON` overrides where the addon files are read from; it defaults to
 `../../heroPanel/`.
 
+The load order comes out of `heroPanel.toc`, so a file added to the addon is a
+file the harness loads. It used to be a list in `harness.lua`, which went stale
+the moment a file was added — the new file simply was not loaded, and the run
+failed somewhere unrelated on a nil where a helper that had moved into it used
+to be. fengari has no `io.open`, so `run.js` reads the manifest and hands it to
+Lua as a string.
+
 Both runs should print `all checks passed`. A failure prints what broke followed
 by heroPanel's chat and debug output for the run.
 
@@ -42,6 +49,7 @@ by heroPanel's chat and debug output for the run.
 | `WatchFrame_Update` / `_Collapse` / `_Expand` | present, hooked | absent, events used instead |
 | `GetNumQuestWatches` | present | absent, block count used instead |
 | `C_MythicPlus` | present, the keystone read from the API | absent, read off the tracker's own widgets |
+| `InterfaceOptions_AddCategory` | present, the category is registered | absent, `/hp` is the only way into the options |
 
 The Mythic+ tracker is built *after* heroPanel has booted, because the real one
 does not exist at `ADDON_LOADED` — so the run also exercises Phase 1's poll and
@@ -65,3 +73,32 @@ is always the path under test.
   except for heroPanel's own media under `HP_NOMEDIA`.
 * Text is measured as five pixels per character. Enough to tell a right-aligned
   count from a left-aligned one; not enough to say anything about wrapping.
+
+## What the options panel run covers
+
+The window is built, opened, measured, clicked through and reset:
+
+* it is 440 wide and fits inside `UIParent`'s 768 units, which is a fixed budget
+  whatever the monitor is
+* it does not overlap either tracker **or** either of heroPanel's plates at the
+  default position — checked as a rectangle overlap, not by trusting the anchor
+* every control with an `OnClick` is clicked, and the ones with an observable
+  effect are checked against the store *and* against the tracker, because a
+  control that writes the config and does not re-skin is the "needs a reload"
+  behaviour the panel exists to avoid
+* the font dropdown lists a face registered after boot, and picking it changes
+  the file the trackers draw with
+* escape-to-close registers exactly once however many times the window opens
+* the enable toggle restores and re-applies the skin in both directions
+* Reset restores the defaults *and* re-applies them
+
+Alongside it: a combat cycle with both panels up and the window open, a second
+tracker addon loaded (the notice is said once and heroPanel's own hooks keep
+working), repeated `Enable()` calls creating no second plate and no new frames,
+and two fresh-install shapes — no store at all, and a partial one written by an
+older build.
+
+None of that is a taint test. The mock does not model taint and nothing here
+stands in for a live pull; what it checks is that the paths taken while
+protected calls are refused all run, and that the work `ns.RunWhenSafe` defers
+is flushed afterwards rather than dropped.

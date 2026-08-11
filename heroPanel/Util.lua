@@ -538,18 +538,15 @@ end
 --------------------------------------------------------------------------------
 -- Fonts
 --
--- Phase 4 swaps this for LibSharedMedia. Until then the configured face is
--- ignored and the client's own normal face - Friz Quadrata TT - is used, read
--- off GameFontNormal so no asset path is written down here.
+-- ns.GetFontFile lives in Media.lua, which resolves HEROPANEL_DB.font.face
+-- through LibSharedMedia and falls back to the client's own normal face. It is
+-- defined there rather than here because the fallback, the validation probe and
+-- the font list are one piece of reasoning and splitting them across two files
+-- only made it possible for them to disagree.
+--
+-- Sizes stay here: they are arithmetic on the configured base and have nothing
+-- to do with which file the glyphs come out of.
 --------------------------------------------------------------------------------
-
-function ns.GetFontFile()
-    if GameFontNormal and GameFontNormal.GetFont then
-        local path = GameFontNormal:GetFont()
-        if path then return path end
-    end
-    return "Fonts\\FRIZQT__.TTF"
-end
 
 -- Font sizes in the design are expressed relative to the configured base size
 -- (12 by default): the quest title is half a point up from it, objectives half

@@ -101,18 +101,42 @@ end
 --
 -- Reads the config and paints. Split from layout so a colour change from the
 -- options panel does not have to re-measure anything.
+--
+-- ns.StylePlateChrome(plate) paints from HEROPANEL_DB, which is what both
+-- trackers want. ns.StylePlateChrome(plate, style) overrides any subset of it:
+--
+--     bgColor bgOpacity borderColor borderAlpha borderStyle radius shadowAlpha
+--
+-- The options panel is the caller that needs this. Its own chrome is fixed by
+-- the design and must not follow the player's panel colours, because it is the
+-- window they change those colours in - a config panel that restyles itself as
+-- you drag a swatch makes it impossible to see what you are actually setting.
+--
+-- Zero is a meaningful value for opacity, radius and alpha, and zero is truthy
+-- in Lua, so the plain `or` fallbacks below do the right thing with it.
 --------------------------------------------------------------------------------
 
-function ns.StylePlateChrome(plate)
+function ns.StylePlateChrome(plate, style)
     if not (plate and plate.bg) then return end
 
-    local db     = ns.db
-    local notch  = ns.NotchFor(db.radius)
-    local br, bg, bb = ns.HexToRGB(db.bg.color)
-    local opacity    = ns.Clamp(db.bg.opacity, 0, 1)
-    local er, eg, eb = ns.HexToRGB(db.border.color)
+    local db = ns.db
 
-    if db.bg.texture and db.bg.texture ~= "flat" then
+    local bgColor     = (style and style.bgColor)     or db.bg.color
+    local bgOpacity   = (style and style.bgOpacity)   or db.bg.opacity
+    local borderColor = (style and style.borderColor) or db.border.color
+    local borderAlpha = (style and style.borderAlpha) or 1
+    local borderStyle = (style and style.borderStyle) or db.border.style or "hairline"
+    local radius      = (style and style.radius)      or db.radius
+    local shadowAlpha = (style and style.shadowAlpha) or 0.45
+
+    local notch  = ns.NotchFor(radius)
+    local br, bg, bb = ns.HexToRGB(bgColor)
+    local opacity    = ns.Clamp(bgOpacity, 0, 1)
+    local er, eg, eb = ns.HexToRGB(borderColor)
+
+    -- Only the trackers' own texture setting is worth reporting on; the options
+    -- panel never asks for one.
+    if not style and db.bg.texture and db.bg.texture ~= "flat" then
         ns.Debug("backdrop texture '%s' is not implemented; drawing flat.", tostring(db.bg.texture))
     end
 
@@ -137,37 +161,48 @@ function ns.StylePlateChrome(plate)
         texture:Show()
     end
 
-    -- Border. "inset" is accepted but drawn as a hairline until Phase 4 gives
-    -- the options panel something to switch between.
-    local style = db.border.style or "hairline"
-    if style ~= "hairline" and style ~= "none" then
-        ns.Debug("border style '%s' drawn as hairline.", tostring(style))
+    -- Border.
+    --
+    --   hairline  a 1px line on the plate's own edge.
+    --   inset     the same line moved one pixel in, with the dark contour moved
+    --             from outside the plate onto the pixel it vacated. Two rows -
+    --             dark outside, coloured inside - is what reads as recessed at
+    --             this size. A genuine bevel needs two tones of the border
+    --             colour on opposite corners, which needs art heroPanel does
+    --             not ship, so this is the cheap read of the same idea, the same
+    --             way the chamfer stands in for a radius.
+    --   none      no line, and no contour either - "none" means no edge, and
+    --             leaving the shadow behind would still draw one.
+    if borderStyle ~= "hairline" and borderStyle ~= "inset" and borderStyle ~= "none" then
+        ns.Debug("border style '%s' drawn as hairline.", tostring(borderStyle))
+        borderStyle = "hairline"
     end
-    local showBorder = (style ~= "none")
+    local showBorder = (borderStyle ~= "none")
+    local inset      = (borderStyle == "inset") and 1 or 0
 
     local edge = plate.edge
     edge.top:ClearAllPoints()
-    edge.top:SetPoint("TOPLEFT", plate, "TOPLEFT", notch, 0)
-    edge.top:SetPoint("TOPRIGHT", plate, "TOPRIGHT", -notch, 0)
+    edge.top:SetPoint("TOPLEFT", plate, "TOPLEFT", notch + inset, -inset)
+    edge.top:SetPoint("TOPRIGHT", plate, "TOPRIGHT", -notch - inset, -inset)
     edge.top:SetHeight(1)
 
     edge.bottom:ClearAllPoints()
-    edge.bottom:SetPoint("BOTTOMLEFT", plate, "BOTTOMLEFT", notch, 0)
-    edge.bottom:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", -notch, 0)
+    edge.bottom:SetPoint("BOTTOMLEFT", plate, "BOTTOMLEFT", notch + inset, inset)
+    edge.bottom:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", -notch - inset, inset)
     edge.bottom:SetHeight(1)
 
     edge.left:ClearAllPoints()
-    edge.left:SetPoint("TOPLEFT", plate, "TOPLEFT", 0, -notch)
-    edge.left:SetPoint("BOTTOMLEFT", plate, "BOTTOMLEFT", 0, notch)
+    edge.left:SetPoint("TOPLEFT", plate, "TOPLEFT", inset, -notch - inset)
+    edge.left:SetPoint("BOTTOMLEFT", plate, "BOTTOMLEFT", inset, notch + inset)
     edge.left:SetWidth(1)
 
     edge.right:ClearAllPoints()
-    edge.right:SetPoint("TOPRIGHT", plate, "TOPRIGHT", 0, -notch)
-    edge.right:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", 0, notch)
+    edge.right:SetPoint("TOPRIGHT", plate, "TOPRIGHT", -inset, -notch - inset)
+    edge.right:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", -inset, notch + inset)
     edge.right:SetWidth(1)
 
     for _, texture in pairs(edge) do
-        texture:SetVertexColor(er, eg, eb, 1)
+        texture:SetVertexColor(er, eg, eb, borderAlpha)
         if showBorder then texture:Show() else texture:Hide() end
     end
 
@@ -177,8 +212,8 @@ function ns.StylePlateChrome(plate)
             local pixel = pixels[step]
             pixel:ClearAllPoints()
             if showBorder and step <= notch then
-                local along = step - 1
-                local away  = notch - step
+                local along = step - 1 + inset
+                local away  = notch - step + inset
                 if corner == "TOPLEFT" then
                     pixel:SetPoint("TOPLEFT", plate, "TOPLEFT", along, -away)
                 elseif corner == "TOPRIGHT" then
@@ -188,7 +223,7 @@ function ns.StylePlateChrome(plate)
                 else
                     pixel:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", -along, away)
                 end
-                pixel:SetVertexColor(er, eg, eb, 1)
+                pixel:SetVertexColor(er, eg, eb, borderAlpha)
                 pixel:Show()
             else
                 pixel:Hide()
@@ -196,30 +231,41 @@ function ns.StylePlateChrome(plate)
         end
     end
 
-    -- Contour, one pixel outside the border.
+    -- Contour. One pixel outside the plate for a hairline; on the plate's own
+    -- outer pixel for an inset, which is the row the border just moved off.
     local shadow = plate.shadow
     shadow.top:ClearAllPoints()
-    shadow.top:SetPoint("BOTTOMLEFT", plate, "TOPLEFT", notch, 0)
-    shadow.top:SetPoint("BOTTOMRIGHT", plate, "TOPRIGHT", -notch, 0)
-    shadow.top:SetHeight(1)
-
     shadow.bottom:ClearAllPoints()
-    shadow.bottom:SetPoint("TOPLEFT", plate, "BOTTOMLEFT", notch, 0)
-    shadow.bottom:SetPoint("TOPRIGHT", plate, "BOTTOMRIGHT", -notch, 0)
-    shadow.bottom:SetHeight(1)
-
     shadow.left:ClearAllPoints()
-    shadow.left:SetPoint("TOPRIGHT", plate, "TOPLEFT", 0, -notch)
-    shadow.left:SetPoint("BOTTOMRIGHT", plate, "BOTTOMLEFT", 0, notch)
-    shadow.left:SetWidth(1)
-
     shadow.right:ClearAllPoints()
-    shadow.right:SetPoint("TOPLEFT", plate, "TOPRIGHT", 0, -notch)
-    shadow.right:SetPoint("BOTTOMLEFT", plate, "BOTTOMRIGHT", 0, notch)
+
+    if inset > 0 then
+        shadow.top:SetPoint("TOPLEFT", plate, "TOPLEFT", notch, 0)
+        shadow.top:SetPoint("TOPRIGHT", plate, "TOPRIGHT", -notch, 0)
+        shadow.bottom:SetPoint("BOTTOMLEFT", plate, "BOTTOMLEFT", notch, 0)
+        shadow.bottom:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", -notch, 0)
+        shadow.left:SetPoint("TOPLEFT", plate, "TOPLEFT", 0, -notch)
+        shadow.left:SetPoint("BOTTOMLEFT", plate, "BOTTOMLEFT", 0, notch)
+        shadow.right:SetPoint("TOPRIGHT", plate, "TOPRIGHT", 0, -notch)
+        shadow.right:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", 0, notch)
+    else
+        shadow.top:SetPoint("BOTTOMLEFT", plate, "TOPLEFT", notch, 0)
+        shadow.top:SetPoint("BOTTOMRIGHT", plate, "TOPRIGHT", -notch, 0)
+        shadow.bottom:SetPoint("TOPLEFT", plate, "BOTTOMLEFT", notch, 0)
+        shadow.bottom:SetPoint("TOPRIGHT", plate, "BOTTOMRIGHT", -notch, 0)
+        shadow.left:SetPoint("TOPRIGHT", plate, "TOPLEFT", 0, -notch)
+        shadow.left:SetPoint("BOTTOMRIGHT", plate, "BOTTOMLEFT", 0, notch)
+        shadow.right:SetPoint("TOPLEFT", plate, "TOPRIGHT", 0, -notch)
+        shadow.right:SetPoint("BOTTOMLEFT", plate, "BOTTOMRIGHT", 0, notch)
+    end
+
+    shadow.top:SetHeight(1)
+    shadow.bottom:SetHeight(1)
+    shadow.left:SetWidth(1)
     shadow.right:SetWidth(1)
 
     for _, texture in pairs(shadow) do
-        texture:SetVertexColor(0, 0, 0, showBorder and 0.45 or 0)
+        texture:SetVertexColor(0, 0, 0, showBorder and shadowAlpha or 0)
     end
 end
 
