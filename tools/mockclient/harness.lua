@@ -167,6 +167,13 @@ end
 function methods:SetText(t) self.__text = t end
 function methods:GetText() return self.__text end
 function methods:SetTextColor(r, g, b, a) self.__textColor = { r, g, b, a } end
+function methods:SetShadowColor(r, g, b, a) self.__shadowColor = { r, g, b, a } end
+function methods:SetShadowOffset(x, y) self.__shadowOffset = { x, y } end
+function methods:GetShadowColor()
+    local c = self.__shadowColor
+    if not c then return nil end
+    return c[1], c[2], c[3], c[4]
+end
 function methods:GetTextColor()
     local c = self.__textColor or { 1, 1, 1, 1 }
     return c[1], c[2], c[3], c[4]
@@ -453,6 +460,7 @@ WatchFrame.__level = 2
 WatchFrame.__rect = { left = 1000, right = 1204, top = 800, bottom = 300 }
 
 local trackerLines = {}
+local trackerPois  = {}
 local collapseBtn = new("Button", MINIMAL and nil or "WatchFrameCollapseExpandButton", WatchFrame)
 WatchFrameCollapseExpandButton = collapseBtn
 collapseBtn.__level = 3
@@ -538,7 +546,14 @@ local lineDefs = {
     { text = "Wolves at the Gate",        dash = nil,  top = 770, left = 1010 },
     { text = "Dire wolves slain: 6/8",    dash = "- ", top = 754, left = 1020 },
     { text = "Alpha wolf slain: 0/1",     dash = "- ", top = 740, left = 1020 },
-    { text = "Supplies for the Front",    dash = nil,  top = 720, left = 1010 },
+    -- The middle quest is the one being pointed at, so the arrow has a title
+    -- above and below it to be put on the wrong row of.
+    -- `right` because this is the one title measured against: the mock gives
+    -- every line a fixed 180px rect, and an arrow placed after a title that
+    -- wide is always clamped to the panel edge, which tests the clamp and
+    -- nothing else. Five pixels a character is the harness's own text metric.
+    { text = "Supplies for the Front",    dash = nil,  top = 720, left = 1010,
+      poi = true, right = 1010 + 22 * 5 },
     { text = "Iron ore collected: 12/12", dash = "- ", top = 704, left = 1020 },
     { text = "A Cure for the Ailing",     dash = nil,  top = 684, left = 1010 },
     { text = "Deliver the tonic to Marla", dash = "- ", top = 668, left = 1020 },
@@ -570,7 +585,7 @@ for i, def in ipairs(lineDefs) do
 
     local text = line:CreateFontString(nil, "ARTWORK")
     text:SetText(def.text)
-    text.__rect = { left = def.left + (def.dash and 10 or 0), right = 1190,
+    text.__rect = { left = def.left + (def.dash and 10 or 0), right = def.right or 1190,
                     top = def.top, bottom = def.top - 12 }
     text.__font = { "Fonts\\FRIZQT__.TTF", def.dash and 12 or 13, "" }
 
@@ -578,6 +593,24 @@ for i, def in ipairs(lineDefs) do
     -- fallback resolver in Lines.lua is for.
     if not MINIMAL then line.dash, line.text = dash, text end
     line.__dash, line.__text = dash, text
+
+    -- The quest POI button - the directional arrow that says which quest you
+    -- are being pointed at. Named, because the name is the only thing that
+    -- separates it from the turn-in question mark: same size, same row, both
+    -- hanging off the left. It is parented to the *line container* rather than
+    -- the line on this client, which is the level two earlier attempts at the
+    -- tuck walk missed entirely.
+    if def.poi then
+        -- Anchored rather than given a fixed rect, because where it ends up is
+        -- the whole point. A fixed __rect would have made it unmovable and the
+        -- checks below would have passed on an arrow nothing had touched.
+        local poi = new("Button", "poiWatchFrameLines" .. i .. "_1", WatchFrameLines)
+        poi:SetWidth(16)
+        poi:SetHeight(16)
+        poi:SetPoint("TOPRIGHT", line, "TOPLEFT", -28, 0)
+        line.__poi = poi
+        trackerPois[i] = poi
+    end
 
     trackerLines[i] = line
 end
@@ -2609,6 +2642,64 @@ ns.Options.Hide()
 check(not ns.Options.IsShown(), "Save & close should hide the window")
 
 --------------------------------------------------------------------------------
+-- The quest POI arrow goes beside its own title
+--
+-- The turn-in question mark and the POI arrow both hang off the left of a quest
+-- line and are the same size on the same row, so the left-margin tuck put them
+-- in the same column - which says nothing about which quest is being pointed
+-- at, and stacks them when both are up. The arrow goes to the right of its own
+-- title instead.
+--------------------------------------------------------------------------------
+
+do
+    local poi = trackerPois[4]
+    check(poi ~= nil, "the mock should have a POI arrow on the second quest")
+
+    local title = trackerLines[4].__text
+    ns.Skin.Refresh("poi placement")
+    tick(); tick()
+
+    check(poi:GetLeft() >= plate:GetLeft() and poi:GetRight() <= plate:GetRight(),
+        "the arrow belongs inside the panel, got left " .. tostring(poi:GetLeft())
+        .. " against panel " .. tostring(plate:GetLeft()) .. ".." .. tostring(plate:GetRight()))
+
+    check(poi:GetLeft() >= title:GetRight(),
+        "the arrow should sit after the end of the quest name, got "
+        .. tostring(poi:GetLeft()) .. " against a title ending at " .. tostring(title:GetRight()))
+
+    -- On its own quest's row, not the one above or below it.
+    local top, bottom = poi:GetTop(), poi:GetBottom()
+    check(top > title:GetBottom() and bottom < title:GetTop(),
+        "the arrow should be on its own title's row")
+
+    local otherTitle = trackerLines[1].__text
+    check(not (top > otherTitle:GetBottom() and bottom < otherTitle:GetTop()),
+        "...and not on another quest's row")
+
+    -- It must not land in the left margin with the question mark.
+    check(poi:GetLeft() > plate:GetLeft() + 40,
+        "the arrow must not be tucked into the left margin, got "
+        .. tostring(poi:GetLeft() - plate:GetLeft()) .. " in from the panel")
+
+    -- Re-anchored every pass rather than settling, so a title that changes
+    -- length does not leave it behind. Idempotent: a pass that changes nothing
+    -- moves nothing.
+    local settled = poi:GetLeft()
+    ns.Skin.Refresh("poi second pass")
+    tick(); tick()
+    check(math.abs(poi:GetLeft() - settled) < 0.01,
+        "a second pass must not move it again, got " .. tostring(poi:GetLeft()))
+
+    -- Turning the skin off puts it back where the tracker had it.
+    local before = poi:GetLeft()
+    ns.Skin.SetEnabled(false)
+    tick(); tick()
+    check(poi:GetLeft() ~= before, "disabling should restore the arrow's own anchor")
+    ns.Skin.SetEnabled(true)
+    tick(); tick(); tick()
+end
+
+--------------------------------------------------------------------------------
 -- Scaling a tracker that another addon has docked into a holder
 --
 -- The bug this exists for: "quest tracker scale" slid the tracker sideways
@@ -2669,6 +2760,132 @@ do
     ns.SetOwnership(realOwnership or "auto", "watch")
     ns.Skin.Refresh("holder check finished")
     tick(); tick()
+end
+
+--------------------------------------------------------------------------------
+-- Unlocking during combat
+--
+-- The lock used to push its whole job through ns.RunWhenSafe, so unlocking mid
+-- fight did nothing until the fight was over - and a fight is exactly when you
+-- notice the tracker is in the way. Dragging itself has never been the problem;
+-- only EnableMouse is refused under lockdown, and locking no longer takes the
+-- mouse away, so there is normally nothing left to defer.
+--------------------------------------------------------------------------------
+
+do
+    local mover = ns.GetActiveMover("watch")
+
+    ns.SetLocked(false)
+    tick()
+    check(mover:IsMouseEnabled(), "unlocking out of combat should give the frame the mouse")
+
+    ns.SetLocked(true)
+    tick()
+    check(mover:IsMouseEnabled(),
+        "locking must leave the mouse on - taking it away is what made unlocking in combat wait")
+
+    combat = true
+    local before = #log
+    ns.SetLocked(false)
+    tick()
+
+    check(not ns.IsLocked(), "the flag should flip in combat")
+    check(mover:IsMouseEnabled(), "and the frame should be draggable straight away")
+
+    local deferred = false
+    for i = before + 1, #log do
+        if string.find(log[i], "leave combat", 1, true) then deferred = true end
+    end
+    check(not deferred,
+        "unlocking in combat should not warn about waiting; nothing needed deferring")
+
+    -- A drag still has to be refused while locked, whatever the mouse state is:
+    -- the lock is a flag heroPanel reads, not frame state it rewrites.
+    ns.SetLocked(true)
+    local start = mover:GetScript("OnDragStart")
+    check(start ~= nil, "the mover should have a drag handler")
+    if start then
+        local ok = pcall(start, mover)
+        check(ok, "a drag attempt while locked must not error")
+        check(ns.trackers.watch.movingFrame == nil, "a locked tracker must not start moving")
+    end
+
+    ns.SetLocked(false)
+    if start then
+        pcall(start, mover)
+        check(ns.trackers.watch.movingFrame ~= nil,
+            "an unlocked tracker should start moving, in combat as much as out of it")
+        local stop = mover:GetScript("OnDragStop")
+        if stop then pcall(stop, mover) end
+    end
+
+    combat = false
+    fire("PLAYER_REGEN_ENABLED")
+    ns.SetLocked(true)
+    tick(); tick()
+end
+
+--------------------------------------------------------------------------------
+-- Transparent border
+--
+-- Not the same as border style None: None takes the drop contour with it, this
+-- keeps it, so the panel still lifts off a bright background with no line drawn
+-- around it.
+--------------------------------------------------------------------------------
+
+do
+    ns.db.border.alpha = 1
+    ns.Skin.Restyle()
+    local opaque = HeroPanelWatchPlate.edge.top.__color
+    check(opaque and opaque[4] == 1, "a normal border draws at full alpha")
+
+    ns.db.border.alpha = 0
+    ns.Skin.Restyle()
+    local clear = HeroPanelWatchPlate.edge.top.__color
+    check(clear and clear[4] == 0,
+        "a transparent border should draw at zero alpha, got " .. tostring(clear and clear[4]))
+    check(HeroPanelWatchPlate.edge.top:IsShown(),
+        "...by alpha, not by hiding it - that is what border style None is for")
+
+    local contour = HeroPanelWatchPlate.shadow.top.__color
+    check(contour and contour[4] > 0,
+        "the drop contour should survive a transparent border, got " .. tostring(contour and contour[4]))
+
+    ns.db.border.style = "none"
+    ns.db.border.alpha = 1
+    ns.Skin.Restyle()
+    local noneContour = HeroPanelWatchPlate.shadow.top.__color
+    check(noneContour and noneContour[4] == 0,
+        "border style None should take the contour with it - that is the difference")
+
+    ns.db.border.style = ns.defaults.border.style
+    ns.db.border.alpha = ns.defaults.border.alpha
+    ns.Skin.Restyle()
+end
+
+--------------------------------------------------------------------------------
+-- The header row says QUESTS
+--------------------------------------------------------------------------------
+
+do
+    local labels = {}
+    ns.WalkFrameTree(HeroPanelWatchPlate, function(object, info)
+        if info.kind == "region" and object.GetText then
+            local text = object:GetText()
+            if text then labels[text] = object end
+        end
+    end, { maxDepth = 2 })
+
+    check(labels["QUESTS"], "the header should be labelled QUESTS")
+    check(not labels["OBJECTIVES"], "...and not OBJECTIVES, which named the lines under it")
+
+    -- Both header strings get a shadow, because the panel's opacity is the
+    -- player's to set and colour alone cannot hold text over the world.
+    local questsLabel = labels["QUESTS"]
+    if questsLabel and questsLabel.GetShadowColor then
+        local _, _, _, a = questsLabel:GetShadowColor()
+        check(a and a > 0, "the header label needs a shadow to read on a transparent panel")
+    end
 end
 
 --------------------------------------------------------------------------------

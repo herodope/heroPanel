@@ -77,7 +77,9 @@ with no reload:
 
 - [ ] Background colour swatches
 - [ ] Background opacity slider
-- [ ] Border colour swatches
+- [ ] Border colour swatches, including **Transparent** — the line disappears
+      but the panel keeps its drop contour, which is what separates it from
+      border style None
 - [ ] Border style — Hairline, then **Inset** (the line should move a pixel in
       with a dark row outside it), then None (no edge and no contour)
 - [ ] Corner radius slider — the chamfer steps at 4, 8 and 12
@@ -137,11 +139,27 @@ store when the window opens.
 - [ ] The chat line says positions were cleared; `/reload` puts the frames back
       where the game wants them
 
+## 7b. Header and line art
+
+- [ ] The header reads **QUESTS**, not OBJECTIVES
+- [ ] The label and the count are legible with background opacity turned down
+      over a bright zone — both are brightened and carry a shadow
+- [ ] The lock glyph and the collapse caret are visibly larger (3px each)
+- [ ] The turn-in question mark still sits in the left margin beside its title
+- [ ] The **POI arrow** sits to the *right* of its quest's name, on that quest's
+      row, and does not stack with the question mark
+- [ ] A quest with a long name does not push the arrow out of the panel
+- [ ] `/hp skin off` puts both back where the tracker had them
+
 ## 8. Combat
 
 With both trackers visible and quests tracked:
 
 - [ ] Pull something. No error on entering combat
+- [ ] **Unlock mid-fight and drag the tracker.** It should move straight away,
+      with no "applies when you leave combat" message. Note the trade: once the
+      tracker has been unlocked in a session it keeps the mouse, so you can no
+      longer click through its rectangle to target something behind it
 - [ ] Open `/hp` in combat and change a colour, a radius and a scale
 - [ ] Leave combat. The scale change applies on the way out — that one is
       deferred by `ns.RunWhenSafe`, the rest are not

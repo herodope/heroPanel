@@ -124,7 +124,7 @@ function ns.StylePlateChrome(plate, style)
     local bgColor     = (style and style.bgColor)     or db.bg.color
     local bgOpacity   = (style and style.bgOpacity)   or db.bg.opacity
     local borderColor = (style and style.borderColor) or db.border.color
-    local borderAlpha = (style and style.borderAlpha) or 1
+    local borderAlpha = (style and style.borderAlpha) or db.border.alpha or 1
     local borderStyle = (style and style.borderStyle) or db.border.style or "hairline"
     local radius      = (style and style.radius)      or db.radius
     local shadowAlpha = (style and style.shadowAlpha) or 0.45

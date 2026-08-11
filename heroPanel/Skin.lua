@@ -2,7 +2,7 @@
     heroPanel - Skin.lua
 
     The panel behind the objective tracker: background plate, hairline border,
-    approximated corner radius, and the header row (lock toggle, OBJECTIVES
+    approximated corner radius, and the header row (lock toggle, QUESTS
     label, tracked-quest badge, collapse caret).
 
     Everything drawn here belongs to heroPanel. WatchFrame's own geometry is
@@ -43,10 +43,10 @@ local PAD_RIGHT       = 14
 local PAD_BOTTOM      = 13
 local HEADER_PAD_X    = 13
 local DIVIDER_FADE    = 24    -- the divider fades out over this much at each end
-local ICON_SIZE       = 12
+local ICON_SIZE       = 15   -- lock glyph; three points over the design's 12
 -- The caret is a chevron: wide and shallow, so it needs a little more box than
 -- a lock to carry the same weight on screen - but only a little.
-local CARET_SIZE      = 13
+local CARET_SIZE      = 16   -- collapse chevron, kept a point over the lock
 local BADGE_HEIGHT    = 14
 local BADGE_PAD_X     = 6
 local HOVER_INTERVAL  = 0.1
@@ -154,7 +154,10 @@ local function BuildPlate(watch)
     header.lockIcon:SetPoint("CENTER")
 
     header.label     = NewFontString(plate)
-    header.label:SetText("OBJECTIVES")
+    -- "QUESTS", not "OBJECTIVES". The row counts quests and the lines under it
+    -- are the objectives, so the old label named the wrong half of what it sits
+    -- over.
+    header.label:SetText("QUESTS")
 
     header.badgeFill = NewTexture(plate, "BORDER")
     header.badgeFill:SetHeight(BADGE_HEIGHT)
@@ -442,15 +445,24 @@ local function StylePlate()
     header.lockIcon:SetColor(ir, ig, ib, 1)
     header.caret:SetColor(ir, ig, ib, 1)
 
+    -- The header sits over whatever the world is doing behind a panel the
+    -- player can make transparent, so it is brightened and given a shadow.
+    -- Colour alone is not enough: over a lit desert the old #9AA0B6 label
+    -- disappeared whatever it was set to, and a one-pixel black shadow is what
+    -- makes text hold against a background heroPanel does not control.
     local lr, lg, lb = ns.HexToRGB(ns.PALETTE.headerLabel)
     header.label:SetFont(ns.GetFontFile(), ns.GetFontSize(-0.5, "watch"))
     header.label:SetTextColor(lr, lg, lb, 1)
+    header.label:SetShadowColor(0, 0, 0, 0.9)
+    header.label:SetShadowOffset(1, -1)
     header.label:ClearAllPoints()
     header.label:SetPoint("LEFT", header.lock, "RIGHT", 8, 0)
 
-    local mr, mg, mb = ns.HexToRGB(ns.PALETTE.muted)
+    local mr, mg, mb = ns.HexToRGB(ns.PALETTE.headerCount)
     header.badgeText:SetFont(ns.GetFontFile(), ns.GetFontSize(-2.5, "watch"))
     header.badgeText:SetTextColor(mr, mg, mb, 1)
+    header.badgeText:SetShadowColor(0, 0, 0, 0.9)
+    header.badgeText:SetShadowOffset(1, -1)
     header.badgeText:ClearAllPoints()
     header.badgeText:SetPoint("LEFT", header.label, "RIGHT", 8 + BADGE_PAD_X, 0)
 

@@ -99,6 +99,12 @@ ns.defaults = {
 
     border = {
         color = "#33364A",
+        -- Separate from the style. "none" removes the edge *and* the contour
+        -- under it, because a style of none means no edge at all; alpha 0 keeps
+        -- the contour, so the panel still lifts off a bright background while
+        -- the coloured line itself is invisible. They read differently on
+        -- screen and the options window offers both.
+        alpha = 1.0,
         style = "hairline",
     },
 
@@ -171,8 +177,15 @@ ns.defaults = {
 --------------------------------------------------------------------------------
 
 ns.PALETTE = {
-    headerLabel = "#9AA0B6",   -- "OBJECTIVES"
-    icon        = "#75798C",   -- lock, caret
+    -- The header row reads over whatever the world is doing behind it, because
+    -- the panel's opacity is the player's to set and the design's own values
+    -- were picked against a solid #14161F. These two are lifted well above the
+    -- design's #9AA0B6 and #8B8FA3, and Skin.lua gives both a black shadow -
+    -- colour on its own cannot hold text against a background heroPanel does
+    -- not control.
+    headerLabel = "#DDE1F0",   -- "QUESTS"
+    headerCount = "#F3F5FE",   -- the number beside it
+    icon        = "#9AA0B6",   -- lock, caret - a step up from the design's #75798C
     muted       = "#8B8FA3",   -- count badge, leading dash
     count       = "#E9E9ED",   -- objective counters
     accent      = "#9184D9",   -- hover tint, left strip

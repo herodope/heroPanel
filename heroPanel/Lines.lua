@@ -420,6 +420,101 @@ local function TuckIntoPanel(object, plate)
     return "moved"
 end
 
+--------------------------------------------------------------------------------
+-- The quest POI button
+--
+-- The tracker hangs two different things off the left of a quest line, and they
+-- want opposite treatment.
+--
+--   * The turn-in question mark says "this quest is ready to hand in". It is a
+--     state marker, it belongs beside the title, and the panel's left margin is
+--     widened to hold it.
+--   * The POI button - poiWatchFrameLines<n>_<m> on this client - is the
+--     directional arrow that says "this is the quest you are being pointed at".
+--     Tucked into the same left margin it lands on top of the question mark and
+--     says nothing about which quest it belongs to, because both quests' art
+--     ends up in the same column.
+--
+-- So the arrow goes to the right of its own quest's title instead, where it
+-- reads as a marker on that line rather than as a second icon in a stack.
+--
+-- Unlike the left-margin tuck this one re-anchors on every pass rather than
+-- settling: it is positioned from the title's right edge, and a title whose
+-- text changes length would otherwise leave the arrow behind. Re-anchoring is
+-- idempotent, so a pass that changes nothing moves nothing.
+--------------------------------------------------------------------------------
+
+local POI_GAP = 5   -- between the end of the title and the arrow
+
+-- Named rather than measured. The name is the only thing that separates the
+-- arrow from the question mark: they are the same size, on the same row, and
+-- both hang off the left. A client that names it something else keeps the old
+-- behaviour - the arrow tucks into the left margin as before - rather than
+-- having heroPanel guess from geometry and get the two the wrong way round.
+local function IsQuestPoi(object)
+    if not object or type(object.GetName) ~= "function" then return false end
+    local ok, name = pcall(object.GetName, object)
+    if not ok or type(name) ~= "string" then return false end
+    return string.find(string.lower(name), "poi", 1, true) == 1
+end
+
+-- The title whose row this object sits on, by vertical overlap in screen
+-- pixels. blocks is built by Apply before the tuck walk runs, and its first
+-- line is always the title.
+local function TitleOnRow(top, bottom)
+    for i = 1, #blocks do
+        local line  = blocks[i].lines and blocks[i].lines[1]
+        local label = line and line.label
+        if label and label.GetLeft then
+            local _, labelRight, labelTop, labelBottom = ScreenRect(label)
+            if labelTop and top > labelBottom and bottom < labelTop then
+                return labelRight, labelTop, labelBottom
+            end
+        end
+    end
+    return nil
+end
+
+local function PlaceBesideTitle(object, plate)
+    local left, right, top, bottom, scale = ScreenRect(object)
+    local panelLeft, panelRight, panelTop, _, panelScale = ScreenRect(plate)
+    if not (left and panelLeft) then return "unmeasured" end
+
+    local width  = (right - left) / scale
+    local height = (top - bottom) / scale
+    if width <= 0 or height <= 0 then return "empty" end
+    if width > ICON_MAX or height > ICON_MAX then
+        return string.format("too big %.0fx%.0f", width, height)
+    end
+
+    local labelRight, labelTop, labelBottom = TitleOnRow(top, bottom)
+    if not labelRight then return "no title on this row" end
+
+    if not SaveGeometry(object) then return "no anchor to restore" end
+
+    -- Size before anchors: something anchored by two corners loses its size the
+    -- moment its points are cleared, and this is about to be given one.
+    pcall(object.SetWidth, object, width)
+    pcall(object.SetHeight, object, height)
+
+    -- Just past the end of the title, and never past the panel's inner edge -
+    -- a long quest name would otherwise push the arrow out of the panel, which
+    -- is the problem this is meant to fix rather than move.
+    local targetLeft = labelRight + POI_GAP * panelScale
+    local maxLeft    = panelRight - ICON_MARGIN * panelScale - width * scale
+    if targetLeft > maxLeft then targetLeft = maxLeft end
+
+    -- Centred on the title rather than left at its own height, so it lines up
+    -- with the text it is marking whatever the tracker did with it.
+    local targetTop = (labelTop + labelBottom) / 2 + (height * scale) / 2
+
+    object:ClearAllPoints()
+    object:SetPoint("TOPLEFT", plate, "TOPLEFT",
+        (targetLeft - panelLeft) / scale,
+        (targetTop - panelTop) / scale)
+    return "beside title"
+end
+
 -- Walks the tracker's whole subtree rather than named levels of it.
 --
 -- Two narrower versions of this missed the icon twice. It is not a region of
@@ -443,6 +538,11 @@ local function TuckStrayArt(watch)
 
     ns.WalkFrameTree(watch, function(object, info)
         if info.objectType == "FontString" then return end
+        if IsQuestPoi(object) then
+            PlaceBesideTitle(object, plate)
+            -- Do not descend: its own art is anchored to it and comes along.
+            return false
+        end
         TuckIntoPanel(object, plate)
     end, { maxDepth = TUCK_DEPTH, includeRegions = true })
 end

@@ -75,7 +75,7 @@ lines recoloured:
 
 * **Panel** — solid `bg.color` at `bg.opacity`, a 1px `border.color` hairline,
   an approximated `radius`, and a dark contour for elevation.
-* **Header** — a lock toggle at the left, an `OBJECTIVES` label, a badge with
+* **Header** — a lock toggle at the left, a `QUESTS` label, a badge with
   the number of tracked quests, and a caret at the right, centred in the row and
   mirroring the lock. The caret is placed against the panel rather than over the
   tracker's own collapse button: that button sits wherever the tracker keeps it,
@@ -234,6 +234,45 @@ Two things `Media.lua` is careful about:
 
 The dropdown draws each row in its own face. A font list you cannot see is a
 list of names, and picking a face by name is guesswork.
+
+### Reading over the world
+
+The panel's opacity is the player's to set, so the header can end up over
+whatever the world is doing rather than over a solid `#14161F`. The design's
+`#9AA0B6` label and `#8B8FA3` count both disappear against a lit background, so
+heroPanel lifts them (`#DDE1F0` and `#F3F5FE`) **and gives both a one-pixel
+black shadow**. Colour alone does not do it; a shadow is what makes text hold
+against a background heroPanel does not control.
+
+The border has an `alpha` of its own, separate from its style, and the options
+window's border row offers **Transparent** as a fifth swatch. That is not the
+same as border style **None**: `None` removes the edge *and* the drop contour
+under it, while `alpha = 0` keeps the contour, so the panel still lifts off a
+bright background with no line drawn around it.
+
+### The two things hanging off a quest line
+
+The tracker anchors two different objects to the *left* of a quest line, outside
+the panel, and they want opposite treatment:
+
+* The **turn-in question mark** is a state marker — "this quest is ready to hand
+  in". It belongs beside the title, and `PAD_LEFT` is widened to hold it.
+* The **POI button** (`poiWatchFrameLines<n>_<m>`) is the directional arrow —
+  "this is the quest you are being pointed at". Tucked into the same left margin
+  it lands on top of the question mark and says nothing about *which* quest it
+  belongs to, because every quest's art ends up in the same column. It goes to
+  the right of its own title instead, clamped so a long quest name cannot push
+  it back out of the panel.
+
+They are told apart **by name**, not by geometry: they are the same size, on the
+same row, and both hang off the left, so there is nothing to measure. A client
+that names the arrow something else keeps the old behaviour rather than having
+heroPanel guess and get the two the wrong way round.
+
+Unlike the left-margin tuck, the arrow is re-anchored on every pass rather than
+settling — it is placed from the title's right edge, and a title whose text
+changes length would otherwise leave it behind. Re-anchoring is idempotent, so a
+pass that changes nothing moves nothing.
 
 ## Compatibility
 
@@ -543,6 +582,23 @@ tools/
   client reports texture load failures at all, because believing a client that
   always answers `nil` would reject every path.
 
+* **Locking no longer takes the mouse away.** It used to, and that is what made
+  unlocking during a fight do nothing until the fight was over: the mouse has to
+  be on before a frame can be dragged, `EnableMouse` is refused under lockdown,
+  and a tracker locked out of combat had already had it taken. Locking is the
+  state you are in when a fight starts, so that was the case every time. The
+  drag itself was never the problem — `StartMoving` is not refused. The cost is
+  that the tracker's rectangle stops being click-through once it has been
+  unlocked in a session; that is the trade against being able to move it when it
+  is in the way. `SetMovable` and `RegisterForDrag` moved to hook time for the
+  same reason: whether a tracker can be dragged is a flag `OnDragStart` reads,
+  not frame state to rewrite mid-combat.
+* **Rounded corners are drawn two different ways, on purpose.** The plate's
+  chamfer is three textures at any size, which is what a 400px panel wants. On a
+  22px toggle it reads as a box with its corners sawn off, so the switch is
+  drawn as one-pixel horizontal bands inset by the corner circle's own geometry
+  — a real curve, at a cost of one texture per pixel of height. That is nothing
+  for two switches and absurd for a panel.
 * **Scale goes to the tracker; position goes to the mover.** They used to be the
   same frame, which made "scale the quest tracker" slide it sideways instead of
   resizing it. A holder is a frame the tracker is anchored *to*, not one it is

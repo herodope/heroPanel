@@ -62,8 +62,9 @@ local MAX_HEIGHT    = 768
 local SWATCH_SIZE   = 22
 local SWATCH_GAP    = 6
 local TILE_SIZE     = 34
-local TOGGLE_WIDTH  = 40
-local TOGGLE_HEIGHT = 20
+local TOGGLE_WIDTH  = 44
+local TOGGLE_HEIGHT = 22
+local KNOB_SIZE     = 18
 
 local DROPDOWN_ROWS   = 10
 local DROPDOWN_ROW_H  = 20
@@ -92,8 +93,20 @@ local LOCK_GLYPH  = "#F5F4FF"
 -- Swatch choices. The background set is the design's; the border set is the
 -- configured default plus a darker, an accent and a gold, which is the range
 -- the panel is actually legible across.
-local BG_SWATCHES     = { "#14161F", "#0D0E14", "#1C1F2E", "#232532" }
-local BORDER_SWATCHES = { "#33364A", "#1F2130", "#9184D9", "#E7C67C" }
+local BG_SWATCHES = {
+    { colour = "#14161F" }, { colour = "#0D0E14" },
+    { colour = "#1C1F2E" }, { colour = "#232532" },
+}
+
+-- The last one is not a colour. Transparent zeroes border.alpha and leaves the
+-- style alone, which is not the same as border style None: None takes the drop
+-- contour with it, this keeps it, so the panel still lifts off a bright
+-- background with no line drawn around it.
+local BORDER_SWATCHES = {
+    { colour = "#33364A" }, { colour = "#1F2130" },
+    { colour = "#9184D9" }, { colour = "#E7C67C" },
+    { transparent = true },
+}
 
 local BORDER_STYLES = {
     { key = "hairline", label = "Hairline" },
@@ -182,6 +195,63 @@ local function Chrome(frame, style)
     return frame
 end
 
+-- A rounded rectangle drawn as one-pixel horizontal bands, each inset by the
+-- corner circle's own geometry.
+--
+-- The plate's chamfer is three steps, which reads as a soft corner on a 300px
+-- panel and as a box with its corners sawn off on a 22px switch - the toggle
+-- came out looking like a white rectangle inside a purple one. A band per pixel
+-- of height is a genuine curve and costs twenty-odd textures at this size,
+-- which is nothing for the two switches that need it. The plate keeps the
+-- chamfer: it is drawn from three textures at any size, and a 400px panel does
+-- not want four hundred.
+local function NewRoundedBox(frame, layer)
+    local box = { frame = frame, bands = {}, layer = layer or "ARTWORK" }
+
+    function box:Layout(width, height, radius)
+        width, height = math.floor(width), math.floor(height)
+        radius = math.min(radius or (height / 2), height / 2, width / 2)
+
+        for row = 1, height do
+            local band = self.bands[row]
+            if not band then
+                band = NewTexture(self.frame, self.layer)
+                self.bands[row] = band
+            end
+
+            -- How far this row's centre is into the corner arc, if at all.
+            local y, inset = row - 0.5, 0
+            local dy
+            if y < radius then
+                dy = radius - y
+            elseif y > height - radius then
+                dy = y - (height - radius)
+            end
+            if dy then
+                inset = radius - math.sqrt(math.max(0, radius * radius - dy * dy))
+            end
+
+            band:ClearAllPoints()
+            band:SetPoint("TOPLEFT", self.frame, "TOPLEFT", inset, -(row - 1))
+            band:SetWidth(math.max(1, width - inset * 2))
+            band:SetHeight(1)
+            band:Show()
+        end
+
+        for row = height + 1, #self.bands do self.bands[row]:Hide() end
+        return self
+    end
+
+    function box:SetColor(r, g, b, a)
+        for i = 1, #self.bands do
+            self.bands[i]:SetVertexColor(r, g, b, a or 1)
+        end
+        return self
+    end
+
+    return box
+end
+
 local function BoxStyle(bgColor, bgOpacity, borderColor, borderAlpha, radius)
     return {
         bgColor     = bgColor or "#000000",
@@ -222,14 +292,18 @@ local function NewToggle(parent, y, label, sublabel, get, set, padX)
 
     local track = CreateFrame("Frame", nil, button)
     track:SetAllPoints(button)
+    local trackFill = NewRoundedBox(track, "BACKGROUND")
+    trackFill:Layout(TOGGLE_WIDTH, TOGGLE_HEIGHT, TOGGLE_HEIGHT / 2)
 
     local knob = CreateFrame("Frame", nil, button)
-    knob:SetWidth(TOGGLE_HEIGHT - 4)
-    knob:SetHeight(TOGGLE_HEIGHT - 4)
+    knob:SetWidth(KNOB_SIZE)
+    knob:SetHeight(KNOB_SIZE)
     -- Stated rather than left to creation order. Two sibling frames on the same
     -- level have no defined draw order, and a knob behind its own track is a
     -- toggle that reads as a plain coloured bar in both states.
     knob:SetFrameLevel(track:GetFrameLevel() + 1)
+    local knobFill = NewRoundedBox(knob, "ARTWORK")
+    knobFill:Layout(KNOB_SIZE, KNOB_SIZE, KNOB_SIZE / 2)
 
     local title = NewText(parent, 0.5, TEXT_BRIGHT, label)
     title:SetPoint("LEFT", parent, "TOPLEFT", padX, -(y + TOGGLE_HEIGHT / 2) + (sublabel and 7 or 0))
@@ -244,8 +318,8 @@ local function NewToggle(parent, y, label, sublabel, get, set, padX)
 
     function widget:Sync()
         local on = get() and true or false
-        ns.StylePlateChrome(track, BoxStyle(on and ACCENT or "#2A2D3E", 1, nil, nil, 10))
-        ns.StylePlateChrome(knob, BoxStyle(on and "#F5F4FF" or "#8B8FA3", 1, nil, nil, 8))
+        trackFill:SetColor(ns.HexToRGB(on and ACCENT or "#2A2D3E"))
+        knobFill:SetColor(ns.HexToRGB(on and "#F5F4FF" or "#8B8FA3"))
         knob:ClearAllPoints()
         if on then
             knob:SetPoint("RIGHT", track, "RIGHT", -2, 0)
@@ -253,9 +327,6 @@ local function NewToggle(parent, y, label, sublabel, get, set, padX)
             knob:SetPoint("LEFT", track, "LEFT", 2, 0)
         end
     end
-
-    Chrome(track, BoxStyle("#2A2D3E", 1, nil, nil, 10))
-    Chrome(knob,  BoxStyle("#8B8FA3", 1, nil, nil, 8))
 
     button:SetScript("OnClick", function()
         set(not get())
@@ -343,30 +414,52 @@ end
 -- Colour swatches
 --------------------------------------------------------------------------------
 
-local function NewSwatchRow(parent, y, label, colours, get, set)
+-- entries are { colour = "#RRGGBB" } or { transparent = true }.
+--
+-- A transparent entry is not a colour, so it cannot be one more hex in the
+-- list: it is drawn as an empty outline rather than a filled square, which is
+-- also the only honest way to show "no fill" without shipping a chequerboard
+-- texture. isSelected and onSelect are passed in rather than a get/set pair on
+-- a colour, because what "selected" means differs - the border row is choosing
+-- between a colour and an alpha.
+local function NewSwatchRow(parent, y, label, entries, isSelected, onSelect)
     local title = NewText(parent, 0, TEXT_BODY, label)
     title:SetPoint("LEFT", parent, "TOPLEFT", PAD_X, -(y + SWATCH_SIZE / 2))
 
     local buttons = {}
-    for i = 1, #colours do
-        local colour = colours[i]
+    for i = 1, #entries do
+        local entry = entries[i]
         local button = CreateFrame("Button", nil, parent)
         button:SetWidth(SWATCH_SIZE)
         button:SetHeight(SWATCH_SIZE)
         button:SetPoint("TOPRIGHT", parent, "TOPRIGHT",
-            -PAD_X - (#colours - i) * (SWATCH_SIZE + SWATCH_GAP), -y)
-        Chrome(button, BoxStyle(colour, 1, "#33364A", 1, 6))
-        button.colour = colour
+            -PAD_X - (#entries - i) * (SWATCH_SIZE + SWATCH_GAP), -y)
+        Chrome(button, BoxStyle(entry.colour or "#000000", entry.transparent and 0 or 1,
+            "#33364A", 1, 6))
+        button.entry  = entry
+        button.colour = entry.colour
 
         button:SetScript("OnClick", function()
-            set(colour)
+            onSelect(entry)
             for j = 1, #buttons do buttons[j]:Refresh() end
             Apply("swatch changed")
         end)
 
+        button:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine(entry.transparent and "Transparent" or entry.colour, 1, 1, 1)
+            if entry.transparent then
+                GameTooltip:AddLine("No border line. The panel keeps its drop contour, "
+                    .. "which border style None removes as well.", 0.6, 0.6, 0.7, true)
+            end
+            GameTooltip:Show()
+        end)
+        button:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
         function button:Refresh()
-            local selected = (get() == self.colour)
-            ns.StylePlateChrome(self, BoxStyle(self.colour, 1,
+            local selected = isSelected(self.entry)
+            ns.StylePlateChrome(self, BoxStyle(self.entry.colour or "#000000",
+                self.entry.transparent and 0 or 1,
                 selected and ACCENT or "#33364A", selected and 1 or 0.6, 6))
         end
 
@@ -875,8 +968,8 @@ local function Build()
     y = GroupLabel(panel, y, "Panel")
 
     y = NewSwatchRow(panel, y, "Background color", BG_SWATCHES,
-        function() return ns.db.bg.color end,
-        function(hex) ns.db.bg.color = hex end)
+        function(entry) return ns.db.bg.color == entry.colour end,
+        function(entry) ns.db.bg.color = entry.colour end)
 
     y = NewSlider(panel, y, "Background opacity", 0, 100, 5,
         function() return (ns.db.bg.opacity or 1) * 100 end,
@@ -887,8 +980,19 @@ local function Build()
         function(value) return string.format("%d%%", Int(value)) end)
 
     y = NewSwatchRow(panel, y, "Border color", BORDER_SWATCHES,
-        function() return ns.db.border.color end,
-        function(hex) ns.db.border.color = hex end)
+        function(entry)
+            local alpha = ns.db.border.alpha or 1
+            if entry.transparent then return alpha == 0 end
+            return alpha > 0 and ns.db.border.color == entry.colour
+        end,
+        function(entry)
+            if entry.transparent then
+                ns.db.border.alpha = 0
+            else
+                ns.db.border.alpha = 1
+                ns.db.border.color = entry.colour
+            end
+        end)
 
     y = NewSegmented(panel, y, "Border style", BORDER_STYLES,
         function() return ns.db.border.style end,
