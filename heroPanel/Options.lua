@@ -22,6 +22,21 @@
     Placement is deliberate too. The window is centred on UIParent in its own
     strata, well away from where either tracker defaults to, so opening the
     config never lands on top of the frames it configures.
+
+    Three groups, in this order.
+
+      Global          what would read as two addons if the two panels disagreed
+                      about it - the font family, the backdrop texture - plus
+                      this window's own text size.
+      Quest tracker   that panel's background, border and corner, and three
+                      font sizes: the header row, the quest names, and the
+                      descriptions and their counts.
+      Mythic+ tracker the same chrome controls again, one font size, and the
+                      state colours.
+
+    There are no scale sliders. Both panels carry a resize grip in their
+    bottom-right corner while the trackers are unlocked, which is the corner of
+    the thing being resized rather than a percentage to guess at.
 ----------------------------------------------------------------------------]]
 
 local ADDON_NAME, ns = ...
@@ -37,27 +52,42 @@ local PANEL_WIDTH   = 440
 local PAD_X         = 20
 local CONTENT_WIDTH = PANEL_WIDTH - PAD_X * 2
 
--- The whole window has to fit on screen without scrolling. UIParent is about
--- 768 units tall whatever the monitor is, because the client scales the UI to
--- suit, so the budget is fixed and it is not generous: laid out at the design's
--- spacing this came to 752, which fits by eight pixels a side and does not fit
--- at all once a player nudges their UI scale up. It has been tightened twice
--- now - once for the design's own spacing and again when the three per-panel
--- font scales added another hundred pixels - and lands at 684. The harness
--- fails the run if it ever goes over 768.
+-- The body scrolls.
 --
--- Eight sliders is what makes this tight. If another group of them arrives, the
--- answer is a scrolling body rather than a third round of shaving rows.
+-- It did not, and the note here used to explain how the rows had been shaved
+-- twice to keep the whole window under UIParent's 768 units. That was already
+-- the wrong shape of answer and splitting the panel and border settings per
+-- tracker settled it: the same six controls exist twice now, once for each
+-- panel, and no amount of tightening fits two of everything plus a global
+-- group into 768 units - let alone into what is left of them once a player
+-- nudges their UI scale up.
+--
+-- So the header, the enable row and the footer are fixed, and everything
+-- between them lives in a ScrollFrame. The window is sized to its content up
+-- to MAX_HEIGHT and scrolls past that, which means it is exactly as tall as it
+-- needs to be on a screen with the room and never taller than the screen has.
 local HEADER_HEIGHT = 56
 local GROUP_GAP     = 10
+local GROUP_RULE    = 16   -- space a separator rule takes, above its label
+local GROUP_LABEL_H = 26   -- and the label itself, which is set over body size
 local ROW_HEIGHT    = 28
 local SLIDER_HEIGHT = 34
 local FOOTER_HEIGHT = 44
 local ENABLE_HEIGHT = 48
 
--- The tallest the window may be. UIParent's height in UI units at the client's
--- default scale.
-local MAX_HEIGHT    = 768
+-- The scrollbar sits in the right margin, clear of the controls: they anchor
+-- PAD_X in and it is inset less than half that.
+local BAR_WIDTH     = 4
+local BAR_INSET     = 8
+
+-- The tallest the window may be, and the least body worth showing. UIParent is
+-- about 768 units tall whatever the monitor is, because the client scales the
+-- UI to suit, so this is a fixed budget rather than something to read off the
+-- screen. 660 leaves room for a UI scale a couple of notches up, which is where
+-- a full-height window got tight before. The harness fails the run if the
+-- window ever goes over 768.
+local MAX_HEIGHT    = 660
+local MIN_VIEWPORT  = 200
 
 local SWATCH_SIZE   = 22
 local SWATCH_GAP    = 6
@@ -70,7 +100,18 @@ local DROPDOWN_ROWS   = 10
 local DROPDOWN_ROW_H  = 20
 local DROPDOWN_WIDTH  = 200
 
--- The window's own colours. Design tokens, not player configuration.
+-- The window's own chrome. Everything except the background is a design token:
+-- the hairline edge, the corner and the shadow are what make this read as a
+-- dialog over the UI rather than as a third tracker, and none of them is worth
+-- a control. The background is the exception because it is the one surface a
+-- player looks at for as long as the window is open, so it comes from
+-- HEROPANEL_DB.panel.options and OptionsChrome below folds it in.
+--
+-- The reason the *rest* of it stays fixed has not changed: a config panel that
+-- restyles itself as you drag a swatch makes it impossible to see what you are
+-- setting. A background swatch escapes that because it is the window's own
+-- background and nothing else's - there is no second thing it could be
+-- confused with.
 local CHROME = {
     bgColor     = "#161826",
     bgOpacity   = 1,
@@ -81,10 +122,17 @@ local CHROME = {
     shadowAlpha = 0.55,
 }
 
+local function OptionsChrome()
+    local saved = ns.db and ns.db.panel and ns.db.panel.options
+    local style = {}
+    for key, value in pairs(CHROME) do style[key] = value end
+    if type(saved) == "table" and saved.bgColor then style.bgColor = saved.bgColor end
+    return style
+end
+
 local TEXT_BRIGHT = "#F3F5FE"
 local TEXT_BODY   = "#C2C6D8"
 local TEXT_MUTED  = "#75798C"
-local TEXT_GROUP  = "#8B8FA3"
 local GREEN       = "#79C68D"
 local ACCENT      = "#9184D9"
 local ACCENT_DEEP = "#5D5294"
@@ -98,16 +146,25 @@ local BG_SWATCHES = {
     { colour = "#1C1F2E" }, { colour = "#232532" },
 }
 
--- The last one is not a colour. Transparent zeroes border.alpha, which turns
--- off every edge heroPanel draws - the plate's four lines, the corner run, the
--- drop contour and the header's divider. It reaches the same place border style
--- None does, from the colour end rather than the style end, which is why both
--- are offered: "no border colour" and "no border" are the same thought arrived
--- at differently.
+-- The options window's own set, which has to start with its design default or
+-- nothing would read as selected the first time the window is opened.
+local OPTIONS_BG_SWATCHES = {
+    { colour = "#161826" }, { colour = "#0D0E14" },
+    { colour = "#1C1F2E" }, { colour = "#232532" },
+}
+
+-- Colours only. There was a fifth entry, "Transparent", which zeroed
+-- border.alpha and so turned off every edge heroPanel draws - and that is
+-- exactly what border style **None** already does, one row further down. Two
+-- controls reaching one outcome is not a choice, it is a question about which
+-- of them the panel is currently obeying. The style keeps the job, because
+-- "no border" belongs with the other border shapes rather than among the
+-- colours; borderAlpha stays in the store because Plate.lua reads it, and the
+-- v4 migration turns an existing alpha of 0 into style "none" so nobody who had
+-- picked Transparent loses it.
 local BORDER_SWATCHES = {
     { colour = "#33364A" }, { colour = "#1F2130" },
     { colour = "#9184D9" }, { colour = "#E7C67C" },
-    { transparent = true },
 }
 
 local BORDER_STYLES = {
@@ -270,10 +327,32 @@ end
 -- Group heading
 --------------------------------------------------------------------------------
 
-local function GroupLabel(parent, y, text)
-    local fs = NewText(parent, -3, TEXT_GROUP, string.upper(text))
+-- A group heading, optionally over a rule.
+--
+-- The rule is what makes "these settings belong to the Mythic+ panel and those
+-- ones do not" readable at a glance. A heading on its own was enough while
+-- there were two groups and no repetition; there are three now and two of them
+-- carry the same six controls, so a reader scrolling past a background swatch
+-- has to be able to tell which panel's background it is without scrolling back
+-- up to find the heading.
+local function GroupLabel(parent, y, text, rule)
+    if rule then
+        local line = NewTexture(parent, "BORDER")
+        line:SetHeight(1)
+        line:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X, -y)
+        line:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -PAD_X, -y)
+        line:SetVertexColor(ns.HexToRGB("#E9E9ED", ns.ALPHA.divider))
+        y = y + GROUP_RULE
+    end
+
+    -- A step *over* the body text rather than three points under it, and in the
+    -- accent rather than the muted grey group colour. A heading set smaller and
+    -- fainter than the rows beneath it is a heading you find by scrolling past
+    -- it, which is the wrong way round in a window whose two lower groups carry
+    -- the same six control labels as each other.
+    local fs = NewText(parent, 2, ACCENT, string.upper(text))
     fs:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X, -y)
-    return y + 16
+    return y + GROUP_LABEL_H
 end
 
 --------------------------------------------------------------------------------
@@ -347,18 +426,29 @@ end
 -- track, an accent fill up to the thumb, and the value read out on the right.
 --------------------------------------------------------------------------------
 
-local function NewSlider(parent, y, label, minValue, maxValue, step, get, set, format)
+-- sublabel is optional and costs the row fourteen more pixels. It earns them
+-- wherever a label alone cannot say which of several near-identical controls
+-- this one is: "Header font size" and "Quest name font size" are the same three
+-- words rearranged, and the panel now carries five font sizes.
+local function NewSlider(parent, y, label, minValue, maxValue, step, get, set, format, sublabel)
     local title = NewText(parent, 0, TEXT_BODY, label)
     title:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X, -y)
 
     local readout = NewText(parent, -1, ACCENT)
     readout:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -PAD_X, -y)
 
+    local trackTop = y + 18
+    if sublabel then
+        local sub = NewText(parent, -3, TEXT_MUTED, sublabel)
+        sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -2)
+        trackTop = y + 32
+    end
+
     local slider = CreateFrame("Slider", nil, parent)
     slider:SetOrientation("HORIZONTAL")
     slider:SetWidth(CONTENT_WIDTH)
     slider:SetHeight(16)
-    slider:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X, -(y + 18))
+    slider:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X, -trackTop)
     slider:SetMinMaxValues(minValue, maxValue)
     slider:SetValueStep(step)
 
@@ -409,21 +499,24 @@ local function NewSlider(parent, y, label, minValue, maxValue, step, get, set, f
     end
 
     table.insert(controls, widget)
-    return y + SLIDER_HEIGHT, widget
+    return y + SLIDER_HEIGHT + (sublabel and 14 or 0), widget
 end
 
 --------------------------------------------------------------------------------
 -- Colour swatches
 --------------------------------------------------------------------------------
 
--- entries are { colour = "#RRGGBB" } or { transparent = true }.
+-- entries are { colour = "#RRGGBB" }.
 --
--- A transparent entry is not a colour, so it cannot be one more hex in the
--- list: it is drawn as an empty outline rather than a filled square, which is
--- also the only honest way to show "no fill" without shipping a chequerboard
--- texture. isSelected and onSelect are passed in rather than a get/set pair on
--- a colour, because what "selected" means differs - the border row is choosing
--- between a colour and an alpha.
+-- There was a { transparent = true } form as well, drawn as an empty outline
+-- rather than a filled square, and the border row used it to mean "no border at
+-- all". It is gone: border style **None** says the same thing one row down, and
+-- a panel obeying two controls that reach one outcome is a panel you have to
+-- check twice.
+--
+-- isSelected and onSelect are still passed in rather than a get/set pair on a
+-- colour, because a click has to write more than the colour - the border row
+-- clears the alpha a migrated store may still be carrying.
 local function NewSwatchRow(parent, y, label, entries, isSelected, onSelect)
     local title = NewText(parent, 0, TEXT_BODY, label)
     title:SetPoint("LEFT", parent, "TOPLEFT", PAD_X, -(y + SWATCH_SIZE / 2))
@@ -436,8 +529,7 @@ local function NewSwatchRow(parent, y, label, entries, isSelected, onSelect)
         button:SetHeight(SWATCH_SIZE)
         button:SetPoint("TOPRIGHT", parent, "TOPRIGHT",
             -PAD_X - (#entries - i) * (SWATCH_SIZE + SWATCH_GAP), -y)
-        Chrome(button, BoxStyle(entry.colour or "#000000", entry.transparent and 0 or 1,
-            "#33364A", 1, 6))
+        Chrome(button, BoxStyle(entry.colour, 1, "#33364A", 1, 6))
         button.entry  = entry
         button.colour = entry.colour
 
@@ -449,20 +541,14 @@ local function NewSwatchRow(parent, y, label, entries, isSelected, onSelect)
 
         button:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:AddLine(entry.transparent and "Transparent" or entry.colour, 1, 1, 1)
-            if entry.transparent then
-                GameTooltip:AddLine("No border at all - no line, no contour and no "
-                    .. "divider under the header. The same as border style None.",
-                    0.6, 0.6, 0.7, true)
-            end
+            GameTooltip:AddLine(entry.colour, 1, 1, 1)
             GameTooltip:Show()
         end)
         button:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
         function button:Refresh()
             local selected = isSelected(self.entry)
-            ns.StylePlateChrome(self, BoxStyle(self.entry.colour or "#000000",
-                self.entry.transparent and 0 or 1,
+            ns.StylePlateChrome(self, BoxStyle(self.entry.colour, 1,
                 selected and ACCENT or "#33364A", selected and 1 or 0.6, 6))
         end
 
@@ -675,7 +761,15 @@ end
 -- names, and picking a face by name is guesswork.
 --------------------------------------------------------------------------------
 
-local function NewFontDropdown(parent, y, label, sublabel)
+-- host is the frame the open list is parented to, which is deliberately not the
+-- frame the button is on. The controls live in a ScrollFrame now, and a
+-- ScrollFrame clips its children: a list built there would be cut off at the
+-- viewport's edge, and a font list that shows four of its ten rows is not a
+-- list. Parented to the window and anchored to the button, it draws over
+-- whatever it needs to and still follows the button as the body scrolls.
+local function NewFontDropdown(parent, y, label, sublabel, host)
+    host = host or parent
+
     local title = NewText(parent, 0, TEXT_BODY, label)
     title:SetPoint("LEFT", parent, "TOPLEFT", PAD_X, -(y + 9))
 
@@ -696,14 +790,14 @@ local function NewFontDropdown(parent, y, label, sublabel)
     caret:SetShape("caretDown")
     caret:SetColor(ns.HexToRGB(TEXT_MUTED))
 
-    -- The list is a child of the window so it inherits its strata, and one
-    -- level up so it draws over the controls it covers.
-    local list = CreateFrame("Frame", nil, parent)
+    -- The list is a child of the window so it inherits its strata, and ten
+    -- levels up so it draws over the controls it covers.
+    local list = CreateFrame("Frame", nil, host)
     list:Hide()
     list:SetWidth(DROPDOWN_WIDTH)
     list:SetHeight(DROPDOWN_ROWS * DROPDOWN_ROW_H + 8)
     list:SetPoint("TOPRIGHT", button, "BOTTOMRIGHT", 0, -2)
-    list:SetFrameLevel(parent:GetFrameLevel() + 10)
+    list:SetFrameLevel(host:GetFrameLevel() + 10)
     Chrome(list, BoxStyle("#12141F", 1, "#33364A", 1, 8))
     list:EnableMouseWheel(true)
 
@@ -813,6 +907,133 @@ local function NewFontDropdown(parent, y, label, sublabel)
 end
 
 --------------------------------------------------------------------------------
+-- One panel's chrome
+--
+-- The same five controls, built twice - once against HEROPANEL_DB.panel.watch
+-- and once against .mplus. They were one set covering both panels, and one set
+-- is a compromise rather than a setting: the Mythic+ panel is a block of
+-- numbers that wants something solid behind it and the quest tracker is a
+-- column of lines a player often wants nearly transparent over the world.
+--
+-- Written as a function rather than copied, so the two groups cannot drift.
+--------------------------------------------------------------------------------
+
+-- Resolved per call rather than captured. Reset replaces the whole store, and a
+-- closure holding the old table would go on writing to a table nothing reads.
+local function PanelSaved(key)
+    if type(ns.db.panel) ~= "table" then ns.db.panel = {} end
+    if type(ns.db.panel[key]) ~= "table" then ns.db.panel[key] = {} end
+    return ns.db.panel[key]
+end
+
+local function OptionsSaved() return PanelSaved("options") end
+
+local function PanelGroup(parent, y, key)
+    local function saved() return PanelSaved(key) end
+
+    y = NewSwatchRow(parent, y, "Background color", BG_SWATCHES,
+        function(entry) return saved().bgColor == entry.colour end,
+        function(entry) saved().bgColor = entry.colour end)
+
+    y = NewSlider(parent, y, "Background opacity", 0, 100, 5,
+        function() return (saved().bgOpacity or 1) * 100 end,
+        function(value)
+            saved().bgOpacity = value / 100
+            Apply("background opacity changed")
+        end,
+        function(value) return string.format("%d%%", Int(value)) end)
+
+    y = NewSwatchRow(parent, y, "Border color", BORDER_SWATCHES,
+        function(entry) return saved().borderColor == entry.colour end,
+        function(entry)
+            saved().borderColor = entry.colour
+            -- Picking a colour means wanting to see it. A store carried across
+            -- from a build where "Transparent" set the alpha to nought would
+            -- otherwise take the new colour and go on drawing nothing.
+            saved().borderAlpha = 1
+        end)
+
+    y = NewSegmented(parent, y, "Border style", BORDER_STYLES,
+        function() return saved().borderStyle end,
+        function(style) saved().borderStyle = style end)
+
+    -- There is no corner radius control.
+    --
+    -- It went in three shapes and none of them was worth a row. There are no
+    -- rounded corners on 3.3.5a and heroPanel ships no corner art, so the
+    -- radius is approximated by stepping the plate in at each corner, and
+    -- ns.NotchFor turns any value at all into one of four chamfers - nought,
+    -- one, two or three pixels. First it was a 0-16 slider, so twelve of its
+    -- seventeen positions changed nothing; then it was four positions of four
+    -- pixels, so every step did something, and the something was a difference
+    -- of one pixel on a 300px panel that nobody could see at gameplay distance.
+    -- A control whose whole range is invisible is a control that reads as
+    -- broken however carefully its steps are chosen.
+    --
+    -- So the panels are square, HEROPANEL_DB.panel.<key>.radius is 0, and the
+    -- key stays in the store because Plate.lua reads it and real corner art
+    -- would make it mean something again.
+
+    return y
+end
+
+--------------------------------------------------------------------------------
+-- One panel's text shadow
+--
+-- A toggle and a thickness, kept together because neither is any use alone.
+-- Split out from PanelGroup rather than folded into it because these belong
+-- with that panel's *font* controls rather than with its background: what they
+-- do is make text legible, and the row above them wants to be a font size.
+--------------------------------------------------------------------------------
+
+local function ShadowGroup(parent, y, key)
+    local function saved() return PanelSaved(key) end
+
+    y = NewToggle(parent, y, "Text shadow", "black outline behind this panel's text",
+        function() return saved().textShadow end,
+        function(value)
+            saved().textShadow = value and true or false
+            Apply("text shadow toggled")
+        end)
+
+    y = NewSlider(parent, y, "Shadow thickness", 1, 3, 1,
+        function() return saved().textShadowSize or 1 end,
+        function(value)
+            saved().textShadowSize = value
+            Apply("text shadow size changed")
+        end,
+        function(value) return string.format("%d px", Int(value)) end,
+        -- Said out loud because it is not what "thickness" usually means. A
+        -- FontString has one offset copy rather than the four-way surround
+        -- ns.NewGlyph draws for a texture, so this reads as a drop shadow at 1
+        -- and closes up into something like an outline by 3.
+        "1 is a soft drop shadow, 3 is a hard outline")
+
+    return y
+end
+
+--------------------------------------------------------------------------------
+-- One text role's size
+--
+-- Absolute points, straight into HEROPANEL_DB.font.size. The old control was a
+-- percentage over a shared base, and the arithmetic was the problem: what a
+-- player set and what was drawn were never the same number, and the whole panel
+-- moved together whichever part of it they were trying to change.
+--------------------------------------------------------------------------------
+
+local function NewFontSlider(parent, y, label, role, sublabel)
+    return NewSlider(parent, y, label, ns.FONT_SIZE_MIN, ns.FONT_SIZE_MAX, 1,
+        function() return ns.GetFontSize(0, role) end,
+        function(value)
+            if type(ns.db.font.size) ~= "table" then ns.db.font.size = {} end
+            ns.db.font.size[role] = value
+            Apply("font size changed")
+        end,
+        function(value) return string.format("%d px", Int(value)) end,
+        sublabel)
+end
+
+--------------------------------------------------------------------------------
 -- Footer buttons
 --------------------------------------------------------------------------------
 
@@ -853,7 +1074,7 @@ local function Build()
     panel:SetToplevel(true)
     panel:EnableMouse(true)
     panel:SetClampedToScreen(true)
-    Chrome(panel, CHROME)
+    Chrome(panel, OptionsChrome())
 
     ------------------------------------------------------------------
     -- Header
@@ -881,7 +1102,10 @@ local function Build()
     end
     PaintLockGradient()
 
-    local lockGlyph = ns.NewGlyph(lockButton, 14)
+    -- The glyph, not the button. 26px is what the accent tile wants to be next
+    -- to the title; 19px is what the padlock inside it has to be to read as a
+    -- padlock rather than as a mark on the tile.
+    local lockGlyph = ns.NewGlyph(lockButton, 19)
     lockGlyph:SetPoint("CENTER")
     lockGlyph:SetColor(ns.HexToRGB(LOCK_GLYPH))
 
@@ -898,7 +1122,10 @@ local function Build()
     local title = NewText(panel, 2, TEXT_BRIGHT, "heroPanel")
     title:SetPoint("TOPLEFT", lockButton, "TOPRIGHT", 12, -1)
 
-    local subtitle = NewText(panel, -2, TEXT_MUTED, "Objective tracker skin \194\183 v" .. ns.version)
+    -- Both trackers, named. "Objective tracker skin" undersold half of what is
+    -- in the window: the Mythic+ panel is a group of its own now.
+    local subtitle = NewText(panel, -2, TEXT_MUTED,
+        "M+ and Objective tracker skin \194\183 v" .. ns.version)
     subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
 
     local pill = CreateFrame("Frame", nil, panel)
@@ -923,14 +1150,26 @@ local function Build()
     panel:SetScript("OnDragStart", function(self) self:StartMoving() end)
     panel:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
+        -- In UIParent's space, not the window's own. This was a plain
+        -- subtraction of two GetLefts, which is correct only while the window
+        -- is at scale 1 - the two values are then in the same units. It is
+        -- scalable now, so the conversion has to be explicit or a window left
+        -- in the corner at 130% comes back somewhere else entirely.
+        local x, y = ns.GetUIOffsets(self)
+        if not x then return end
+
         local placement = SavedPlacement()
         placement.point = "TOPLEFT"
-        placement.x = self:GetLeft() - UIParent:GetLeft()
-        placement.y = self:GetTop() - UIParent:GetTop()
+        placement.x, placement.y = x, y
     end)
 
     ------------------------------------------------------------------
-    -- Body
+    -- Enable skin
+    --
+    -- Fixed under the header rather than inside the scrolling body. It is the
+    -- escape hatch - the control whose whole purpose is being reachable when
+    -- something else has gone wrong - and one you have to go looking for is not
+    -- that.
     ------------------------------------------------------------------
 
     local y = HEADER_HEIGHT + 12
@@ -962,120 +1201,136 @@ local function Build()
             options.Sync()
         end, 8)
 
-    y = y - 8 + ENABLE_HEIGHT + GROUP_GAP
+    local bodyTop = y - 8 + ENABLE_HEIGHT + GROUP_GAP
 
     ------------------------------------------------------------------
-    -- PANEL
+    -- The scrolling body
+    --
+    -- A ScrollFrame is the only thing on this client that clips its children,
+    -- so it is what stops a body taller than the window from being drawn over
+    -- the header and the footer. Everything below is built into `body` at its
+    -- natural height and the viewport shows as much of it as the screen has
+    -- room for.
     ------------------------------------------------------------------
 
-    y = GroupLabel(panel, y, "Panel")
+    local viewport = CreateFrame("ScrollFrame", nil, panel)
+    viewport:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, -bodyTop)
+    viewport:SetWidth(PANEL_WIDTH)
 
-    y = NewSwatchRow(panel, y, "Background color", BG_SWATCHES,
-        function(entry) return ns.db.bg.color == entry.colour end,
-        function(entry) ns.db.bg.color = entry.colour end)
+    -- Same width as the window, so every control's TOPRIGHT anchor lands where
+    -- it did when they hung off the window itself. It is attached to the
+    -- viewport further down, once it has been built and its real height is
+    -- known: SetScrollChild reads the child's size, and handing it a frame that
+    -- is one pixel tall and then growing it is asking the client to keep up.
+    local body = CreateFrame("Frame", nil, viewport)
+    body:SetWidth(PANEL_WIDTH)
 
-    y = NewSlider(panel, y, "Background opacity", 0, 100, 5,
-        function() return (ns.db.bg.opacity or 1) * 100 end,
-        function(value)
-            ns.db.bg.opacity = value / 100
-            Apply("background opacity changed")
-        end,
-        function(value) return string.format("%d%%", Int(value)) end)
+    y = 0
 
-    y = NewSwatchRow(panel, y, "Border color", BORDER_SWATCHES,
-        function(entry)
-            local alpha = ns.db.border.alpha or 1
-            if entry.transparent then return alpha == 0 end
-            return alpha > 0 and ns.db.border.color == entry.colour
-        end,
-        function(entry)
-            if entry.transparent then
-                ns.db.border.alpha = 0
-            else
-                ns.db.border.alpha = 1
-                ns.db.border.color = entry.colour
-            end
-        end)
+    ------------------------------------------------------------------
+    -- GLOBAL
+    --
+    -- What is here rather than in a panel's own group is what would read as two
+    -- addons if the two panels disagreed about it. A font family is one voice
+    -- and a backdrop texture is one piece of art; a background colour is not,
+    -- which is why those moved down.
+    ------------------------------------------------------------------
 
-    y = NewSegmented(panel, y, "Border style", BORDER_STYLES,
-        function() return ns.db.border.style end,
-        function(key) ns.db.border.style = key end)
+    y = GroupLabel(body, y, "Global")
 
-    y = NewSlider(panel, y, "Corner radius", 0, 16, 1,
-        function() return ns.db.radius or 8 end,
-        function(value)
-            ns.db.radius = value
-            Apply("radius changed")
-        end,
-        function(value) return string.format("%d px", Int(value)) end)
+    local fontWidget
+    y, fontWidget = NewFontDropdown(body, y, "Font family", "via LibSharedMedia", panel)
+    options.fontDropdown = fontWidget
 
-    -- Scale. These go through ns.SetScale, the same function /hp scale uses -
-    -- it clamps, snaps to the 0.1 step, writes the store and re-applies the
-    -- saved position, because a rescale moves the frame's top-left corner and
-    -- the offsets are held in UIParent space.
-    y = NewSlider(panel, y, "Quest tracker scale", 50, 150, 10,
-        function() return (ns.db.frame.watch.scale or 1) * 100 end,
-        function(value) ns.SetScale("watch", value / 100) end,
-        function(value) return string.format("%d%%", Int(value)) end)
+    y = NewFontSlider(body, y, "Options font size", "options",
+        "the size of this window's own text")
 
-    y = NewSlider(panel, y, "M+ tracker scale", 50, 150, 10,
-        function() return (ns.db.frame.mplus.scale or 1) * 100 end,
-        function(value) ns.SetScale("mplus", value / 100) end,
-        function(value) return string.format("%d%%", Int(value)) end)
+    -- This window's own background, on the same kind of control the two panels
+    -- use for theirs. The rest of its chrome stays a design token - see the note
+    -- on CHROME - so there is no opacity or border row here to go with it.
+    y = NewSwatchRow(body, y, "Options background", OPTIONS_BG_SWATCHES,
+        function(entry) return OptionsSaved().bgColor == entry.colour end,
+        function(entry) OptionsSaved().bgColor = entry.colour end)
 
-    y = NewTileRow(panel, y, "Backdrop texture", BACKDROP_TILES,
+    y = NewTileRow(body, y, "Backdrop texture", BACKDROP_TILES,
         function() return ns.db.bg.texture end,
         function(key) ns.db.bg.texture = key end)
 
     ------------------------------------------------------------------
-    -- TEXT
+    -- QUEST TRACKER
+    --
+    -- Three font sizes rather than one. They are three different jobs on
+    -- screen: the header is a label you read once and then stop seeing, the
+    -- quest name is what you scan for, and the description is what you read
+    -- when you have found it. One number for all three meant making the names
+    -- big enough to scan also made the descriptions big enough to fill the
+    -- panel.
     ------------------------------------------------------------------
 
-    y = y + GROUP_GAP
-    y = GroupLabel(panel, y, "Text")
+    y = GroupLabel(body, y + GROUP_GAP, "Quest tracker", true)
+    y = PanelGroup(body, y, "watch")
 
-    local fontWidget
-    y, fontWidget = NewFontDropdown(panel, y, "Font family", "via LibSharedMedia")
-    options.fontDropdown = fontWidget
+    y = NewFontSlider(body, y, "Header font size", "watchHeader",
+        "the QUESTS row and its count")
+    y = NewFontSlider(body, y, "Quest name font size", "watchTitle",
+        "the name of each tracked quest")
+    y = NewFontSlider(body, y, "Description font size", "watchBody",
+        "objectives, descriptions and their counts")
 
-    y = NewSlider(panel, y, "Font size", 8, 20, 1,
-        function() return ns.db.font.size or 12 end,
-        function(value)
-            ns.db.font.size = value
-            Apply("font size changed")
-        end,
-        function(value) return string.format("%d px", Int(value)) end)
+    y = ShadowGroup(body, y, "watch")
 
-    -- Per-panel multipliers on that base. The three panels are different sizes
-    -- and sit at different distances from where the player is looking, so one
-    -- number for all of them made every change a compromise.
+    -- Getting the tracker out of the way on its own.
     --
-    -- What the quest tracker actually takes is bounded by Lines.lua: the
-    -- tracker measures and places each line before heroPanel sees it, so a line
-    -- can never ask for more room and growth is clamped per line. Turning this
-    -- past that ceiling is not an error, it just stops making a difference.
-    local FONT_SCALES = {
-        { key = "watch",   label = "Quest tracker font" },
-        { key = "mplus",   label = "M+ tracker font"    },
-        { key = "options", label = "This window's font" },
-    }
+    -- Both of these fade the tracker to nothing rather than hiding it, because
+    -- WatchFrame is protected and Hide is refused under lockdown - which is
+    -- precisely the moment "hide in combat" has to work. See the note in
+    -- Skin.lua; the short version is that the obvious call is the one that is
+    -- guaranteed to fail.
+    y = NewToggle(body, y, "Hide in combat", "fades the tracker while you are fighting",
+        function() return ns.db.autoHide.combat end,
+        function(value)
+            ns.db.autoHide.combat = value and true or false
+            if ns.Skin and ns.Skin.RefreshAutoHide then pcall(ns.Skin.RefreshAutoHide) end
+        end)
 
-    for i = 1, #FONT_SCALES do
-        local entry = FONT_SCALES[i]
-        y = NewSlider(panel, y, entry.label, 50, 150, 5,
-            function()
-                local scales = ns.db.font.scale
-                return ((scales and scales[entry.key]) or 1) * 100
-            end,
-            function(value)
-                if type(ns.db.font.scale) ~= "table" then ns.db.font.scale = {} end
-                ns.db.font.scale[entry.key] = value / 100
-                Apply("font scale changed")
-            end,
-            function(value) return string.format("%d%%", Int(value)) end)
-    end
+    y = NewToggle(body, y, "Hide in Mythic+", "...and for the length of a keystone run",
+        function() return ns.db.autoHide.mythic end,
+        function(value)
+            ns.db.autoHide.mythic = value and true or false
+            if ns.Skin and ns.Skin.RefreshAutoHide then pcall(ns.Skin.RefreshAutoHide) end
+        end)
 
-    y = NewStateColours(panel, y, "State colors", {
+    ------------------------------------------------------------------
+    -- MYTHIC+ TRACKER
+    --
+    -- Three font sizes, the same way the quest tracker has three. One number
+    -- moved the whole panel together, which sounds harmless until you try to
+    -- use it: the clock is deliberately about twice everything else, so
+    -- enlarging the boss rows enough to read them at a glance gave the timer a
+    -- third of the panel. The clock therefore gets its own control, and the
+    -- design's steps *within* each role - the keystone level a point under the
+    -- dungeon name, the required boss a point and a half over the others -
+    -- stay in the code, because those are proportions rather than preferences.
+    --
+    -- The state colours live here for now. They colour a quest title, a normal
+    -- line and a completed one, which is quest-tracker language, but the only
+    -- place all three are visible side by side at a glance is the Mythic+
+    -- panel's boss list.
+    ------------------------------------------------------------------
+
+    y = GroupLabel(body, y + GROUP_GAP, "Mythic+ tracker", true)
+    y = PanelGroup(body, y, "mplus")
+
+    y = NewFontSlider(body, y, "Header font size", "mplusHeader",
+        "the dungeon name and keystone level")
+    y = NewFontSlider(body, y, "Timer font size", "mplusTimer",
+        "the clock")
+    y = NewFontSlider(body, y, "Body font size", "mplusBody",
+        "chest tiers, enemy forces and boss rows")
+
+    y = ShadowGroup(body, y, "mplus")
+
+    y = NewStateColours(body, y, "State colors", {
         { label = "Title",  get = function() return ns.db.text.title  end,
                             set = function(hex) ns.db.text.title  = hex end },
         { label = "Normal", get = function() return ns.db.text.normal end,
@@ -1090,25 +1345,109 @@ local function Build()
     -- live, so turning it off takes the skin's own chrome with it, and an
     -- option whose only sensible value is the default is a row of the window
     -- spent on nothing.
+    --
+    -- There are no scale sliders either. Both panels carry a resize grip in
+    -- their bottom-right corner while the trackers are unlocked, and dragging
+    -- the corner of the thing being resized beats guessing a percentage and
+    -- then looking away from the slider to see what the percentage did.
+
+    body:SetHeight(y + GROUP_GAP)
+
+    ------------------------------------------------------------------
+    -- Viewport and scrollbar
+    ------------------------------------------------------------------
+
+    local room     = MAX_HEIGHT - bodyTop - FOOTER_HEIGHT - 8
+    local viewHigh = math.max(MIN_VIEWPORT, math.min(body:GetHeight(), room))
+    viewport:SetHeight(viewHigh)
+    viewport:SetScrollChild(body)
+
+    local range = math.max(0, body:GetHeight() - viewHigh)
+
+    local bar = CreateFrame("Slider", nil, panel)
+    bar:SetOrientation("VERTICAL")
+    bar:SetWidth(BAR_WIDTH)
+    bar:SetPoint("TOPRIGHT", viewport, "TOPRIGHT", -BAR_INSET, 0)
+    bar:SetPoint("BOTTOMRIGHT", viewport, "BOTTOMRIGHT", -BAR_INSET, 0)
+    bar:SetMinMaxValues(0, range)
+    bar:SetValueStep(1)
+
+    local barTrack = NewTexture(bar, "BACKGROUND")
+    barTrack:SetAllPoints(bar)
+    barTrack:SetVertexColor(ns.HexToRGB("#E9E9ED", 0.06))
+
+    bar:SetThumbTexture(ns.SOLID)
+    local barThumb = bar:GetThumbTexture()
+    if barThumb then
+        barThumb:SetWidth(BAR_WIDTH)
+        barThumb:SetHeight(math.max(24, viewHigh * viewHigh / math.max(1, body:GetHeight())))
+        barThumb:SetVertexColor(ns.HexToRGB(ACCENT, 0.7))
+    end
+
+    bar:SetScript("OnValueChanged", function(_, value)
+        viewport:SetVerticalScroll(value)
+    end)
+    bar:SetValue(0)
+
+    -- A body that fits needs no bar, and a visible one that cannot move reads
+    -- as a window that has failed to scroll.
+    if range <= 0 then bar:Hide() end
+
+    local WHEEL_STEP = 34   -- about one control row per notch
+    viewport:EnableMouseWheel(true)
+    viewport:SetScript("OnMouseWheel", function(_, delta)
+        bar:SetValue(ns.Clamp((bar:GetValue() or 0) - delta * WHEEL_STEP, 0, range))
+    end)
+
+    panel.viewport = viewport
+    panel.scrollBar = bar
 
     ------------------------------------------------------------------
     -- Footer
     ------------------------------------------------------------------
 
-    y = y + GROUP_GAP
+    local footerTop = bodyTop + viewHigh + 8
 
     local save = NewFooterButton(panel, CONTENT_WIDTH - 130, "Save & close", true, function()
         options.Hide()
     end)
-    save:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD_X, -y)
+    save:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD_X, -footerTop)
 
     local reset = NewFooterButton(panel, 118, "Reset", false, function()
         options.Reset()
     end)
-    reset:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -PAD_X, -y)
+    reset:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -PAD_X, -footerTop)
 
-    y = y + FOOTER_HEIGHT
-    panel:SetHeight(y)
+    panel:SetHeight(footerTop + FOOTER_HEIGHT)
+
+    ------------------------------------------------------------------
+    -- Resize grip
+    --
+    -- The same handle both trackers carry, so the three panels resize the same
+    -- way. It scales rather than resizes, which matters more here than it does
+    -- on a tracker: this window is a column of absolutely-placed rows 440 units
+    -- wide, so stretching the frame would leave every control exactly where it
+    -- was and just add empty space down the right.
+    --
+    -- It follows the lock, like the trackers' grips do. This was built always-on
+    -- at first, reasoning that the lock governs the trackers and this window has
+    -- never consulted it to decide whether its own header can be dragged. That
+    -- reasoning is fine and the result was still wrong: three panels with a
+    -- corner handle, two of which put it away when you lock and one of which
+    -- does not, reads as the third one having missed the memo. Consistency
+    -- across the three is worth more than the distinction, and the lock button
+    -- is in this window's own header, so the way back is never more than one
+    -- click away.
+    ------------------------------------------------------------------
+
+    panel.grip = ns.NewResizeGrip(panel, {
+        label   = "options window",
+        visible = function() return not ns.IsLocked() end,
+        get     = function() return SavedPlacement().scale or 1 end,
+        set     = function(scale) options.SetScale(scale) end,
+    })
+    -- Above the footer buttons it sits beside, and above the scrollbar.
+    panel.grip:Raise(nil, panel:GetFrameLevel() + 10)
 
     ------------------------------------------------------------------
     -- Wiring
@@ -1227,12 +1566,44 @@ local function Place()
     if placement.point and placement.x then
         -- The player dragged it somewhere. That is a decision, and it is not
         -- second-guessed - no clearance pass here.
-        panel:SetPoint("TOPLEFT", UIParent, "TOPLEFT", placement.x, placement.y or 0)
+        --
+        -- The offsets are held in UIParent's space and converted on the way
+        -- back out, because the window is scalable now: a SetPoint offset is
+        -- read in the moved frame's own units, so the same pair of numbers
+        -- means a different place on screen at a different scale. Storing screen
+        -- position and converting is what keeps a window that was left in the
+        -- corner in the corner after a rescale.
+        ns.ApplyUIOffsets(panel, placement.x, placement.y or 0)
         return
     end
 
     panel:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     ClearOfTrackers()
+end
+
+--------------------------------------------------------------------------------
+-- Scale
+--
+-- Driven by the corner grip. This is the window's own scale rather than one of
+-- the trackers', so it does not go through ns.SetScale - nothing here is
+-- protected and there is no holder to reason about - but it has the same
+-- obligation: re-pin the top-left corner afterwards, because the saved offsets
+-- are in UIParent space and a rescale changes what an offset in the window's own
+-- space means.
+--------------------------------------------------------------------------------
+
+function options.SetScale(scale)
+    if not (panel and ns.db) then return false end
+
+    scale = ns.Snap(ns.Clamp(scale, ns.SCALE_MIN, ns.SCALE_MAX), 0.05)
+    local placement = SavedPlacement()
+    placement.scale = scale
+
+    panel:SetScale(scale)
+    if placement.point and placement.x then
+        ns.ApplyUIOffsets(panel, placement.x, placement.y or 0)
+    end
+    return true, scale
 end
 
 --------------------------------------------------------------------------------
@@ -1265,6 +1636,12 @@ end
 -- changing the font shows up here as well as on the trackers.
 function options.Restyle()
     if not panel then return end
+
+    -- The window's own background is configurable now, so a restyle has to
+    -- repaint it. Everything else about its chrome is still a design token and
+    -- is painted once at build time.
+    ns.StylePlateChrome(panel, OptionsChrome())
+
     local file = ns.GetFontFile()
     for i = 1, #fontStrings do
         local entry = fontStrings[i]
@@ -1282,6 +1659,10 @@ function options.Show()
         return false
     end
     Build()
+    -- Scale before Place: the placement offsets are converted using the
+    -- window's own scale, so applying them first would put it where it belonged
+    -- at whatever scale it happened to be carrying.
+    panel:SetScale(SavedPlacement().scale or 1)
     Place()
     options.Restyle()
     options.Sync()
@@ -1320,6 +1701,16 @@ function options.Reset()
         pcall(ns.ApplyLockState, key)
         pcall(ns.RestoreScale, key)
     end
+
+    -- The lock is back to its default, so the corner grips have to follow. This
+    -- goes through the same call the lock event does rather than each panel
+    -- deciding for itself, which is what stops the two disagreeing.
+    if ns.SyncResizeGrips then pcall(ns.SyncResizeGrips) end
+
+    -- This window's own scale went with the store, so it has to come off the
+    -- frame too. Resetting to a default the window is not actually drawn at is
+    -- the kind of half-reset that makes people reload to check.
+    if panel then panel:SetScale(SavedPlacement().scale or 1) end
 
     if ns.Skin and ns.Skin.SetEnabled then
         ns.Skin.SetEnabled(ns.db.enabled)

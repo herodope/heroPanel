@@ -98,6 +98,26 @@ function methods:SetThumbTexture(path)
     self.__thumb:SetTexture(path)
 end
 function methods:GetThumbTexture() return self.__thumb end
+-- ScrollFrame. The options window's body lives in one, because a ScrollFrame is
+-- the only thing on this client that clips its children. The mock does not
+-- clip anything, so this is bookkeeping: enough for the panel to attach a
+-- child, size a viewport and scroll it, and for a test to read back where it
+-- got to.
+function methods:SetScrollChild(child)
+    self.__scrollChild = child
+    child.__parent = self
+end
+function methods:GetScrollChild() return self.__scrollChild end
+function methods:SetVerticalScroll(v) self.__vScroll = v end
+function methods:GetVerticalScroll() return self.__vScroll or 0 end
+function methods:SetHorizontalScroll(v) self.__hScroll = v end
+function methods:GetHorizontalScroll() return self.__hScroll or 0 end
+function methods:GetVerticalScrollRange()
+    local child = self.__scrollChild
+    if not child then return 0 end
+    return math.max(0, (child:GetHeight() or 0) - (self:GetHeight() or 0))
+end
+
 function methods:SetUserPlaced(v) self.__userPlaced = v end
 function methods:IsUserPlaced() return self.__userPlaced end
 function methods:RegisterEvent(e) self.__events[e] = true end
@@ -173,6 +193,11 @@ function methods:GetShadowColor()
     local c = self.__shadowColor
     if not c then return nil end
     return c[1], c[2], c[3], c[4]
+end
+function methods:GetShadowOffset()
+    local o = self.__shadowOffset
+    if not o then return 0, 0 end
+    return o[1], o[2]
 end
 function methods:GetTextColor()
     local c = self.__textColor or { 1, 1, 1, 1 }
@@ -424,6 +449,12 @@ function GetTime() return now end
 
 local cursorX, cursorY = -1000, -1000
 function GetCursorPosition() return cursorX, cursorY end
+
+-- The resize grip drags off the cursor and ends on the button coming back up,
+-- because a release outside the grip never reaches its OnMouseUp. Tests set
+-- both directly, the same way they already set the cursor for the hover pass.
+local mouseDown = {}
+function IsMouseButtonDown(button) return mouseDown[button or "LeftButton"] and true or false end
 
 function wipe(t) for k in pairs(t) do t[k] = nil end return t end
 
@@ -1271,21 +1302,40 @@ check(colourOf(nativeHeaderText) ~= "E7C67C",
 -- rather than the offsets it is supposed to be checking.
 local _, titleSize = trackerLines[1].__text:GetFont()
 local _, lineSize  = trackerLines[2].__text:GetFont()
-check(titleSize == ns.GetFontSize(0.5, "watch"),
-    "title font should be base + 0.5 (" .. tostring(ns.GetFontSize(0.5, "watch")) .. "), got " .. tostring(titleSize))
-check(lineSize == ns.GetFontSize(-0.5, "watch"),
-    "objective font should be base - 0.5 (" .. tostring(ns.GetFontSize(-0.5, "watch")) .. "), got " .. tostring(lineSize))
+check(titleSize == ns.GetFontSize(0, "watchTitle"),
+    "title font should be the quest-name size (" .. tostring(ns.GetFontSize(0, "watchTitle"))
+    .. "), got " .. tostring(titleSize))
+check(lineSize == ns.GetFontSize(0, "watchBody"),
+    "objective font should be the description size (" .. tostring(ns.GetFontSize(0, "watchBody"))
+    .. "), got " .. tostring(lineSize))
 
--- ...and the bound holds however large the config goes. Unbounded growth would
--- run lines into each other, since the tracker placed them on its own pitch.
-local restoreSize = ns.db.font.size
+-- ...and it keeps going all the way up.
+--
+-- Lines.lua used to clamp a quest line to two points over the size the tracker
+-- laid it out at, which on this client meant everything from 14 upwards drew
+-- identically: the header and the objective counts - heroPanel's own
+-- FontStrings, never clamped - moved, and the quest text did not. A size
+-- control that stops responding half way along its track reads as broken, so
+-- the clamp is gone and text that outgrows the panel is answered by the resize
+-- grip instead.
+local restoreSizes = {}
+for role, size in pairs(ns.db.font.size) do restoreSizes[role] = size end
+
 SlashCmdList["HEROPANEL"]("font 20")
 tick(); tick()
 local _, hugeTitle = trackerLines[1].__text:GetFont()
 local _, hugeLine  = trackerLines[2].__text:GetFont()
-check(hugeTitle == 13 + 2, "title font must stop 2 past the original 13, got " .. tostring(hugeTitle))
-check(hugeLine == 12 + 2, "objective font must stop 2 past the original 12, got " .. tostring(hugeLine))
-SlashCmdList["HEROPANEL"]("font " .. tostring(restoreSize))
+check(hugeTitle == 20, "the quest name should take the configured 20, got " .. tostring(hugeTitle))
+check(hugeLine == 20, "and so should the description, got " .. tostring(hugeLine))
+
+SlashCmdList["HEROPANEL"]("font 26")
+tick(); tick()
+local _, hugerTitle = trackerLines[1].__text:GetFont()
+check(hugerTitle == 26,
+    "...and it must still be moving at the top of the range, got " .. tostring(hugerTitle))
+
+for role, size in pairs(restoreSizes) do ns.db.font.size[role] = size end
+ns.Media.Apply("harness restoring font sizes")
 tick(); tick()
 
 -- Header badge
@@ -1583,9 +1633,9 @@ check(collapseBtn.__normal:GetAlpha() == 1, "turning the header off must give th
 check(plate.divider.mid:IsShown() == false, "divider should be hidden with the header")
 
 HEROPANEL_DB.header.show = true
-HEROPANEL_DB.border.style = "none"
-HEROPANEL_DB.radius = 0
-HEROPANEL_DB.bg.opacity = 0.5
+HEROPANEL_DB.panel.watch.borderStyle = "none"
+HEROPANEL_DB.panel.watch.radius = 0
+HEROPANEL_DB.panel.watch.bgOpacity = 0.5
 ns.Skin.Restyle()
 ns.Skin.Refresh("test")
 tick(); tick()
@@ -1599,8 +1649,9 @@ for _, pixels in pairs(plate.corner) do
 end
 check(plate.bg.main.__color[4] == 0.5, "background opacity should be applied")
 
-HEROPANEL_DB.border.style = "hairline"
-HEROPANEL_DB.radius = 8
+HEROPANEL_DB.panel.watch.borderStyle = "hairline"
+HEROPANEL_DB.panel.watch.radius = 8
+HEROPANEL_DB.panel.watch.bgOpacity = 1
 ns.Skin.Restyle()
 local notched = 0
 for _, pixels in pairs(plate.corner) do
@@ -1609,6 +1660,28 @@ for _, pixels in pairs(plate.corner) do
     end
 end
 check(notched == 8, "an 8px radius should be a 2px step at each of the four corners, got " .. notched)
+
+-- The two panels carry their own chrome, so one of them changing must not move
+-- the other. This was one global block and the options window now offers the
+-- same six controls twice; a shared table underneath would make the second copy
+-- a lie.
+do
+    HEROPANEL_DB.panel.mplus.bgColor = "#0D0E14"
+    ns.Skin.Restyle()
+    ns.Mplus.Restyle()
+
+    local watchPaint = HeroPanelWatchPlate.bg.main.__color
+    local mplusPaint = HeroPanelMplusPlate and HeroPanelMplusPlate.bg.main.__color
+    check(watchPaint and math.abs(watchPaint[1] - select(1, ns.HexToRGB("#14161F"))) < 0.01,
+        "the quest panel keeps its own background when the Mythic+ one changes")
+    if mplusPaint then
+        check(math.abs(mplusPaint[1] - select(1, ns.HexToRGB("#0D0E14"))) < 0.01,
+            "...and the Mythic+ panel takes the colour set for it")
+    end
+
+    HEROPANEL_DB.panel.mplus.bgColor = ns.defaults.panel.mplus.bgColor
+    ns.Mplus.Restyle()
+end
 
 --------------------------------------------------------------------------------
 -- A stuck collapsed flag
@@ -2454,30 +2527,39 @@ do
 
     -- Walk the window for the widgets, rather than having Options.lua export
     -- handles purely so a test can reach them.
+    -- One level deeper than it was: the controls live in a ScrollFrame's scroll
+    -- child now rather than hanging off the window itself.
     local clickable = {}
     ns.WalkFrameTree(HeroPanelOptionsFrame, function(object, info)
         if info.kind == "child" and object.GetScript and object:GetScript("OnClick") then
             table.insert(clickable, object)
         end
-    end, { maxDepth = 4, includeRegions = false })
+    end, { maxDepth = 5, includeRegions = false })
 
-    check(#clickable >= 15,
+    check(#clickable >= 20,
         "the window should have a good number of clickable controls, found " .. #clickable)
 
     -- Background colour: pick a swatch that is not the current one and confirm
     -- the store followed and the tracker was re-skinned rather than merely
     -- recorded.
+    --
+    -- There are two of every swatch now, one per panel, so both get clicked and
+    -- both stores have to follow. A single shared table underneath would pass
+    -- the first check and fail the isolation one below.
     local wanted = "#0D0E14"
-    local hit = false
+    local hits = 0
     for i = 1, #clickable do
         if clickable[i].colour == wanted then
             clickable[i]:Click()
-            hit = true
+            hits = hits + 1
         end
     end
-    check(hit, "a background swatch for " .. wanted .. " should exist")
-    check(ns.db.bg.color == wanted,
-        "clicking a swatch should write the store, got " .. tostring(ns.db.bg.color))
+    check(hits >= 2, "a background swatch for " .. wanted .. " should exist for each panel, found " .. hits)
+    check(ns.db.panel.watch.bgColor == wanted,
+        "clicking a swatch should write the quest panel's store, got "
+        .. tostring(ns.db.panel.watch.bgColor))
+    check(ns.db.panel.mplus.bgColor == wanted,
+        "...and the Mythic+ panel's, got " .. tostring(ns.db.panel.mplus.bgColor))
 
     -- The store following is only half of it: a swatch that writes the config
     -- and does not re-skin is exactly the "changes need a reload" behaviour the
@@ -2497,18 +2579,18 @@ do
     -- and "inset" has to actually draw differently from "hairline" now that it
     -- is a real style rather than a synonym.
     local hairlineTop = HeroPanelWatchPlate.edge.top:GetTop()
-    ns.db.border.style = "inset"
+    ns.db.panel.watch.borderStyle = "inset"
     ns.Skin.Restyle()
     local insetTop = HeroPanelWatchPlate.edge.top:GetTop()
     check(insetTop ~= hairlineTop,
         "an inset border should sit a pixel inside a hairline one, both at "
         .. tostring(insetTop))
 
-    ns.db.border.style = "none"
+    ns.db.panel.watch.borderStyle = "none"
     ns.Skin.Restyle()
     check(not HeroPanelWatchPlate.edge.top:IsShown(), "border style none draws no edge")
 
-    ns.db.border.style = "hairline"
+    ns.db.panel.watch.borderStyle = "hairline"
     ns.Skin.Restyle()
     check(HeroPanelWatchPlate.edge.top:IsShown(), "border style hairline draws an edge")
 
@@ -2544,7 +2626,10 @@ do
     -- Put everything back and confirm the round trip left nothing broken.
     ns.Options.Reset()
     tick(); tick()
-    check(ns.db.bg.color == ns.defaults.bg.color, "reset should undo the swatch click")
+    check(ns.db.panel.watch.bgColor == ns.defaults.panel.watch.bgColor,
+        "reset should undo the swatch click")
+    check(ns.db.panel.mplus.bgColor == ns.defaults.panel.mplus.bgColor,
+        "...on both panels")
     check(ns.db.font.face == ns.DEFAULT_FONT_FACE, "reset should undo the font pick")
     check(ns.GetFontFile() == ns.Media.ClientFontFile(),
         "reset should put the client's own face back on the trackers")
@@ -2559,11 +2644,16 @@ do
     tick(); tick()
     ns.Options.Hide()
     ns.Options.Show()
-    check(ns.db.font.size == 17, "the slash command should still own the store")
+    check(ns.db.font.size.watchTitle == 17, "the slash command should still own the store")
+    check(ns.db.font.size.mplusTimer == 17,
+        "...for every role, which is what one argument can mean; got "
+        .. tostring(ns.db.font.size.mplusTimer))
 
-    -- Scale is the one the design's brief calls out: it can be changed from
-    -- outside while the window is shut, so the slider has to re-read it rather
-    -- than push its own stale value back.
+    -- Scale is set from outside the window now - by /hp scale and by the corner
+    -- grips - so what matters is that opening the window does not overwrite it.
+    -- It used to have two sliders, and the risk was those pushing their own
+    -- stale value back on sync; the risk with no sliders is Reset or a rebuild
+    -- quietly resetting it instead, which this catches just the same.
     ns.SetScale("watch", 1.3)
     ns.SetScale("mplus", 0.7)
     ns.Options.Hide()
@@ -2607,25 +2697,31 @@ end
 -- Reset puts the defaults back and re-applies them, rather than only writing
 -- the store and waiting for a reload.
 do
-    ns.db.bg.color   = "#232532"
-    ns.db.radius     = 16
-    ns.db.font.size  = 19
+    ns.db.panel.watch.bgColor = "#232532"
+    ns.db.panel.watch.radius  = 12
+    ns.db.panel.mplus.radius  = 0
+    ns.db.font.size.watchTitle = 19
+    ns.db.font.size.mplus      = 26
     ns.db.header.show = false
 
     ns.Options.Reset()
     tick(); tick()
 
-    check(ns.db.bg.color == ns.defaults.bg.color,
-        "reset should restore the background colour, got " .. tostring(ns.db.bg.color))
-    check(ns.db.radius == ns.defaults.radius,
-        "reset should restore the radius, got " .. tostring(ns.db.radius))
-    check(ns.db.font.size == ns.defaults.font.size,
-        "reset should restore the font size, got " .. tostring(ns.db.font.size))
+    check(ns.db.panel.watch.bgColor == ns.defaults.panel.watch.bgColor,
+        "reset should restore the background colour, got " .. tostring(ns.db.panel.watch.bgColor))
+    check(ns.db.panel.watch.radius == ns.defaults.panel.watch.radius,
+        "reset should restore the quest panel's radius, got " .. tostring(ns.db.panel.watch.radius))
+    check(ns.db.panel.mplus.radius == ns.defaults.panel.mplus.radius,
+        "...and the Mythic+ panel's, got " .. tostring(ns.db.panel.mplus.radius))
+    check(ns.db.font.size.watchTitle == ns.defaults.font.size.watchTitle,
+        "reset should restore the quest-name size, got " .. tostring(ns.db.font.size.watchTitle))
+    check(ns.db.font.size.mplus == ns.defaults.font.size.mplus,
+        "...and the Mythic+ size, got " .. tostring(ns.db.font.size.mplus))
     check(ns.db.header.show == true, "reset should restore the header")
     check(ns.db.enabled == true, "reset should leave the skin enabled")
 
     local _, titleAfterReset = trackerLines[1].__text:GetFont()
-    check(titleAfterReset == ns.GetFontSize(0.5, "watch"),
+    check(titleAfterReset == ns.GetFontSize(0, "watchTitle"),
         "reset should re-apply the skin, not just write the store; got " .. tostring(titleAfterReset))
 end
 
@@ -2636,6 +2732,480 @@ if not MINIMAL then
         "exactly one interface options category, got " .. #INTERFACE_CATEGORIES)
     check(INTERFACE_CATEGORIES[1] and INTERFACE_CATEGORIES[1].name == "heroPanel",
         "the category should be named heroPanel")
+end
+
+--------------------------------------------------------------------------------
+-- The scrolling body
+--
+-- The window carried eight sliders and only just fitted; splitting the panel
+-- and border settings per tracker put the same six controls in twice, and no
+-- amount of shaving rows fits that into UIParent's 768 units. So the body
+-- scrolls, and the checks are that it is actually taller than its viewport -
+-- otherwise the scroll plumbing is untested decoration - and that the wheel
+-- moves it and stops at both ends.
+--------------------------------------------------------------------------------
+
+do
+    ns.Options.Show()
+    tick()
+
+    local viewport = HeroPanelOptionsFrame.viewport
+    local body     = viewport and viewport:GetScrollChild()
+    check(viewport ~= nil and body ~= nil, "the options body should live in a ScrollFrame")
+
+    note("options body: " .. tostring(body:GetHeight())
+        .. " of content in a " .. tostring(viewport:GetHeight()) .. " viewport")
+    check(body:GetHeight() > viewport:GetHeight(),
+        "the body should be taller than its viewport - a body that fits leaves the "
+        .. "scrolling untested; got " .. tostring(body:GetHeight())
+        .. " in " .. tostring(viewport:GetHeight()))
+
+    local wheel = viewport:GetScript("OnMouseWheel")
+    check(wheel ~= nil, "the viewport should take the wheel")
+
+    wheel(viewport, -1)
+    check(viewport:GetVerticalScroll() > 0,
+        "a wheel notch down should scroll the body, got " .. tostring(viewport:GetVerticalScroll()))
+
+    for _ = 1, 40 do wheel(viewport, -1) end
+    check(viewport:GetVerticalScroll() <= body:GetHeight() - viewport:GetHeight() + 0.001,
+        "scrolling past the end should stop at the end, got "
+        .. tostring(viewport:GetVerticalScroll()))
+
+    for _ = 1, 60 do wheel(viewport, 1) end
+    check(viewport:GetVerticalScroll() == 0, "and scrolling back up should stop at the top")
+
+    ns.Options.Hide()
+end
+
+--------------------------------------------------------------------------------
+-- The resize grip
+--
+-- This replaced the two scale sliders. The sliders wrote the store through
+-- ns.SetScale and so does the grip, so what is new here is the drag: the anchor
+-- is the panel's top-left corner in screen pixels, and the scale follows how
+-- far the cursor is from it. Everything is measured in screen pixels on purpose
+-- - the panel's own units change meaning as it is scaled, which is the one
+-- coordinate space a rescale must not be measured in.
+--------------------------------------------------------------------------------
+
+do
+    local grip = HeroPanelWatchPlate.grip
+    check(grip ~= nil, "the quest panel should carry a resize grip")
+    check(HeroPanelMplusPlate.grip ~= nil, "and so should the Mythic+ panel")
+
+    ns.SetLocked(true)
+    check(not grip:IsShown(),
+        "the grip is put away while the trackers are locked - it is edit-mode furniture")
+    check(not HeroPanelMplusPlate.grip:IsShown(), "both of them")
+
+    ns.SetLocked(false)
+    check(grip:IsShown(), "and both come back when the trackers are unlocked")
+    check(HeroPanelMplusPlate.grip:IsShown(), "both of them")
+
+    -- A locked grip refuses the drag even if something manages to click it.
+    ns.SetLocked(true)
+    grip:GetScript("OnMouseDown")(grip)
+    check(grip.drag == nil, "a locked grip must not start a drag")
+    ns.SetLocked(false)
+
+    ns.SetScale("watch", 1.0)
+    tick()
+
+    local plate  = HeroPanelWatchPlate
+    local scale  = plate:GetEffectiveScale()
+    local anchorX, anchorY = plate:GetLeft() * scale, plate:GetTop() * scale
+
+    -- Grab the corner.
+    cursorX = plate:GetRight()  * scale
+    cursorY = plate:GetBottom() * scale
+    local startReach = (cursorX - anchorX) + (anchorY - cursorY)
+
+    mouseDown.LeftButton = true
+    grip:GetScript("OnMouseDown")(grip)
+    check(grip.drag ~= nil, "clicking the grip should start a drag")
+
+    -- Pull it out to one and a fifth of that reach, along both axes.
+    cursorX = anchorX + (cursorX - anchorX) * 1.2
+    cursorY = anchorY - (anchorY - cursorY) * 1.2
+    grip:GetScript("OnUpdate")(grip)
+    tick()
+
+    check(math.abs(ns.db.frame.watch.scale - 1.2) < 0.051,
+        "dragging the grip out should scale the tracker up, got "
+        .. tostring(ns.db.frame.watch.scale))
+
+    -- ...and back in, past the floor, which clamps rather than inverting.
+    cursorX = anchorX + startReach * 0.05
+    cursorY = anchorY
+    grip:GetScript("OnUpdate")(grip)
+    tick()
+    check(ns.db.frame.watch.scale >= ns.SCALE_MIN - 0.001,
+        "the grip must not drag the panel below the floor, got "
+        .. tostring(ns.db.frame.watch.scale))
+
+    -- Releasing outside the grip never reaches its OnMouseUp, so the button
+    -- state is what has to end the drag.
+    mouseDown.LeftButton = nil
+    grip:GetScript("OnUpdate")(grip)
+    check(grip.drag == nil, "the drag should end when the button comes up, wherever the cursor is")
+
+    cursorX, cursorY = -1000, -1000
+    ns.SetScale("watch", 1.0)
+    ns.SetLocked(true)
+    tick(); tick()
+end
+
+--------------------------------------------------------------------------------
+-- The options window resizes too
+--
+-- Same grip widget as the trackers', wired to the window's own scale instead of
+-- a tracker's. Two things separate it from theirs: it is always shown, because
+-- the lock governs whether the *trackers* can be dragged and this window has
+-- never consulted it to decide whether its own header can be; and its saved
+-- position has to survive a rescale, which is the bug a scalable window
+-- introduces. A SetPoint offset is read in the moved frame's own units, so the
+-- same pair of numbers means a different place on screen once the frame is
+-- scaled - store screen position, convert on the way out.
+--------------------------------------------------------------------------------
+
+do
+    ns.Options.Show()
+    tick()
+
+    local grip = HeroPanelOptionsFrame.grip
+    check(grip ~= nil, "the options window should carry a resize grip")
+
+    -- It follows the lock, the same as the trackers' grips.
+    --
+    -- This was built always-on, reasoning that the lock governs the trackers and
+    -- this window has never consulted it to decide whether its own header can be
+    -- dragged. The reasoning holds and the result was still wrong: three panels
+    -- with a corner handle, two of which put it away on lock and one of which
+    -- does not, reads as the third having missed the memo.
+    ns.SetLocked(true)
+    check(not grip:IsShown(),
+        "the options window's grip goes away with the trackers', so all three agree")
+
+    ns.SetLocked(false)
+    check(grip:IsShown(), "...and comes back with them")
+
+    -- Put it somewhere definite and remember where that is on screen.
+    ns.db.options.point = "TOPLEFT"
+    ns.db.options.x, ns.db.options.y = 120, -90
+    ns.Options.Hide()
+    ns.Options.Show()
+    tick()
+
+    local uiScale = UIParent:GetEffectiveScale()
+    local beforeX = HeroPanelOptionsFrame:GetLeft() * HeroPanelOptionsFrame:GetEffectiveScale()
+    local beforeY = HeroPanelOptionsFrame:GetTop()  * HeroPanelOptionsFrame:GetEffectiveScale()
+
+    ns.Options.SetScale(1.3)
+    check(math.abs((ns.db.options.scale or 1) - 1.3) < 0.001,
+        "the scale should be written to the store, got " .. tostring(ns.db.options.scale))
+    check(math.abs(HeroPanelOptionsFrame:GetScale() - 1.3) < 0.001,
+        "...and applied to the frame, got " .. tostring(HeroPanelOptionsFrame:GetScale()))
+
+    local afterX = HeroPanelOptionsFrame:GetLeft() * HeroPanelOptionsFrame:GetEffectiveScale()
+    local afterY = HeroPanelOptionsFrame:GetTop()  * HeroPanelOptionsFrame:GetEffectiveScale()
+    check(math.abs(afterX - beforeX) < 1 and math.abs(afterY - beforeY) < 1,
+        "the window's top-left corner must stay put across a rescale, moved from "
+        .. tostring(beforeX) .. "," .. tostring(beforeY)
+        .. " to " .. tostring(afterX) .. "," .. tostring(afterY))
+
+    -- ...and it survives the window being shut and reopened, which is where a
+    -- scale that is applied but never re-read shows up.
+    ns.Options.Hide()
+    ns.Options.Show()
+    tick()
+    check(math.abs(HeroPanelOptionsFrame:GetScale() - 1.3) < 0.001,
+        "reopening should re-apply the saved scale, got "
+        .. tostring(HeroPanelOptionsFrame:GetScale()))
+    local reopenX = HeroPanelOptionsFrame:GetLeft() * HeroPanelOptionsFrame:GetEffectiveScale()
+    check(math.abs(reopenX - beforeX) < 1,
+        "...and put it back in the same place, got " .. tostring(reopenX))
+
+    -- Dragging writes UIParent-space offsets, so a drag at 130% and a reopen
+    -- have to agree about where the window was left.
+    local dropX, dropY = 260, -140
+    HeroPanelOptionsFrame:ClearAllPoints()
+    ns.ApplyUIOffsets(HeroPanelOptionsFrame, dropX, dropY)
+    HeroPanelOptionsFrame:GetScript("OnDragStop")(HeroPanelOptionsFrame)
+    check(math.abs(ns.db.options.x - dropX) < 1 and math.abs(ns.db.options.y - dropY) < 1,
+        "a drag at a non-default scale should save UIParent-space offsets, got "
+        .. tostring(ns.db.options.x) .. "," .. tostring(ns.db.options.y))
+
+    ns.Options.SetScale(1.0)
+    ns.db.options.point, ns.db.options.x, ns.db.options.y = nil, 0, 0
+    ns.Options.Hide()
+end
+
+--------------------------------------------------------------------------------
+-- Glyph outlines
+--
+-- The lock and the caret are drawn in a mid grey over whatever the world is
+-- doing behind a panel the player can make transparent, and grey over a lit
+-- hillside is not a shape. A texture has no SetShadowColor, so an outlined
+-- glyph draws four black copies of itself on a lower layer.
+--------------------------------------------------------------------------------
+
+do
+    -- Found by the flag, not by having shadow tables: every glyph carries those
+    -- now, empty, so testing for them finds the check marks and the resize grip
+    -- as readily as the two that asked to be outlined.
+    local lock
+    ns.WalkFrameTree(HeroPanelWatchPlate, function(object)
+        if not lock and object.outlined then lock = object end
+    end, { maxDepth = 3, includeRegions = false })
+
+    check(lock ~= nil, "the header glyphs should be outlined")
+
+    if lock then
+
+        -- Whichever route the glyph took, the outline has to have followed it.
+        local set = (lock.usingArt and lock.artShadows[1]) or lock.partShadows[1]
+        check(set ~= nil,
+            "an outlined glyph should have built its shadow textures ("
+            .. (lock.usingArt and "art" or "blocks") .. " route)")
+        if set then
+            check(#set == 4, "four offsets, one per side, got " .. tostring(#set))
+            local colour = set[1].__color
+            check(colour and colour[1] == 0 and colour[2] == 0 and colour[3] == 0,
+                "the outline is black, whatever the glyph in front of it is")
+            check(set[1]:IsShown(), "and it is actually drawn")
+        end
+    end
+
+    -- A plain glyph must not pay for any of it.
+    local plain = ns.NewGlyph(UIParent, 12)
+    plain:SetShape("check")
+    check(not plain.outlined, "glyphs are not outlined unless asked")
+    check(#plain.artShadows == 0 and #plain.partShadows == 0,
+        "...and an un-outlined glyph builds no shadow textures")
+end
+
+--------------------------------------------------------------------------------
+-- The caret has a click target of its own
+--
+-- Clicking the chevron used to rely on one of two things underneath it: the
+-- header strip, which sits below the tracker's frame level and so stops
+-- receiving anything once the tracker has been unlocked and keeps the mouse, or
+-- Blizzard's collapse button, which is not the same rectangle as the glyph
+-- heroPanel draws. After the glyph grew, what was left was noticeably smaller
+-- than what you could see.
+--------------------------------------------------------------------------------
+
+do
+    local button = HeroPanelWatchPlate and HeroPanelWatchPlate.__caretButton
+    -- Reached by walking, for the same reason the glyph above is: Skin.lua does
+    -- not export its header widgets purely so a test can find them.
+    if not button then
+        ns.WalkFrameTree(HeroPanelWatchPlate, function(object, info)
+            if button then return false end
+            if info.kind == "child" and object.__kind == "Button"
+               and object:GetWidth() == 26 and object:GetHeight() == 26
+               and object:GetScript("OnClick") then
+                button = object
+            end
+        end, { maxDepth = 2, includeRegions = false })
+    end
+
+    check(button ~= nil, "the caret should have a button of its own")
+
+    if button then
+        check(button:GetWidth() >= 24,
+            "...and it should be bigger than the 15px chevron it covers, got "
+            .. tostring(button:GetWidth()))
+
+        -- Above the tracker, like the lock. An unlocked tracker is mouse-enabled
+        -- across its whole rectangle, so anything left below it stops taking
+        -- clicks the first time the tracker is unlocked in a session.
+        check(button:GetFrameLevel() > WatchFrame:GetFrameLevel(),
+            "...and raised above the tracker, got " .. tostring(button:GetFrameLevel())
+            .. " against " .. tostring(WatchFrame:GetFrameLevel()))
+
+        local before = ns.IsCollapsed("watch")
+        button:GetScript("OnClick")(button)
+        tick(); tick()
+        check(ns.IsCollapsed("watch") ~= before, "clicking it should collapse the tracker")
+        button:GetScript("OnClick")(button)
+        tick(); tick()
+        check(ns.IsCollapsed("watch") == before, "...and clicking again should expand it")
+    end
+end
+
+--------------------------------------------------------------------------------
+-- Text shadow
+--
+-- Off by default, because the design's colours were chosen against a solid
+-- background. It earns its place the moment the background opacity comes down.
+--------------------------------------------------------------------------------
+
+do
+    local title = trackerLines[1].__text
+
+    ns.db.panel.watch.textShadow = false
+    ns.Options.Apply("shadow off")
+    tick(); tick()
+    local _, _, _, a = title:GetShadowColor()
+    check((a or 0) == 0, "no shadow on a quest line by default, got " .. tostring(a))
+
+    ns.db.panel.watch.textShadow     = true
+    ns.db.panel.watch.textShadowSize = 2
+    ns.Options.Apply("shadow on")
+    tick(); tick()
+
+    local _, _, _, on = title:GetShadowColor()
+    check((on or 0) > 0, "turning it on should reach the quest names, got " .. tostring(on))
+    local ox, oy = title:GetShadowOffset()
+    check(ox == 2 and oy == -2,
+        "...at the configured thickness, got " .. tostring(ox) .. "," .. tostring(oy))
+
+    -- Per panel. The Mythic+ setting is a different flag and must not follow.
+    check(ns.db.panel.mplus.textShadow == false,
+        "the two panels carry their own shadow setting")
+
+    -- Clamped: a store holding something outside 1-3 must still draw something
+    -- sane rather than a 40px smear.
+    ns.db.panel.watch.textShadowSize = 99
+    ns.Options.Apply("shadow clamp")
+    tick(); tick()
+    local cx = select(1, title:GetShadowOffset())
+    check(cx == 3, "the thickness is clamped to 3, got " .. tostring(cx))
+
+    -- And /hp skin off hands the line back without it.
+    ns.db.panel.watch.textShadowSize = 1
+    ns.Skin.SetEnabled(false)
+    tick(); tick()
+    local _, _, _, off = title:GetShadowColor()
+    check((off or 0) == 0,
+        "disabling the skin should take the shadow back off, got " .. tostring(off))
+
+    ns.Skin.SetEnabled(true)
+    ns.db.panel.watch.textShadow = false
+    ns.Options.Apply("shadow test reset")
+    tick(); tick()
+end
+
+--------------------------------------------------------------------------------
+-- Auto-hide
+--
+-- The tracker is faded rather than hidden, and that is the whole design. Hide
+-- is refused on WatchFrame under lockdown, which is exactly when "hide in
+-- combat" has to take effect - so the obvious call is the one guaranteed to
+-- fail every time. SetAlpha is not protected.
+--------------------------------------------------------------------------------
+
+do
+    -- The two halves of a combat transition, which the mock keeps apart: the
+    -- lockdown flag is what protected calls test, and the event is what
+    -- heroPanel listens for.
+    local function enterCombat()
+        combat = true
+        fire("PLAYER_REGEN_DISABLED")
+    end
+    local function leaveCombat()
+        combat = false
+        fire("PLAYER_REGEN_ENABLED")
+    end
+
+    ns.db.autoHide.combat = true
+    ns.db.autoHide.mythic = false
+
+    enterCombat()
+    tick(); tick()
+    check(WatchFrame:GetAlpha() == 0,
+        "entering combat should fade the tracker, got " .. tostring(WatchFrame:GetAlpha()))
+    check(not HeroPanelWatchPlate:IsShown(), "...and take heroPanel's panel with it")
+    check(ns.Skin.IsAutoHidden(), "...and say so")
+
+    -- A refresh mid-fight must not put the panel back up over a tracker that is
+    -- not there. Quest turn-ins fire plenty of these.
+    ns.Skin.Refresh("mid-combat update")
+    tick(); tick()
+    check(not HeroPanelWatchPlate:IsShown(),
+        "a refresh while auto-hidden must not bring the panel back")
+
+    leaveCombat()
+    tick(); tick()
+    check(WatchFrame:GetAlpha() == 1,
+        "leaving combat should bring it back, got " .. tostring(WatchFrame:GetAlpha()))
+    check(HeroPanelWatchPlate:IsShown(), "...and the panel with it")
+    check(not ns.Skin.IsAutoHidden(), "...and clear the flag")
+
+    -- Off means off: a fight with the setting disabled changes nothing.
+    ns.db.autoHide.combat = false
+    enterCombat()
+    tick(); tick()
+    check(WatchFrame:GetAlpha() == 1, "with the setting off, combat leaves the tracker alone")
+    leaveCombat()
+    tick(); tick()
+
+    -- The Mythic+ half asks the Mythic+ module rather than the API, so there is
+    -- one answer to "is a key running".
+    check(type(ns.Mplus.IsActive) == "function", "the Mythic+ module should answer that")
+    ns.db.autoHide.mythic = true
+    ns.Skin.RefreshAutoHide()
+    tick(); tick()
+    check(ns.Skin.IsAutoHidden() == ns.Mplus.IsActive(),
+        "the quest tracker should follow the keystone state")
+
+    ns.db.autoHide.mythic = false
+    ns.Skin.RefreshAutoHide()
+    tick(); tick()
+
+    -- Turning the skin off must never leave a faded tracker behind.
+    ns.db.autoHide.combat = true
+    enterCombat()
+    tick(); tick()
+    ns.Skin.SetEnabled(false)
+    tick(); tick()
+    check(WatchFrame:GetAlpha() == 1,
+        "/hp skin off must hand back a visible tracker even mid-fight, got "
+        .. tostring(WatchFrame:GetAlpha()))
+    leaveCombat()
+    ns.Skin.SetEnabled(true)
+    ns.db.autoHide.combat = false
+    tick(); tick()
+end
+
+--------------------------------------------------------------------------------
+-- The options window's own background is configurable
+--
+-- The rest of its chrome stays a design token. The reason that rule existed --
+-- a config panel that restyles itself as you drag a swatch makes it impossible
+-- to see what you are setting -- does not reach the window's own background,
+-- because there is no second thing that swatch could be confused with.
+--------------------------------------------------------------------------------
+
+do
+    ns.Options.Show()
+    tick()
+
+    local before = HeroPanelOptionsFrame.bg.main.__color
+    check(before ~= nil, "the window should have a painted background at all")
+
+    ns.db.panel.options.bgColor = "#232532"
+    ns.Options.Restyle()
+
+    local after = HeroPanelOptionsFrame.bg.main.__color
+    local wr, wg, wb = ns.HexToRGB("#232532")
+    check(after and math.abs(after[1] - wr) < 0.01 and math.abs(after[2] - wg) < 0.01
+        and math.abs(after[3] - wb) < 0.01,
+        "restyling should repaint the window's background live, got "
+        .. ns.RGBToHex(after[1], after[2], after[3]))
+
+    -- The border stays the design's, whatever the background is set to.
+    local edge = HeroPanelOptionsFrame.edge.top.__color
+    local er, eg, eb = ns.HexToRGB("#E9E9ED")
+    check(edge and math.abs(edge[1] - er) < 0.01 and math.abs(edge[2] - eg) < 0.01
+        and math.abs(edge[3] - eb) < 0.01,
+        "...without touching the border, which is not configurable")
+
+    ns.db.panel.options.bgColor = ns.defaults.panel.options.bgColor
+    ns.Options.Restyle()
+    ns.Options.Hide()
 end
 
 ns.Options.Hide()
@@ -2844,15 +3414,15 @@ do
     local function ContourAlpha() return (HeroPanelWatchPlate.shadow.top.__color or {})[4] end
     local function DividerAlpha() return (HeroPanelWatchPlate.divider.mid.__color or {})[4] end
 
-    ns.db.border.style = "hairline"
-    ns.db.border.alpha = 1
+    ns.db.panel.watch.borderStyle = "hairline"
+    ns.db.panel.watch.borderAlpha = 1
     ns.Skin.Restyle()
     check(EdgeAlpha() == 1, "a normal border draws at full alpha")
     check(ContourAlpha() > 0, "...with its contour under it")
     check(DividerAlpha() > 0, "...and the header divider drawn")
 
     -- The divider takes the border's colour now, not a hairline token.
-    local dr, dg, db_ = ns.HexToRGB(ns.db.border.color)
+    local dr, dg, db_ = ns.HexToRGB(ns.db.panel.watch.borderColor)
     local painted = HeroPanelWatchPlate.divider.mid.__color
     check(painted and math.abs(painted[1] - dr) < 0.01 and math.abs(painted[2] - dg) < 0.01
         and math.abs(painted[3] - db_) < 0.01,
@@ -2860,8 +3430,8 @@ do
         .. ns.RGBToHex(painted[1], painted[2], painted[3]))
 
     for _, case in ipairs({ { style = "hairline", alpha = 0 }, { style = "none", alpha = 1 } }) do
-        ns.db.border.style = case.style
-        ns.db.border.alpha = case.alpha
+        ns.db.panel.watch.borderStyle = case.style
+        ns.db.panel.watch.borderAlpha = case.alpha
         ns.Skin.Restyle()
 
         local what = case.style .. " at alpha " .. tostring(case.alpha)
@@ -2874,8 +3444,8 @@ do
             "no header divider with " .. what .. ", got alpha " .. tostring(DividerAlpha()))
     end
 
-    ns.db.border.style = ns.defaults.border.style
-    ns.db.border.alpha = ns.defaults.border.alpha
+    ns.db.panel.watch.borderStyle = ns.defaults.panel.watch.borderStyle
+    ns.db.panel.watch.borderAlpha = ns.defaults.panel.watch.borderAlpha
     ns.Skin.Restyle()
     check(EdgeAlpha() == 1, "and it all comes back")
 end
@@ -2906,46 +3476,145 @@ do
 end
 
 --------------------------------------------------------------------------------
--- Per-panel font scales
+-- Font sizes, one per role
+--
+-- The quest tracker draws three different jobs - a header row, the quest names
+-- and their descriptions - and each has its own size. This is what the old
+-- per-panel multiplier could not do: it moved the whole panel together, so
+-- making the names big enough to scan made the descriptions big enough to fill
+-- the panel.
 --------------------------------------------------------------------------------
 
 do
-    local base = ns.db.font.size
+    local sizes = ns.db.font.size
 
-    ns.db.font.scale.watch = 1.5
-    ns.db.font.scale.mplus = 1.0
-    check(ns.GetFontSize(0, "watch") == (base + 0) * 1.5,
-        "the quest scale should multiply the base, got " .. tostring(ns.GetFontSize(0, "watch")))
-    check(ns.GetFontSize(0, "mplus") == base,
-        "...and it should not touch the other panel, got " .. tostring(ns.GetFontSize(0, "mplus")))
-    check(ns.GetFontSize(0) == base,
-        "no scope means no scale, got " .. tostring(ns.GetFontSize(0)))
+    sizes.watchTitle  = 22
+    sizes.watchBody   = 10
+    sizes.watchHeader = 14
+    sizes.mplus       = 12
 
-    -- The design's relative steps stay proportional rather than collapsing
-    -- together as the scale goes up.
-    check(ns.GetFontSize(0.5, "watch") > ns.GetFontSize(-0.5, "watch"),
-        "a scaled panel keeps its title over its objectives")
+    check(ns.GetFontSize(0, "watchTitle") == 22,
+        "a role's size is the number in the store, got " .. tostring(ns.GetFontSize(0, "watchTitle")))
+    check(ns.GetFontSize(0, "watchBody") == 10,
+        "...and each role is its own, got " .. tostring(ns.GetFontSize(0, "watchBody")))
+    check(ns.GetFontSize(0, "mplus") == 12,
+        "...and the other panel is untouched, got " .. tostring(ns.GetFontSize(0, "mplus")))
 
-    -- ...and it actually reaches the tracker, subject to the growth clamp that
-    -- Lines.lua applies because the tracker measured the line first.
-    ns.Options.Apply("font scale test")
+    -- The design's small steps ride on the role rather than on a shared base,
+    -- so the badge stays under the header it sits beside at any header size.
+    check(ns.GetFontSize(-2.5, "watchHeader") < ns.GetFontSize(0, "watchHeader"),
+        "the badge keeps its step under the header label")
+
+    -- An unknown role must answer something drawable rather than nil.
+    check(ns.GetFontSize(0, "nosuchrole") == ns.GetFontSize(0, "watchBody"),
+        "an unknown role falls back to the description size, got "
+        .. tostring(ns.GetFontSize(0, "nosuchrole")))
+
+    -- ...and all of it reaches the tracker, unclamped.
+    ns.Options.Apply("font role test")
     tick(); tick()
-    local _, scaledTitle = trackerLines[1].__text:GetFont()
+    local _, titleNow = trackerLines[1].__text:GetFont()
+    local _, bodyNow  = trackerLines[2].__text:GetFont()
+    check(titleNow == 22,
+        "the quest name should be drawn at the size set for it, got " .. tostring(titleNow))
+    check(bodyNow == 10,
+        "and the description at its own, got " .. tostring(bodyNow))
 
-    ns.db.font.scale.watch = 1.0
-    ns.Options.Apply("font scale test reset")
-    tick(); tick()
-    local _, plainTitle = trackerLines[1].__text:GetFont()
-    check(scaledTitle > plainTitle,
-        "scaling the quest font should grow the title, got " .. tostring(scaledTitle)
-        .. " scaled against " .. tostring(plainTitle))
-
-    -- A store from before this existed has no scale table at all.
-    ns.db.font.scale = nil
-    check(ns.GetFontSize(0, "watch") == base,
-        "a missing scale table should read as 1.0, not error")
+    -- A store from before this existed has a number where the table goes.
+    -- InitDB's migration turns it into five roles rather than dropping it, so a
+    -- player who had set 16 comes back with a skin at about 16 rather than at
+    -- the default.
+    ns.db.font.size  = 16
+    ns.db.font.scale = { watch = 1.0, mplus = 1.0, options = 1.0 }
+    ns.db.dbVersion  = nil
     ns.InitDB()
-    check(type(ns.db.font.scale) == "table", "InitDB should fill the scale table back in")
+    check(type(ns.db.font.size) == "table", "the migration should turn the old number into a table")
+    check(ns.db.font.size.watchTitle == 17 and ns.db.font.size.watchBody == 16,
+        "...carrying the old base and its half-point steps across, got "
+        .. tostring(ns.db.font.size.watchTitle) .. " / " .. tostring(ns.db.font.size.watchBody))
+    check(ns.db.font.scale == nil, "...and clearing the multiplier it replaced")
+
+    for role in pairs(ns.db.font.size) do
+        ns.db.font.size[role] = ns.defaults.font.size[role]
+    end
+    ns.Options.Apply("font role test reset")
+    tick(); tick()
+end
+
+--------------------------------------------------------------------------------
+-- The v1 store migrates rather than being dropped
+--
+-- One global panel style became two, and ApplyDefaults only ever fills in what
+-- is missing - so without a migration a player's chosen colours would sit in
+-- keys nothing reads while both panels came up at the defaults.
+--------------------------------------------------------------------------------
+
+do
+    local saved = HEROPANEL_DB
+    HEROPANEL_DB = {
+        bg     = { color = "#232532", opacity = 0.4, texture = "flat" },
+        border = { color = "#E7C67C", alpha = 1, style = "inset" },
+        radius = 12,
+        font   = { face = "Friz Quadrata TT", size = 14, scale = { watch = 1.0 } },
+    }
+    ns.InitDB()
+
+    check(ns.db.panel.watch.bgColor == "#232532" and ns.db.panel.mplus.bgColor == "#232532",
+        "both panels should inherit the one background the old store had")
+    check(ns.db.panel.watch.bgOpacity == 0.4, "...including its opacity")
+    check(ns.db.panel.watch.borderStyle == "inset" and ns.db.panel.mplus.borderColor == "#E7C67C",
+        "...and its border")
+    -- The radius is the deliberate exception. v3 removed its control, and a
+    -- stale value behind a control nobody can reach is worse than a changed
+    -- default: it cannot be seen and it cannot be undone.
+    check(ns.db.panel.watch.radius == 0,
+        "the radius is forced square, because there is no longer a control for it; got "
+        .. tostring(ns.db.panel.watch.radius))
+    check(ns.db.border == nil and ns.db.radius == nil,
+        "the keys it came from should be cleared, so there is one live copy")
+    check(ns.db.bg.texture == "flat", "the backdrop texture stays global and survives")
+    check(ns.db.dbVersion == 4, "the store should be stamped so this runs once")
+
+    -- v1 had one Mythic+ size, and v3 wants three. A v1 store therefore crosses
+    -- both migrations in one pass, which is the case a version stamp exists to
+    -- get right.
+    check(ns.db.font.size.mplus == nil, "the single Mythic+ size should be gone")
+    check(ns.db.font.size.mplusTimer == ns.db.font.size.mplusBody + 12,
+        "...and the clock should keep the step it was drawn with, got "
+        .. tostring(ns.db.font.size.mplusTimer) .. " against a body of "
+        .. tostring(ns.db.font.size.mplusBody))
+
+    -- A store carrying only some of the three old keys still has to hand over
+    -- what it has. Everything below is cleared by the migration either way, so
+    -- anything not carried across at this point is gone for good.
+    HEROPANEL_DB = { border = { color = "#9184D9", alpha = 1, style = "none" } }
+    ns.InitDB()
+    check(ns.db.panel.watch.borderColor == "#9184D9" and ns.db.panel.watch.borderStyle == "none",
+        "a store with a border and no background should still hand the border over")
+    check(ns.db.panel.watch.bgColor == ns.defaults.panel.watch.bgColor,
+        "...and take the default for what it did not have")
+
+    -- v3 -> v4: the border swatch row had a "Transparent" entry that zeroed the
+    -- alpha, which is what border style None already does. The swatch is gone,
+    -- so a store that used it has to be re-said in the form that still exists
+    -- or a player's borderless panel comes back with a border on.
+    HEROPANEL_DB = {
+        dbVersion = 3,
+        panel = {
+            watch = { borderAlpha = 0, borderStyle = "hairline" },
+            mplus = { borderAlpha = 1, borderStyle = "inset" },
+        },
+    }
+    ns.InitDB()
+    check(ns.db.panel.watch.borderStyle == "none" and ns.db.panel.watch.borderAlpha == 1,
+        "a transparent border should become style None, got "
+        .. tostring(ns.db.panel.watch.borderStyle) .. " at alpha "
+        .. tostring(ns.db.panel.watch.borderAlpha))
+    check(ns.db.panel.mplus.borderStyle == "inset",
+        "...and a panel that was not transparent should be left alone")
+
+    HEROPANEL_DB = saved
+    ns.InitDB()
 end
 
 --------------------------------------------------------------------------------
@@ -2966,8 +3635,31 @@ do
 
     check(not labels["Show quest header"],
         "the header toggle should be gone from the window")
-    check(labels["Quest tracker font"] and labels["M+ tracker font"] and labels["This window's font"],
-        "the three per-panel font scales should be in the window")
+
+    check(labels["GLOBAL"] and labels["QUEST TRACKER"] and labels["MYTHIC+ TRACKER"],
+        "the window should be split into its three groups")
+
+    check(labels["Header font size"] and labels["Quest name font size"]
+        and labels["Description font size"],
+        "the quest tracker's three font sizes should be in the window")
+    check(labels["Timer font size"] and labels["Body font size"],
+        "the Mythic+ panel splits the same way, with the clock on its own control")
+    check(labels["Options font size"], "and this window's own size in the global group")
+    check(labels["Options background"],
+        "the global group should carry this window's own background swatches")
+
+    check(not labels["Quest tracker scale"] and not labels["M+ tracker scale"],
+        "the scale sliders are gone - the panels carry a resize grip instead")
+    check(not labels["Corner radius"],
+        "the corner radius control is gone - its whole range was one invisible pixel")
+
+    check(labels["Text shadow"] and labels["Shadow thickness"],
+        "each panel should carry a text shadow toggle and a thickness")
+    check(labels["Hide in combat"] and labels["Hide in Mythic+"],
+        "the quest tracker should carry both auto-hide toggles")
+
+    check(labels["M+ and Objective tracker skin \194\183 v" .. ns.version],
+        "the subtitle should name both trackers")
 end
 
 --------------------------------------------------------------------------------
@@ -3096,16 +3788,29 @@ do
     check(type(HEROPANEL_DB) == "table", "InitDB should create the store")
     check(HEROPANEL_DB.enabled == true, "a fresh store is enabled")
     check(HEROPANEL_DB.font.face == ns.DEFAULT_FONT_FACE, "a fresh store gets the default face")
-    check(HEROPANEL_DB.font.size == 12, "a fresh store gets the design's 12px base")
+    check(HEROPANEL_DB.font.size.watchBody == 12, "a fresh store gets the design's 12px body")
+    check(HEROPANEL_DB.font.size.watchTitle == 14, "...with the quest names two points over it")
+    check(HEROPANEL_DB.font.size.watchHeader == 16, "...and the header row over both")
+    check(HEROPANEL_DB.font.size.mplusTimer == 24, "...and the Mythic+ clock at its own size")
+    check(HEROPANEL_DB.panel.watch.bgColor == ns.defaults.panel.watch.bgColor,
+        "a fresh store gets a chrome block for each panel")
+    check(HEROPANEL_DB.panel.watch.radius == 0 and HEROPANEL_DB.panel.mplus.radius == 0,
+        "...with square corners, which is no longer configurable")
+    check(HEROPANEL_DB.panel.options.bgColor == ns.defaults.panel.options.bgColor,
+        "...and one for the options window's own background")
     check(HEROPANEL_DB.frame.locked == true, "a fresh store is locked")
     check(HEROPANEL_DB.options ~= nil, "a fresh store has somewhere to remember the window")
 
-    -- Half a store, as written by an older build that had fewer keys.
+    -- Half a store, as written by an older build that had fewer keys. The font
+    -- size here is the old scalar, so this is the migration path as well as the
+    -- fill-in one - which is the realistic shape of a stale store.
     HEROPANEL_DB = { enabled = false, font = { size = 15 } }
     local ok2, err2 = pcall(ns.InitDB)
     check(ok2, "a partial store must be filled in without error: " .. tostring(err2))
     check(HEROPANEL_DB.enabled == false, "an existing value must not be clobbered")
-    check(HEROPANEL_DB.font.size == 15, "an existing font size must not be clobbered")
+    check(HEROPANEL_DB.font.size.watchBody == 15,
+        "an existing font size must be carried over, not dropped, got "
+        .. tostring(HEROPANEL_DB.font.size.watchBody))
     check(HEROPANEL_DB.font.face == ns.DEFAULT_FONT_FACE, "a missing face is filled in")
     check(HEROPANEL_DB.text.title == ns.defaults.text.title, "a missing sub-table is filled in")
 

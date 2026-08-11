@@ -34,7 +34,11 @@
 
 local ADDON_NAME, ns = ...
 
-local SCALE_MIN, SCALE_MAX, SCALE_STEP = 0.5, 1.5, 0.1
+-- The step was 0.1 while scale was only ever set from a slider and a slash
+-- command. The resize grip drags it continuously, and ten stops across the
+-- whole range is a panel that jumps rather than one that follows the cursor.
+local SCALE_MIN, SCALE_MAX, SCALE_STEP = 0.5, 1.5, 0.05
+ns.SCALE_MIN, ns.SCALE_MAX = SCALE_MIN, SCALE_MAX
 
 -- Bumped when the meaning of the stored geometry changes. Anything older is
 -- dropped rather than misinterpreted.
@@ -179,6 +183,15 @@ local function ApplyUIOffsets(frame, x, y)
     end
     return true
 end
+
+-- Exported for the options window, which is scalable now and so has the same
+-- problem the trackers have: its saved position is a pair of offsets, and an
+-- offset means a different distance once the frame it is measured in has been
+-- scaled. Remembering where a window was left and putting it somewhere else on
+-- the next login is the bug this exists to prevent, and there is no reason for
+-- a second copy of the arithmetic to exist in order to have it twice.
+ns.GetUIOffsets   = GetUIOffsets
+ns.ApplyUIOffsets = ApplyUIOffsets
 
 --------------------------------------------------------------------------------
 -- Anchor ownership
@@ -429,6 +442,200 @@ function ns.RestoreScale(key)
     local scale = ns.Clamp(saved.scale or 1.0, SCALE_MIN, SCALE_MAX)
     return ns.RunWhenSafe(function() target:SetScale(scale) end, "RestoreScale:" .. key)
 end
+
+--------------------------------------------------------------------------------
+-- The resize grip
+--
+-- A handle in the bottom-right corner of a panel. Dragging it scales that panel.
+--
+-- This replaces the percentage sliders the options window used to carry, and it
+-- is not only a nicer control. A slider asks the player to guess a number and
+-- then look away from it to see what the number did; a grip is the corner of
+-- the thing being resized, and it moves with the cursor.
+--
+-- It sets *scale*, not size. 3.3.5a has StartSizing, and pointing it at the
+-- objective tracker would be wrong twice: the frame is protected, and its width
+-- is Blizzard's to decide - the tracker lays its own lines out and re-measures
+-- them. Scale is the lever that makes the whole panel bigger without heroPanel
+-- having an opinion about where any line goes, which is the rule the rest of
+-- the addon is built on. It is the right lever for the options window too, for
+-- a different reason: that window is a column of absolutely-placed rows 440
+-- units wide, so widening the frame would leave every control where it was.
+--
+-- Three panels use this and they do not all want the same wiring, so the
+-- reading and writing of the scale is passed in:
+--
+--   opts.get      current scale
+--   opts.set      apply a new one
+--   opts.visible  when the grip should be on screen; omitted means always
+--   opts.label    what to call this panel in a message
+--   opts.deferred true if opts.set may be refused in combat, so the player is
+--                 told once rather than left wondering
+--
+-- The two trackers pass the lock state as `visible`, because a grip is a piece
+-- of edit-mode furniture and leaving it on a panel someone has finished
+-- arranging is one more thing drawn over their game for no reason. The options
+-- window passes nothing: it is a dialog you are looking at precisely because
+-- you are configuring something, and it is already draggable whatever the
+-- trackers' lock says.
+--------------------------------------------------------------------------------
+
+local GRIP_SIZE  = 14
+local GRIP_INSET = 3
+
+-- Every grip built, so one lock change reaches all of them without each panel
+-- having to subscribe for itself.
+local grips = {}
+
+local function GripStop(grip)
+    if not grip.drag then return end
+    grip.drag = nil
+    grip:SetScript("OnUpdate", nil)
+    -- The options window shows the same numbers in its status line, and a
+    -- drag that ends without telling it leaves it a scale behind.
+    if ns.Options and ns.Options.IsShown and ns.Options.IsShown() then
+        pcall(ns.Options.Sync)
+    end
+end
+
+-- Distance from the panel's top-left corner to a point, along the diagonal the
+-- grip is dragged on. Horizontal and vertical reach are added rather than
+-- measured as a hypotenuse: the sum responds to a drag along either axis alone,
+-- which is what a player who grabs the corner and pulls straight down expects,
+-- and a hypotenuse barely moves for that.
+--
+-- Everything here is in screen pixels. The panel's own units change meaning as
+-- it is scaled, which is the one coordinate space a rescale must not be
+-- measured in.
+local function GripReach(drag, x, y)
+    return (x - drag.ax) + (drag.ay - y)
+end
+
+local function GripUpdate(grip)
+    local drag = grip.drag
+    if not drag then return end
+
+    -- A release outside the grip never reaches its OnMouseUp, so the button
+    -- state is what actually ends the drag.
+    if type(_G.IsMouseButtonDown) == "function" and not _G.IsMouseButtonDown("LeftButton") then
+        GripStop(grip)
+        return
+    end
+
+    local x, y  = GetCursorPosition()
+    local reach = math.max(1, GripReach(drag, x, y))
+    local wanted = ns.Snap(ns.Clamp(drag.scale * reach / drag.reach, SCALE_MIN, SCALE_MAX), SCALE_STEP)
+
+    -- Only on a change of the snapped value. Setting a tracker's scale is a
+    -- protected call, so pushing one per frame would queue a few hundred of
+    -- them at the first pull inside a fight.
+    if wanted == drag.applied then return end
+    drag.applied = wanted
+    grip.set(wanted)
+end
+
+local function GripStart(grip)
+    if not grip:CanResize() then return end
+
+    local plate = grip:GetParent()
+    local scale = plate and plate:GetEffectiveScale()
+    local left, top = plate and plate:GetLeft(), plate and plate:GetTop()
+    if not (left and top and scale and scale > 0) then return end
+
+    local x, y = GetCursorPosition()
+    local drag = { ax = left * scale, ay = top * scale }
+    drag.reach = GripReach(drag, x, y)
+    -- Grabbing the corner of a panel with no extent to speak of would make the
+    -- first pixel of movement a huge multiplier.
+    if drag.reach < 20 then return end
+
+    drag.scale   = tonumber(grip.get()) or 1
+    drag.applied = drag.scale
+    grip.drag    = drag
+
+    if grip.deferred and InCombatLockdown() then
+        ns.Warn("the game refuses to rescale the %s in combat - drag it now and the "
+            .. "new size lands the moment you leave combat.", grip.label)
+    end
+
+    grip:SetScript("OnUpdate", GripUpdate)
+end
+
+-- ns.NewResizeGrip(plate, opts) -> grip
+--
+-- The panel owns the grip; Move.lua owns what it does. Each panel calls this
+-- once at build time and then only ever calls grip:Raise from its layout pass.
+function ns.NewResizeGrip(plate, opts)
+    opts = opts or {}
+
+    local grip = CreateFrame("Button", nil, plate)
+    grip:SetWidth(GRIP_SIZE)
+    grip:SetHeight(GRIP_SIZE)
+    grip:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", -GRIP_INSET, GRIP_INSET)
+    grip:EnableMouse(true)
+    grip:Hide()
+
+    grip.label    = opts.label or "panel"
+    grip.get      = opts.get
+    grip.set      = opts.set
+    grip.visible  = opts.visible
+    grip.deferred = opts.deferred and true or false
+
+    grip.glyph = ns.NewGlyph(grip, GRIP_SIZE - 2)
+    grip.glyph:SetPoint("CENTER")
+    grip.glyph:SetShape("grip")
+    grip.glyph:SetColor(ns.HexToRGB(ns.PALETTE.icon))
+
+    grip:SetScript("OnMouseDown", function(self) GripStart(self) end)
+    grip:SetScript("OnMouseUp",   function(self) GripStop(self) end)
+    grip:SetScript("OnHide",      function(self) GripStop(self) end)
+
+    grip:SetScript("OnEnter", function(self)
+        self.glyph:SetColor(ns.HexToRGB(ns.PALETTE.accentLight))
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("Drag to resize", 1, 1, 1)
+        if self.visible then
+            GameTooltip:AddLine("Lock the trackers to put this away.", 0.6, 0.6, 0.7, true)
+        end
+        GameTooltip:Show()
+    end)
+    grip:SetScript("OnLeave", function(self)
+        self.glyph:SetColor(ns.HexToRGB(ns.PALETTE.icon))
+        GameTooltip:Hide()
+    end)
+
+    function grip:CanResize()
+        return type(self.get) == "function" and type(self.set) == "function"
+           and (not self.visible or self.visible())
+    end
+
+    -- Shown by whatever condition the panel handed over, never by the panel
+    -- itself. A panel deciding this for itself is how the grips and the lock
+    -- ended up able to disagree about whether the trackers were unlocked.
+    function grip:Sync()
+        if self.visible and not self.visible() then self:Hide() else self:Show() end
+    end
+
+    -- The plate deliberately sits a strata below the tracker so it can never
+    -- take a click meant for a quest line. The grip is the one part of it that
+    -- has to take its own clicks, and an unlocked tracker is mouse-enabled over
+    -- the whole of its own rectangle - so it is raised the same way the header's
+    -- lock button is, from the tracker's own strata and level.
+    function grip:Raise(strata, level)
+        if strata then self:SetFrameStrata(strata) end
+        self:SetFrameLevel((level or self:GetFrameLevel()) + 1)
+    end
+
+    table.insert(grips, grip)
+    grip:Sync()
+    return grip
+end
+
+function ns.SyncResizeGrips()
+    for i = 1, #grips do pcall(grips[i].Sync, grips[i]) end
+end
+
+ns:On("HEROPANEL_LOCK_CHANGED", ns.SyncResizeGrips)
 
 --------------------------------------------------------------------------------
 -- Drag wiring

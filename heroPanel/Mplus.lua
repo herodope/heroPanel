@@ -75,6 +75,10 @@ local FORCES_TOP      = 14    -- gap above the enemy-forces block
 local BOSS_GLYPH      = 14
 local BOSS_INDENT     = 4     -- glyph's left edge, in from the content edge
 
+-- The header's padlock. Its own constant rather than borrowing BOSS_GLYPH,
+-- which it did: the two are unrelated and sizing one moved the other.
+local LOCK_GLYPH_SIZE = 15
+
 -- The extra-bosses list is drawn by heroPanel rather than restyled in place,
 -- and windowed. Lower Blackrock Spire offers fifteen minibosses for a
 -- requirement of five, and a row per candidate makes a panel taller than the
@@ -127,6 +131,17 @@ local pulse    = 0
 local lastRead                  -- what the last refresh resolved, for /hp mplus
 
 function mplus.GetPlate() return plate end
+
+-- Whether a keystone run is under way, as of the last refresh.
+--
+-- Read off the cached result rather than by calling mplus.Read again: Read
+-- walks the tracker's frames and this is asked from the quest tracker's
+-- auto-hide check, which runs on every combat transition. The cached answer is
+-- at most one refresh stale, and the Mythic+ panel refreshes on the events that
+-- change it.
+function mplus.IsActive()
+    return (lastRead and lastRead.active) and true or false
+end
 
 --------------------------------------------------------------------------------
 -- Reading the run
@@ -380,7 +395,16 @@ function mplus.Read()
     -- IsKeystoneActive said - the panel has nothing to draw a clock from.
     if not data.active and data.timeLeft and data.totalTime then data.active = true end
 
+    -- The quest tracker can be set to hide itself for the length of a key, so
+    -- the moment a run starts or ends is a moment it has to be told about.
+    -- Fired on the transition rather than on every read, because this runs once
+    -- per refresh and the refresh runs on a ticker while a key is up.
+    local wasActive = lastRead and lastRead.active
     lastRead = data
+    if (wasActive and true or false) ~= data.active then
+        if ns.Skin and ns.Skin.RefreshAutoHide then pcall(ns.Skin.RefreshAutoHide) end
+    end
+
     return data
 end
 
@@ -563,19 +587,43 @@ local function RestoreChrome()
             pcall(fontString.SetTextColor, fontString, saved.r, saved.g, saved.b, saved.a or 1)
         end
         if saved.alpha ~= nil then pcall(fontString.SetAlpha, fontString, saved.alpha) end
+
+        local shadow = saved.shadow
+        pcall(fontString.SetShadowColor, fontString,
+            shadow and shadow[1] or 0, shadow and shadow[2] or 0,
+            shadow and shadow[3] or 0, shadow and shadow[4] or 0)
+        local offset = saved.shadowOffset
+        pcall(fontString.SetShadowOffset, fontString,
+            offset and offset[1] or 0, offset and offset[2] or 0)
     end
     wipe(original)
 end
 
 -- Remembered once. A pooled row that is reused keeps the font heroPanel gave
 -- it, so re-reading after styling would record our own values as Ascension's.
+--
+-- The shadow is recorded with the rest, because heroPanel sets one on the boss
+-- rows now. Handing the tracker back with heroPanel's outline still on it is
+-- exactly the sort of leftover "/hp skin off restores everything" has to mean
+-- the absence of.
 local function Remember(fontString)
     if not fontString or original[fontString] then return end
     local path, size, flags = fontString:GetFont()
     local r, g, b, a = fontString:GetTextColor()
-    original[fontString] = { path = path, size = size, flags = flags,
-                             r = r, g = g, b = b, a = a,
-                             alpha = fontString:GetAlpha() }
+    local record = { path = path, size = size, flags = flags,
+                     r = r, g = g, b = b, a = a,
+                     alpha = fontString:GetAlpha() }
+
+    if type(fontString.GetShadowColor) == "function" then
+        local ok, sr, sg, sb, sa = pcall(fontString.GetShadowColor, fontString)
+        if ok then record.shadow = { sr, sg, sb, sa } end
+    end
+    if type(fontString.GetShadowOffset) == "function" then
+        local ok, ox, oy = pcall(fontString.GetShadowOffset, fontString)
+        if ok then record.shadowOffset = { ox, oy } end
+    end
+
+    original[fontString] = record
 end
 
 --------------------------------------------------------------------------------
@@ -584,7 +632,7 @@ end
 
 local function NewFontString(parent, layer)
     local fontString = parent:CreateFontString(nil, layer or "OVERLAY")
-    fontString:SetFont(ns.GetFontFile(), ns.GetFontSize(0, "mplus"))
+    fontString:SetFont(ns.GetFontFile(), ns.GetFontSize(0, "mplusBody"))
     return fontString
 end
 
@@ -608,9 +656,15 @@ local function BuildPlate(tracker)
     ------------------------------------------------------------------
 
     ui.lock = CreateFrame("Button", nil, plate)
-    ui.lock:SetWidth(BOSS_GLYPH + 4)
-    ui.lock:SetHeight(BOSS_GLYPH + 4)
-    ui.lockIcon = ns.NewGlyph(ui.lock, 13)
+    -- The glyph is two points over what it was and the button grows with it.
+    -- A padlock is read at a glance rather than looked at, and at 13 it was
+    -- being read as a smudge in the corner of the header.
+    ui.lock:SetWidth(LOCK_GLYPH_SIZE + 4)
+    ui.lock:SetHeight(LOCK_GLYPH_SIZE + 4)
+    -- Outlined, like the quest tracker's. This panel's background is the
+    -- player's to turn down too, and a grey padlock over a lit floor is not a
+    -- padlock.
+    ui.lockIcon = ns.NewGlyph(ui.lock, LOCK_GLYPH_SIZE, true)
     ui.lockIcon:SetPoint("CENTER")
 
     ui.dungeon  = NewFontString(overlay)
@@ -674,6 +728,17 @@ local function BuildPlate(tracker)
     ui.wheel = CreateFrame("Frame", nil, plate)
     ui.wheel:EnableMouseWheel(true)
     ui.wheel:Hide()
+
+    -- The corner handle that scales this panel, hidden while the trackers are
+    -- locked. Same widget as the quest tracker's, from Move.lua, so the two
+    -- cannot end up behaving differently.
+    plate.grip = ns.NewResizeGrip(plate, {
+        label    = "Mythic+ tracker",
+        deferred = true,
+        visible  = function() return not ns.IsLocked() end,
+        get      = function() return ns.db.frame.mplus.scale or 1 end,
+        set      = function(scale) ns.SetScale("mplus", scale) end,
+    })
 
     return plate
 end
@@ -835,7 +900,7 @@ end
 local function StyleStatic()
     if not plate then return end
 
-    ns.StylePlateChrome(plate)
+    ns.StylePlateChrome(plate, ns.PanelStyle("mplus"))
 
     local font = ns.GetFontFile()
 
@@ -843,30 +908,30 @@ local function StyleStatic()
     ui.lockIcon:SetColor(ir, ig, ib, 1)
 
     local br, bg, bb = ns.HexToRGB(ns.PALETTE.bright)
-    ui.dungeon:SetFont(font, ns.GetFontSize(1, "mplus"))
+    ui.dungeon:SetFont(font, ns.GetFontSize(0, "mplusHeader"))
     ui.dungeon:SetTextColor(br, bg, bb, 1)
 
     local kr, kg, kb = ns.HexToRGB(ns.PALETTE.accentLight)
-    ui.keystone:SetFont(font, ns.GetFontSize(0, "mplus"))
+    ui.keystone:SetFont(font, ns.GetFontSize(-1, "mplusHeader"))
     ui.keystone:SetTextColor(kr, kg, kb, 1)
 
     local mr, mg, mb = ns.HexToRGB(ns.PALETTE.muted)
     ui.timerGlyph:SetColor(mr, mg, mb, 1)
     ui.forcesGlyph:SetColor(mr, mg, mb, 1)
 
-    ui.time:SetFont(font, ns.GetFontSize(12, "mplus"))
+    ui.time:SetFont(font, ns.GetFontSize(0, "mplusTimer"))
     ui.time:SetTextColor(br, bg, bb, 1)
 
     local dr, dg, db = ns.HexToRGB(ns.PALETTE.icon)
-    ui.total:SetFont(font, ns.GetFontSize(-1, "mplus"))
+    ui.total:SetFont(font, ns.GetFontSize(-1, "mplusBody"))
     ui.total:SetTextColor(dr, dg, db, 1)
 
     local cr, cg, cb = ns.HexToRGB(ns.PALETTE.chest)
-    ui.tier:SetFont(font, ns.GetFontSize(-1, "mplus"))
+    ui.tier:SetFont(font, ns.GetFontSize(-1, "mplusBody"))
     ui.tier:SetTextColor(cr, cg, cb, 1)
 
     local tr, tg, tb = ns.HexToRGB(ns.PALETTE.chestTime)
-    ui.tierTime:SetFont(font, ns.GetFontSize(-1, "mplus"))
+    ui.tierTime:SetFont(font, ns.GetFontSize(-1, "mplusBody"))
     ui.tierTime:SetTextColor(tr, tg, tb, 1)
 
     local hr, hg, hb = ns.HexToRGB(ns.PALETTE.hairline)
@@ -880,21 +945,34 @@ local function StyleStatic()
     end
 
     local fr, fg, fb = ns.HexToRGB(ns.PALETTE.forces)
-    ui.forcesLabel:SetFont(font, ns.GetFontSize(-1, "mplus"))
+    ui.forcesLabel:SetFont(font, ns.GetFontSize(-1, "mplusBody"))
     ui.forcesLabel:SetTextColor(fr, fg, fb, 1)
 
-    ui.forcesPercent:SetFont(font, ns.GetFontSize(-1, "mplus"))
+    ui.forcesPercent:SetFont(font, ns.GetFontSize(-1, "mplusBody"))
     ui.forcesPercent:SetTextColor(br, bg, bb, 1)
 
     -- The footer rule is an edge, so it follows the border's colour, alpha and
     -- style rather than a hairline token of its own - a border turned off must
     -- not leave a line ruled across the panel.
-    local rr, rg, rb, ra = ns.BorderPaint(0.5)
+    local rr, rg, rb, ra = ns.BorderPaint(0.5, "mplus")
     ui.rule:SetVertexColor(rr, rg, rb, ra)
 
     local ar, ag, ab = ns.HexToRGB(ns.PALETTE.accentDeep)
-    ui.mark:SetFont(font, ns.GetFontSize(-3.5, "mplus"))
+    ui.mark:SetFont(font, ns.GetFontSize(-3.5, "mplusBody"))
     ui.mark:SetTextColor(ar, ag, ab, 1)
+
+    -- Every string this panel owns, in one pass at the end rather than a line
+    -- beside each SetFont above. The setting is one flag for the whole panel,
+    -- so applying it per string would be nine chances to forget one - and a
+    -- shadow that reaches eight of nine strings reads as a rendering fault
+    -- rather than as a missed call. The boss rows are done where they are
+    -- styled, because they are pooled and restyled per refresh.
+    for _, fontString in ipairs({
+        ui.dungeon, ui.keystone, ui.time, ui.total, ui.tier, ui.tierTime,
+        ui.forcesLabel, ui.forcesPercent, ui.mark,
+    }) do
+        ns.ApplyTextShadow(fontString, "mplus")
+    end
 end
 mplus.Restyle = StyleStatic
 
@@ -927,6 +1005,8 @@ local function LayoutPlate(tracker, contentBottom)
     -- Above the tracker too, or the wheel never reaches it.
     ui.wheel:SetFrameStrata(strata)
     ui.wheel:SetFrameLevel(level + 1)
+
+    if plate.grip then plate.grip:Raise(strata, level) end
     for i = 1, #affixes do
         affixes[i]:SetFrameStrata(strata)
         affixes[i]:SetFrameLevel(level + 1)
@@ -1153,13 +1233,14 @@ local function StyleBossRow(index, boss)
     -- Three sizes, which is what makes the block read as a hierarchy rather
     -- than a list: the required boss is the title, the extra-bosses heading
     -- sits a step under it, and the bosses under that are body text.
-    local size = ns.GetFontSize(-0.5, "mplus")
+    local size = ns.GetFontSize(-0.5, "mplusBody")
     if boss.primary then
-        size = ns.GetFontSize(1.5, "mplus")
+        size = ns.GetFontSize(1.5, "mplusBody")
     elseif boss.group then
-        size = ns.GetFontSize(0.5, "mplus")
+        size = ns.GetFontSize(0.5, "mplusBody")
     end
     pcall(boss.label.SetFont, boss.label, font, size)
+    ns.ApplyTextShadow(boss.label, "mplus")
 
     -- The tracker's own icon is replaced by heroPanel's indicator, and its
     -- right-aligned counter either moves into the heading's text or is said
@@ -1294,7 +1375,7 @@ local function LayoutSubList(list, top)
     subVisible = math.min(subCount, SUB_MAX_ROWS)
 
     local font  = ns.GetFontFile()
-    local size  = ns.GetFontSize(-1, "mplus")
+    local size  = ns.GetFontSize(-1, "mplusBody")
     local left  = HEADER_PAD_X + SUB_INDENT
     local bottom = top
 
@@ -1330,6 +1411,7 @@ local function LayoutSubList(list, top)
         -- the tracker's own and is worth keeping.
         row.label:SetFont(font, size)
         row.label:SetText(boss.text)
+        ns.ApplyTextShadow(row.label, "mplus")
         row.label:ClearAllPoints()
         row.label:SetPoint("LEFT", indicator, "RIGHT", 6, 0)
         row.label:Show()

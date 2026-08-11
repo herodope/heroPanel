@@ -317,6 +317,16 @@ ns.GLYPHS = {
     caretDown = { {0,0,1,2}, {1,1,1,2}, {2,2,1,2}, {3,3,1,2}, {4,4,1,2}, {5,5,1,2}, {6,6,1,2},
                   {13,0,1,2}, {12,1,1,2}, {11,2,1,2}, {10,3,1,2}, {9,4,1,2}, {8,5,1,2}, {7,6,1,2} },
 
+    -- Resize grip: a triangle of dots stepping into the bottom-right corner,
+    -- which is the shape every window corner in every toolkit has used for
+    -- thirty years and so needs no label. Dots rather than three diagonal
+    -- strokes, because at 12px a stroke made of blocks is a staircase - see the
+    -- note above the Mythic+ shapes.
+    grip      = { {6,0},
+                  {4,2}, {6,2},
+                  {2,4}, {4,4}, {6,4},
+                  {0,6}, {2,6}, {4,6}, {6,6} },
+
     -- Tick on a 16 x 12 grid: a short arm down and a long arm up, which is
     -- what separates a check from a V.
     check     = { {0,5,1,2}, {1,6,1,2}, {2,7,1,2}, {3,8,1,2}, {4,9,1,2}, {5,10,1,2},
@@ -396,6 +406,95 @@ local function Round(value)
     return math.floor(value + 0.5)
 end
 
+--------------------------------------------------------------------------------
+-- Glyph outlines
+--
+-- The lock and the caret are drawn in a mid grey, which is the design's colour
+-- and is fine over the panel's own background. It is not fine once a player
+-- turns that background down: over a lit desert or a snowfield the grey lands
+-- on top of a similar grey and the glyph stops being a shape at all. Colour on
+-- its own cannot hold anything against a background heroPanel does not control,
+-- which is the same problem the header text had - and text solves it with
+-- SetShadowColor, which a texture does not have.
+--
+-- So an outlined glyph draws itself five times: four black copies offset by a
+-- pixel in each direction on a lower draw layer, then the real one on top.
+-- Four rather than eight, because at these sizes the diagonals add a fifth
+-- again as many textures and nothing a player can see.
+--
+-- Drawing order comes from the layer, not from frame level, so all of this
+-- stays inside the one glyph frame and every field callers already reach for -
+-- glyph.art, glyph.parts, glyph.usingArt, glyph.artPath - stays exactly where
+-- it was.
+--------------------------------------------------------------------------------
+
+local OUTLINE_OFFSETS = { { -1, 0 }, { 1, 0 }, { 0, 1 }, { 0, -1 } }
+
+-- A shadow texture per offset, created on demand. Kept in a list beside
+-- whatever it is shadowing so the two are placed together and can never drift.
+local function GlyphShadowSet(glyph, owner, index)
+    owner[index] = owner[index] or {}
+    local set = owner[index]
+    for i = 1, #OUTLINE_OFFSETS do
+        if not set[i] then
+            local texture = glyph:CreateTexture(nil, "BACKGROUND")
+            ns.SetTextureFile(texture, ns.SOLID)
+            texture:SetVertexColor(0, 0, 0, 1)
+            set[i] = texture
+        end
+    end
+    return set
+end
+
+local function HideShadows(owner, from)
+    if not owner then return end
+    for i = from or 1, #owner do
+        local set = owner[i]
+        if set then
+            for j = 1, #set do set[j]:Hide() end
+        end
+    end
+end
+
+-- The flip flag is passed in rather than read back off the main texture:
+-- Texture:GetTexCoord is not something to rely on across 3.3.5a builds, and
+-- GlyphSetShape knows the answer already.
+local function ShadowArt(glyph, path, flip)
+    if not glyph.outlined then
+        HideShadows(glyph.artShadows)
+        return
+    end
+
+    local set = GlyphShadowSet(glyph, glyph.artShadows, 1)
+    for i = 1, #set do
+        local texture = set[i]
+        local dx, dy  = OUTLINE_OFFSETS[i][1], OUTLINE_OFFSETS[i][2]
+        pcall(texture.SetTexture, texture, path)
+        if flip then texture:SetTexCoord(0, 1, 1, 0) else texture:SetTexCoord(0, 1, 0, 1) end
+        texture:ClearAllPoints()
+        texture:SetPoint("TOPLEFT", glyph, "TOPLEFT", dx, dy)
+        texture:SetPoint("BOTTOMRIGHT", glyph, "BOTTOMRIGHT", dx, dy)
+        texture:SetVertexColor(0, 0, 0, glyph.a or 1)
+        texture:Show()
+    end
+end
+
+local function ShadowPart(glyph, index, left, top, width, height)
+    if not glyph.outlined then return end
+
+    local set = GlyphShadowSet(glyph, glyph.partShadows, index)
+    for i = 1, #set do
+        local texture = set[i]
+        local dx, dy  = OUTLINE_OFFSETS[i][1], OUTLINE_OFFSETS[i][2]
+        texture:ClearAllPoints()
+        texture:SetPoint("TOPLEFT", glyph, "TOPLEFT", left + dx, -top + dy)
+        texture:SetWidth(width)
+        texture:SetHeight(height)
+        texture:SetVertexColor(0, 0, 0, glyph.a or 1)
+        texture:Show()
+    end
+end
+
 local GlyphSetColor
 
 local function GlyphSetShape(glyph, name)
@@ -420,6 +519,8 @@ local function GlyphSetShape(glyph, name)
         if art.flip then glyph.art:SetTexCoord(0, 1, 1, 0) else glyph.art:SetTexCoord(0, 1, 0, 1) end
         glyph.art:Show()
         for i = 1, #glyph.parts do glyph.parts[i]:Hide() end
+        HideShadows(glyph.partShadows)
+        ShadowArt(glyph, glyph.artPath, art.flip)
         GlyphSetColor(glyph, glyph.r, glyph.g, glyph.b, glyph.a)
         return true
     end
@@ -443,6 +544,8 @@ local function GlyphSetShape(glyph, name)
             end
             glyph.art:Show()
             for i = 1, #glyph.parts do glyph.parts[i]:Hide() end
+            HideShadows(glyph.partShadows)
+            ShadowArt(glyph, used, art.flip)
             GlyphSetColor(glyph, glyph.r, glyph.g, glyph.b, glyph.a)
             return true
         end
@@ -451,6 +554,7 @@ local function GlyphSetShape(glyph, name)
     glyph.usingArt = false
     glyph.artPath  = nil
     glyph.art:Hide()
+    HideShadows(glyph.artShadows)
 
     local columns, rows = 0, 0
     for i = 1, #cells do
@@ -484,18 +588,37 @@ local function GlyphSetShape(glyph, name)
         local top    = Round(originY + cell[2] * unit)
         local bottom = Round(originY + (cell[2] + (cell[4] or 1)) * unit)
 
+        local width  = math.max(1, right - left)
+        local height = math.max(1, bottom - top)
+
         part:ClearAllPoints()
         part:SetPoint("TOPLEFT", glyph, "TOPLEFT", left, -top)
-        part:SetWidth(math.max(1, right - left))
-        part:SetHeight(math.max(1, bottom - top))
+        part:SetWidth(width)
+        part:SetHeight(height)
         part:Show()
+
+        ShadowPart(glyph, i, left, top, width, height)
     end
 
     for i = #cells + 1, #glyph.parts do glyph.parts[i]:Hide() end
+    HideShadows(glyph.partShadows, #cells + 1)
 
     -- A shape change rebuilds the blocks, and new ones start white.
     GlyphSetColor(glyph, glyph.r, glyph.g, glyph.b, glyph.a)
     return true
+end
+
+-- The outline never takes the colour, only the alpha: it is black by
+-- definition, and it has to fade with the glyph it is behind or a glyph turned
+-- down to nothing would leave four black copies of itself on screen.
+local function ShadeOutline(owner, alpha)
+    if not owner then return end
+    for i = 1, #owner do
+        local set = owner[i]
+        if set then
+            for j = 1, #set do set[j]:SetVertexColor(0, 0, 0, alpha) end
+        end
+    end
 end
 
 function GlyphSetColor(glyph, r, g, b, a)
@@ -505,6 +628,11 @@ function GlyphSetColor(glyph, r, g, b, a)
     end
     for i = 1, #glyph.parts do
         glyph.parts[i]:SetVertexColor(glyph.r, glyph.g, glyph.b, glyph.a)
+    end
+
+    if glyph.outlined then
+        ShadeOutline(glyph.artShadows, glyph.a)
+        ShadeOutline(glyph.partShadows, glyph.a)
     end
 end
 
@@ -518,10 +646,19 @@ end
 -- Methods are attached as fields rather than through a metatable: a frame
 -- brings its own, and replacing it is not something to do to a widget the
 -- client owns.
-function ns.NewGlyph(parent, size)
+--
+-- outlined asks for the black surround described above. It is not the default:
+-- most glyphs heroPanel draws sit on something it controls the colour of, and
+-- four extra textures each is not free. The two that need it are the ones drawn
+-- over the world - the header lock and the collapse caret.
+function ns.NewGlyph(parent, size, outlined)
     local glyph = CreateFrame("Frame", nil, parent)
     glyph.parts = {}
     glyph.r, glyph.g, glyph.b, glyph.a = 1, 1, 1, 1
+
+    glyph.outlined    = outlined and true or false
+    glyph.artShadows  = {}
+    glyph.partShadows = {}
 
     glyph.art = glyph:CreateTexture(nil, "ARTWORK")
     glyph.art:SetAllPoints(glyph)
@@ -548,34 +685,89 @@ end
 -- to do with which file the glyphs come out of.
 --------------------------------------------------------------------------------
 
--- Font sizes in the design are expressed relative to the configured base size
--- (12 by default): the quest title is half a point up from it, objectives half
--- a point down, and so on.
+-- ns.GetFontSize(delta, role) -> points
 --
--- scope is "watch", "mplus" or "options", and applies that frame's own font
--- scale on top of the base. The three panels are different sizes on screen and
--- sit at different distances from where the player is actually looking, so one
--- number for all of them meant every change was a compromise. Omitting scope
--- gives the unscaled size, which is what a caller that is not drawing on one of
--- the three wants.
+-- role is one of the keys in HEROPANEL_DB.font.size:
 --
--- The scale multiplies the offset size rather than the base, so the design's
--- relative steps - title half a point over, objective half a point under -
--- stay proportional instead of collapsing together as the scale goes up.
+--   watchHeader   the quest tracker's "QUESTS" row and its badge
+--   watchTitle    quest names
+--   watchBody     objectives, descriptions and their counts
+--   mplusHeader   the Mythic+ dungeon name and keystone level
+--   mplusTimer    the Mythic+ clock, which is several times everything around
+--                 it by design and so gets a control of its own
+--   mplusBody     Mythic+ chest tiers, enemy forces and boss rows
+--   options       the options window itself
 --
--- Lines.lua still bounds how much of this actually reaches a quest line: the
--- tracker measures and places each line before heroPanel sees it, so a line can
--- never ask for more room, and growth is clamped per line however large the
--- configuration is.
-function ns.GetFontSize(delta, scope)
-    local base = (ns.db and tonumber(ns.db.font.size)) or 12
+-- Each one is the size that role is drawn at, in points, straight from the
+-- store. This used to be a single base size with a per-panel multiplier over
+-- it, and the arithmetic was the problem: a player setting 20 was setting a
+-- number that then had the design's half-point steps and a percentage applied
+-- to it, so what they set and what they saw were never the same figure.
+--
+-- delta is the small step the design puts on one string relative to the rest of
+-- its role - the tracked-quest badge under the header beside it, a boss row
+-- over the body of the Mythic+ panel. Those are proportions rather than
+-- preferences, so they stay in the code and move with the role.
+--
+-- An unknown role falls back to the quest tracker's body size, which is the
+-- closest thing heroPanel still has to a base.
+function ns.GetFontSize(delta, role)
+    local sizes = ns.db and ns.db.font and ns.db.font.size
+    local size
+    if type(sizes) == "table" then
+        size = tonumber(sizes[role]) or tonumber(sizes.watchBody)
+    end
+    return math.max(6, (size or 12) + (delta or 0))
+end
 
-    local scale = 1
-    if scope and ns.db and type(ns.db.font.scale) == "table" then
-        scale = tonumber(ns.db.font.scale[scope]) or 1
+-- The range every font control offers. The old ceiling was 20 and the real
+-- ceiling was lower still, because Lines.lua clamped a quest line to two points
+-- over whatever the tracker had laid it out at - so a slider dragged from 16 to
+-- 20 moved the header and the counts and left the quest text exactly where it
+-- was. The clamp is gone and so is the reason for a tight range: text that
+-- outgrows the panel is answered by dragging the panel's resize grip, which is
+-- a thing the player can see happening.
+ns.FONT_SIZE_MIN = 8
+ns.FONT_SIZE_MAX = 30
+
+--------------------------------------------------------------------------------
+-- Text shadow
+--
+-- ns.ApplyTextShadow(fontString, key) puts the configured black outline on one
+-- string, or takes it off. key is "watch" or "mplus"; force overrides the
+-- setting and is what the two header strings pass, because those have carried a
+-- shadow from the start and need one whatever the rest of the panel is doing -
+-- they sit in the header band, which is the part of the panel most likely to be
+-- over open sky.
+--
+-- SetShadowOffset is what a FontString has instead of the four-texture outline
+-- ns.NewGlyph draws for a texture. It is one offset copy rather than a
+-- surround, so it reads as a drop shadow at 1px and as an outline by 3, which
+-- is why the size is offered rather than fixed.
+--
+-- Clearing it means both a zero offset and a zero alpha. Setting the offset
+-- alone leaves a shadow drawn exactly under the glyph, which is not nothing -
+-- it thickens the text - and setting the alpha alone leaves an offset behind
+-- for the next thing that turns the shadow on.
+--------------------------------------------------------------------------------
+
+local SHADOW_ALPHA = 0.9
+
+function ns.ApplyTextShadow(fontString, key, force)
+    if not fontString or type(fontString.SetShadowOffset) ~= "function" then return end
+
+    local saved = ns.db and ns.db.panel and ns.db.panel[key]
+    local on    = force or (type(saved) == "table" and saved.textShadow)
+
+    if not on then
+        pcall(fontString.SetShadowColor, fontString, 0, 0, 0, 0)
+        pcall(fontString.SetShadowOffset, fontString, 0, 0)
+        return
     end
 
-    return math.max(6, (base + (delta or 0)) * scale)
+    local size = math.floor(ns.Clamp((type(saved) == "table" and saved.textShadowSize) or 1, 1, 3))
+    pcall(fontString.SetShadowColor, fontString, 0, 0, 0, SHADOW_ALPHA)
+    pcall(fontString.SetShadowOffset, fontString, size, -size)
 end
 
 --------------------------------------------------------------------------------

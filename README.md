@@ -41,11 +41,11 @@ exists. Restart the client or `/reload`.
 |---|---|
 | `/hp lock` | Lock both trackers in place |
 | `/hp unlock` | Unlock both trackers — drag with the left mouse button |
-| `/hp scale <watch\|mplus> <0.5-1.5>` | Set a tracker's scale |
+| `/hp scale <watch\|mplus> <0.5-1.5>` | Set a tracker's scale — or unlock and drag the grip in its bottom-right corner |
 | `/hp reset [watch\|mplus]` | Clear saved position and scale |
 | `/hp` | Open the options window |
 | `/hp help` | List the commands |
-| `/hp font <8-20>` | Set the base text size |
+| `/hp font <8-30>` | Set every text size at once; the window sets them individually |
 | `/hp fontface <name>` | Set the LibSharedMedia face by name |
 | `/hp glyphs <auto\|art\|tga\|blocks>` | Where the lock and caret come from |
 | `/hp texture <path>` | Put any texture in the caret's slot, untinted; no path resets it |
@@ -118,14 +118,19 @@ that. So:
 
 * **No line is moved, resized, shown, hidden or given a script.** Only colour,
   font and the counter highlight change.
-* **Fonts grow by at most two points.** The tracker measures each line and
-  places the next one before heroPanel sees it, so a line can never ask for more
-  room. Growth used to be forbidden outright, which meant the objective size —
-  half a point under the base — could only come out *smaller* than Blizzard's,
-  and the skin made its own text harder to read than the text it replaced. This
-  client lays lines out on a 14px pitch with a 12px font, so two points fits the
-  gap already there; beyond that lines would collide, so `font.size` is clamped
-  per line however large it is configured.
+* **Fonts are set, not moved.** The tracker measures each line and places the
+  next one before heroPanel sees it, so text set large enough will crowd the line
+  under it. This used to be clamped — a line could grow at most two points past
+  the size the tracker laid it out at — and the clamp was worse than the problem
+  it prevented. This client draws quest text at 12, so the ceiling was 14 and
+  every setting from 14 upwards drew identically: dragging the size from 16 to 20
+  moved the header row and the objective counts, which are heroPanel's own
+  FontStrings and were never clamped, and left the quest names and descriptions
+  exactly where they were. A control that stops responding half way along its
+  track reads as broken whatever the reason. The answer to text that outgrows the
+  panel is the panel's **resize grip**, which scales the tracker and lets the
+  tracker lay itself out again at the new size — something heroPanel must never
+  do on its behalf.
 * **Counters are right-aligned by moving them out of the line.** The count
   arrives inside the line's single FontString — on this client as a *prefix*,
   `"0/1 General Drakkisath slain"` — so it is taken out of that string and drawn
@@ -137,9 +142,17 @@ that. So:
 * **The panel is as wide as the tracker**, not a fixed 288px, so the header's
   caret still lands on the tracker's collapse button. 288px is the fallback for
   a tracker that has not reported a usable width yet.
-* **Corners are chamfered, not rounded.** 3.3.5a has no rounded corners and
-  heroPanel ships no art, so `radius` steps the background and border in at each
-  corner — at the default 8px that is a 2px cut.
+* **Corners are square, and not configurable.** 3.3.5a has no rounded corners
+  and heroPanel ships no art, so `radius` could only ever step the background
+  and border in at each corner — and `ns.NotchFor` turns any value at all into
+  one of four chamfers, nought to three pixels. The control went through two
+  shapes before being removed: a 0–16 slider, of which twelve positions changed
+  nothing, and then four positions of four pixels, where every step did
+  something and the something was one pixel on a 300px panel that nobody could
+  see at gameplay distance. A control whose entire range is invisible reads as
+  broken however carefully its steps are chosen. `radius` stays in the store at
+  0 because `Plate.lua` reads it and real corner art would make it mean
+  something again.
 * **Collapsing goes through the tracker's own button.** heroPanel reads the
   collapse state and re-skins the button; it never drives `WatchFrame`'s state
   itself, and it refuses to collapse in combat rather than force it.
@@ -156,13 +169,21 @@ that says out loud nothing was left uncommitted. Reset puts the defaults back
 and re-applies them — it clears the saved positions too, so a `/reload` is what
 finally returns the frames to where the game wants them, the same as `/hp reset`.
 
-**The window's own chrome is fixed, not configured.** It is painted from the
-design's tokens through `ns.StylePlateChrome`'s style override rather than from
-`HEROPANEL_DB`, because this is the window those colours are changed in: a panel
-that restyles itself as you drag its own background swatch makes it impossible to
-see what you are setting. Everything rounded in it — toggles, pills, swatches,
-buttons, tiles — is a frame given the shared plate chrome, so the corner chamfer
-is written once and the window steps its corners the way the tracker panels do.
+**The window's own chrome is fixed apart from its background.** The hairline
+edge, the corner and the shadow are design tokens painted through
+`ns.StylePlateChrome`'s style override, because they are what make this read as a
+dialog over the UI rather than as a third tracker, and none of them is worth a
+control. The background is the one exception — it is the surface a player looks
+at for as long as the window is open, so it comes from
+`HEROPANEL_DB.panel.options` and `OptionsChrome()` folds it into the tokens.
+
+The rule that kept the whole thing fixed still holds for the rest of it: a config
+panel that restyles itself as you drag a swatch makes it impossible to see what
+you are setting. A background swatch escapes that because it is the window's own
+background and nothing else's, so there is no second thing it could be confused
+with. Everything rounded in the window — toggles, pills, swatches, buttons,
+tiles — is a frame given the shared plate chrome, so the corner treatment is
+written once.
 
 **It will not open on top of a tracker.** Centring is the rule but not the
 guarantee: a 440px window in the middle of a 1600px screen reaches x 1020, and a
@@ -187,23 +208,174 @@ heroPanel's header is where the lock, the count and the collapse caret live, so
 turning it off takes the skin's own chrome with it, and an option whose only
 sensible value is the default is a row of the window spent on nothing.
 
-**Font size is a base plus three multipliers.** One number for all three panels
-made every change a compromise — they are different sizes and sit at different
-distances from where the player is looking — so `font.size` is the base and
-`font.scale.watch` / `.mplus` / `.options` scale it per panel. What the quest
-tracker actually takes is still bounded by `Lines.lua`: the tracker measures and
-places each line before heroPanel sees it, so growth is clamped per line and
-turning the quest scale past that ceiling stops making a difference rather than
-breaking the layout.
+**Three groups, and what decides which one a setting goes in.**
 
-The window height is a fixed budget. `UIParent` is about 768 units tall whatever
-the monitor is, because the client scales the UI to suit; laid out at the
-design's spacing the panel came to 752, which fits by eight pixels a side and
-does not fit at all once a player nudges their UI scale up. It has been tightened
-twice — once for that, and again when the three per-panel font scales added a
-hundred pixels — and lands at 684. The mock client fails the run if it ever goes
-over 768. Eight sliders is what makes this tight; another group of them means a
-scrolling body rather than a third round of shaving rows.
+* **Global** — what would read as two addons if the two panels disagreed about
+  it. The font family is one voice and the backdrop texture is one piece of art.
+  This window's own font size and background live here too, because they are
+  about the window rather than about either tracker.
+* **Quest tracker** — that panel's background colour and opacity, border colour
+  and style; three font sizes (the header row, the quest names, and the
+  descriptions and their counts); a text shadow toggle and thickness; and the
+  two auto-hide toggles.
+* **Mythic+ tracker** — the same chrome controls again, three font sizes of its
+  own, its own text shadow, and the state colours.
+
+**The panel chrome is per tracker.** It was one global block, and one block is a
+compromise rather than a setting: the Mythic+ panel is a dense block of numbers
+that wants something solid behind it, and the quest tracker is a column of lines
+a player often wants nearly transparent over the world. `ns.PanelStyle(key)`
+resolves one panel's chrome and everything downstream takes the resolved table,
+so nothing but that function knows where the values live.
+
+**Font sizes are absolute, one per text role.** This was a single base size with
+a per-panel percentage over it, and the arithmetic was the problem twice over:
+the base already carried the design's half-point steps and the percentage was
+applied on top, so what a player set and what was drawn were never the same
+number — and every role inside a panel moved together, so making the quest names
+big enough to scan made the descriptions big enough to fill the panel. There are
+seven roles now:
+
+| Role | What it draws |
+|---|---|
+| `watchHeader` | the QUESTS row and its tracked-quest badge |
+| `watchTitle` | quest names |
+| `watchBody` | objectives, descriptions and their right-aligned counts |
+| `mplusHeader` | the dungeon name and the keystone level |
+| `mplusTimer` | the clock |
+| `mplusBody` | chest tiers, enemy forces and the boss rows |
+| `options` | this window |
+
+Each is the size that role is drawn at. The small steps the design puts on one
+string relative to the rest of its role — the tracked-quest badge sitting under
+the header beside it, the required boss a point and a half over the others —
+stay in the code as deltas, because those are proportions rather than
+preferences. The Mythic+ clock gets a role to itself for the same reason the
+quest names do: it is deliberately about twice everything around it, so one size
+for that panel meant enlarging the boss rows enough to read at a glance gave the
+timer a third of the panel.
+
+**There are no scale sliders.** All three panels carry a resize grip in their
+bottom-right corner. Dragging the corner of the thing being resized beats
+guessing a percentage and then looking away from the slider to see what the
+percentage did. It sets *scale*, not size, which matters for both kinds of
+panel: `StartSizing` on the objective tracker would be wrong twice, since the
+frame is protected and its width is Blizzard's to decide; and this window is a
+column of absolutely-placed rows 440 units wide, so widening the frame would
+leave every control exactly where it was.
+
+All three grips are hidden while the trackers are locked. A grip is edit-mode
+furniture, and a panel the player has finished arranging should not keep it.
+The options window's was always-on for a while, reasoning that the lock governs
+the *trackers* and this window's header has never consulted it to decide whether
+it can be dragged either — which is true, and the result still read as the third
+panel having missed the memo. Consistency across the three won; the lock button
+is in this window's own header, so the way back is one click. `ns.NewResizeGrip`
+takes the get/set pair and the visibility condition as arguments, so each panel
+says what it wants rather than the widget guessing.
+
+**Two controls that reach one outcome is one control.** The border colour row
+used to carry a fifth entry, Transparent, which zeroed `borderAlpha` — and
+`borderStyle = "none"`, one row below it, already turns off every edge heroPanel
+draws. Having both meant a panel with no border raised the question of which of
+the two it was obeying. The style kept the job, because "no border" belongs with
+the other border shapes rather than among the colours. `borderAlpha` stays in
+the store because `Plate.lua` reads it, picking a colour now sets it back to 1,
+and the v4 migration rewrites an existing 0 as style None.
+
+A scalable window brings one obligation with it: `HEROPANEL_DB.options.x/y` are
+in UIParent's space, not the window's own. A `SetPoint` offset is read in the
+moved frame's units, so the same pair of numbers means a different place on
+screen once the frame is scaled — a window left in the corner at 130% would come
+back somewhere else. The trackers already had this problem and already had the
+answer, so `ns.GetUIOffsets` / `ns.ApplyUIOffsets` are exported from `Move.lua`
+rather than the arithmetic existing twice.
+
+**The body scrolls.** The header, the Enable skin row and the footer are fixed
+and everything between them lives in a `ScrollFrame`, which is the only thing on
+this client that clips its children. The window used to be a fixed 684px and the
+note here used to explain how its rows had been shaved twice to keep it under
+`UIParent`'s 768 units. Splitting the chrome per tracker settled that: the same
+six controls exist twice now, and no amount of tightening fits two of everything
+plus a global group into 768 units — let alone into what is left of them once a
+player raises their UI scale, which makes `UIParent` *shorter* in units, not
+taller. The window is sized to its content up to 660 and scrolls past that. The
+mock client fails the run if it ever goes over 768.
+
+One consequence worth knowing: the font dropdown's list is parented to the window
+rather than to the scroll child, because a `ScrollFrame` would clip it and a font
+list showing four of its ten rows is not a list. It still anchors to its button,
+so it follows the body as it scrolls.
+
+## Reading over bright terrain
+
+The design's colours were chosen against a solid `#14161F`. Background opacity is
+the player's to set, so any of them can end up over a snowfield instead. Three
+separate mechanisms exist for that, and they exist separately because a texture
+and a FontString do not have the same tools.
+
+**Text has `SetShadowColor`.** `ns.ApplyTextShadow(fontString, key)` puts the
+configured black offset on one string or takes it off, and every string either
+panel draws goes through it. It is off by default — an outline on text that does
+not need one only makes it muddy — and adjustable from 1 to 3 px, because how
+much is wanted depends entirely on how transparent the panel was made. A
+FontString gets one offset copy rather than a surround, so 1 reads as a drop
+shadow and 3 closes up into something like an outline.
+
+The quest tracker's **QUESTS** row and its count are forced on regardless. They
+sit in the header band, which is the part of the panel most often over open sky,
+and they have carried a shadow from the start for that reason.
+
+**A texture does not.** The header lock and the collapse caret are drawn in a
+mid grey and were simply disappearing into terrain of a similar value. So
+`ns.NewGlyph(parent, size, outlined)` draws the glyph five times: four black
+copies offset a pixel in each direction on the `BACKGROUND` layer, then the real
+one on `ARTWORK` over them. Four rather than eight — at these sizes the diagonals
+cost a fifth again as many textures and buy nothing visible. Draw order comes
+from the layer rather than from frame level, so all of it stays inside the one
+glyph frame and every field callers already reach for — `glyph.art`,
+`glyph.parts`, `glyph.usingArt`, `glyph.artPath` — stays where it was. It works
+on both routes: the shipped art gets four tinted copies of the same texture, the
+block fallback gets four copies of every block.
+
+Only the two glyphs that need it ask for it. Everything else heroPanel draws sits
+on something whose colour it controls.
+
+**`lines.Restore` and the Mythic+ equivalent record the shadow** along with the
+font and the colour, and put it back. Blizzard's quest lines carry none, so in
+practice that reads back as alpha 0 — but reading it is what makes that a fact
+rather than an assumption about a client heroPanel does not own.
+
+## Auto-hide
+
+Two toggles in the Quest tracker group, off by default: hide the objective
+tracker while in combat, and hide it for the length of a Mythic+ run. They are
+independent, and either one being true hides it.
+
+**It fades rather than hides, and that is the whole design.** `WatchFrame` is
+protected and `Hide` is among the calls the client refuses under lockdown — and
+"hide in combat" has to take effect at the exact moment lockdown begins, so the
+one call that looks obvious is the one guaranteed to fail every single time.
+`SetAlpha` is neither protected nor something Blizzard's layout code reads back,
+so it lands whatever else is happening. heroPanel's own plate is hidden properly,
+because that one is ours. The alpha taken away is remembered and put back, rather
+than assuming the tracker was at 1.
+
+`Refresh` returns early while auto-hidden. Without that, the next refresh — and a
+fight produces plenty — would put the panel straight back up over a tracker that
+has been faded out from under it, which is the worst of both: heroPanel's chrome
+on screen with no tracker in it.
+
+The Mythic+ half asks `ns.Mplus.IsActive()` rather than the API directly, so
+there is one answer to "is a key running" and the two panels cannot disagree.
+`mplus.Read` fires a re-evaluation on the transition rather than on every read,
+because it runs on a ticker while a key is up.
+
+What this does *not* do is take the mouse off the tracker: `EnableMouse` is
+protected too. An invisible tracker that has been unlocked at some point in the
+session still occupies its rectangle for targeting. That is the same trade the
+lock already makes, and making it worse in combat is not worth a call that would
+be refused anyway.
 
 ## Fonts
 
@@ -240,23 +412,26 @@ list of names, and picking a face by name is guesswork.
 The panel's opacity is the player's to set, so the header can end up over
 whatever the world is doing rather than over a solid `#14161F`. The design's
 `#9AA0B6` label and `#8B8FA3` count both disappear against a lit background, so
-heroPanel lifts them (`#DDE1F0` and `#F3F5FE`) **and gives both a one-pixel
-black shadow**. Colour alone does not do it; a shadow is what makes text hold
-against a background heroPanel does not control.
+heroPanel lifts them (`#DDE1F0` and `#F3F5FE`) **and gives both a black shadow**,
+forced on whatever the panel's own text-shadow setting says. Colour alone does
+not do it. The rest of what that costs — the configurable shadow on the body
+text, and the outline on the lock and the caret, which are textures and have no
+shadow to set — is in *Reading over bright terrain* above.
 
-The border has an `alpha` of its own, separate from its style, and the options
-window's border row offers **Transparent** as a fifth swatch. It reaches the
-same place border style **None** does, from the colour end rather than the style
-end.
+The border has an `alpha` of its own, separate from its style. Nothing in the
+options window sets it to 0 any more; border style **None** is the single way to
+say "no border", and the v4 migration rewrites a store that used the old
+Transparent swatch into that form.
 
 **"No border" means every edge**, not only the four lines around the plate. The
 header's divider and the Mythic+ footer's rule are edges too, and they were
 fixed hairline tokens: setting the border transparent and the background to
 nothing left those lines ruled across a panel that was otherwise not there,
 which on a collapsed tracker is most of what is left to see. Everything
-heroPanel draws as an edge goes through `ns.BorderPaint` now — including the
-drop contour, which used to survive a transparent border and was a black outline
-around nothing.
+heroPanel draws as an edge goes through `ns.BorderPaint(alphaScale, key)` now —
+including the drop contour, which used to survive a transparent border and was a
+black outline around nothing. `key` is which panel's border is being asked
+about, since the two carry their own.
 
 ### The two things hanging off a quest line
 
@@ -323,7 +498,8 @@ heroPanel/
   Plate.lua       the panel chrome both trackers share — background, border,
                   corner chamfer, contour, gradient bars
   Trackers.lua    frame discovery and the collapse-aware height helper
-  Move.lua        drag, lock and scale, with saved geometry
+  Move.lua        drag, lock and scale, with saved geometry, and the resize
+                  grips both panels hang in their bottom-right corner
   Skin.lua        the quest panel — header row and the refresh triggers
   Lines.lua       line styling, quest blocks, right-aligned counts, hover
   Mplus.lua       the Mythic+ panel — keystone timer, chest tiers, threshold
@@ -341,6 +517,56 @@ tools/
                   editing a shape, and copy media/ into the addon folder
   mockclient/     boots heroPanel outside the game and checks the skin
 ```
+
+## The store
+
+`HEROPANEL_DB`, stamped with `dbVersion` so a change of shape can be migrated
+rather than dropped. `ns.ApplyDefaults` only ever fills in what is *missing*,
+which is right for a new key and useless for a key that has changed meaning — so
+`MigrateStore` in `Core.lua` runs first, carries the old values across, and
+clears the keys they came from. Clearing them matters as much as carrying them:
+two copies of a setting is how the next reader ends up guessing which one is
+live.
+
+```
+enabled  debug  dbVersion
+frame    locked, ownership, and per tracker: point, x, y, scale
+collapsed
+panel    watch / mplus: bgColor, bgOpacity, borderColor, borderAlpha,
+                        borderStyle, radius, textShadow, textShadowSize
+         options:       bgColor   -- the config window's own background
+autoHide combat, mythic -- the quest tracker only
+bg       texture             -- global; one piece of art for both panels
+font     face, and size = { watchHeader, watchTitle, watchBody,
+                            mplusHeader, mplusTimer, mplusBody, options }
+text     title, normal, done
+header   show
+options  where the window was left, and its scale; x and y are in UIParent's
+         space, because the window is scalable and an offset in its own units
+         means a different place on screen at a different scale
+glyph    mode
+```
+
+**v1 → v2** was two changes. One global `bg` / `border` / `radius` block became
+`panel.watch` and `panel.mplus`, with both inheriting whatever the single block
+said — so the first thing a player sees after upgrading is the panel they
+already had. And one `font.size` number with a `font.scale` percentage per panel
+became absolute sizes per role, each computed from what that role was actually
+being drawn at, rounded to a whole point.
+
+**v2 → v3** split the single `mplus` font size into `mplusHeader`, `mplusTimer`
+and `mplusBody`, again derived from what each was already drawn at so the panel
+looks identical afterwards and the three controls start from where the one
+control left it. It also forces `panel.*.radius` to 0. That one is the exception
+to leaving a player's choices alone, and deliberately: the radius control has
+been removed, so a store still holding 8 would be stuck at 8 with no way to see
+it and no way to change it. A stale value behind a reachable control is a
+preference; behind a removed one it is a bug.
+
+**v3 → v4** rewrites a `borderAlpha` of 0 — which is what the removed
+"Transparent" swatch wrote — as `borderStyle = "none"`. Same outcome, said in the
+form that still has a control behind it. A panel that was not transparent is left
+exactly alone.
 
 ## Development notes
 
@@ -473,7 +699,8 @@ tools/
   dragging.
 * **The boss block is three sizes, not one.** The required boss is title-sized,
   the extra-bosses heading sits a step under it and the bosses under that, all
-  as offsets from the configured base so `/hp font` still moves them together.
+  as offsets from the panel's own `mplus` size, so the Mythic+ font control
+  moves them together and keeps the steps between them.
   A defeated boss is marked by a check mark alone: it was a tick knocked out of
   a filled disc, which at 14 pixels read as a green blob with a notch in it.
 * **Ascension anchors enemy forces below the boss rows; the design puts it
@@ -623,10 +850,13 @@ tools/
   silent no-op. The font dropdown's rows deliberately start without one so a
   window-wide restyle cannot overwrite the face each is previewing, which made
   the order matter: `SetFont` first, then `SetText`.
-* **`ns.StylePlateChrome(plate, style)` takes an optional override.** The
-  trackers paint from `HEROPANEL_DB`; the options window passes its own fixed
-  tokens. Zero is a meaningful value for opacity, radius and alpha, and zero is
-  truthy in Lua, so the plain `or` fallbacks do the right thing with it.
+* **`ns.StylePlateChrome(plate, style)` paints from a resolved style table.** The
+  trackers pass `ns.PanelStyle("watch")` / `ns.PanelStyle("mplus")`; the options
+  window passes its own fixed tokens, and everything rounded inside it passes a
+  `BoxStyle`. Only `ns.PanelStyle` knows where a panel's chrome is stored, which
+  is what made splitting it per tracker a change to one function rather than to
+  every caller. Zero is a meaningful value for opacity, radius and alpha, and
+  zero is truthy in Lua, so the plain `or` fallbacks do the right thing with it.
 * **`border.style = "inset"` is a real style now**, not a synonym for hairline:
   the 1px line moves one pixel in and the dark contour moves from outside the
   plate onto the pixel it vacated. Two rows — dark outside, coloured inside — is

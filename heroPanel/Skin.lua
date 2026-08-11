@@ -43,10 +43,15 @@ local PAD_RIGHT       = 14
 local PAD_BOTTOM      = 13
 local HEADER_PAD_X    = 13
 local DIVIDER_FADE    = 24    -- the divider fades out over this much at each end
-local ICON_SIZE       = 17   -- lock glyph, well over the design's 12
+local ICON_SIZE       = 19   -- lock glyph, well over the design's 12
 -- The caret is a chevron: wide and shallow, so it needs a little more box than
 -- a lock to carry the same weight on screen - but only a little.
-local CARET_SIZE      = 15   -- collapse chevron, a point under the lock
+local CARET_SIZE      = 15   -- collapse chevron, a few points under the lock
+-- The caret's clickable box and its hover tint, both larger than the glyph.
+-- A 15px chevron is a thin shape with a lot of empty space inside its own
+-- bounding box, so a hit area the size of the art is a hit area that mostly
+-- misses.
+local CARET_HIT       = 26
 local BADGE_HEIGHT    = 14
 local BADGE_PAD_X     = 6
 local HOVER_INTERVAL  = 0.1
@@ -113,7 +118,7 @@ end
 
 local function NewFontString(parent, layer)
     local fontString = parent:CreateFontString(nil, layer or "OVERLAY")
-    fontString:SetFont(ns.GetFontFile(), ns.GetFontSize(0, "watch"))
+    fontString:SetFont(ns.GetFontFile(), ns.GetFontSize(0, "watchHeader"))
     return fontString
 end
 
@@ -150,7 +155,10 @@ local function BuildPlate(watch)
     header.lock = CreateFrame("Button", nil, plate)
     header.lock:SetWidth(ICON_SIZE + 4)
     header.lock:SetHeight(ICON_SIZE + 4)
-    header.lockIcon = ns.NewGlyph(header.lock, ICON_SIZE)
+    -- Outlined, like the caret below. Both are drawn in a mid grey over
+    -- whatever the world is doing behind a panel the player can make
+    -- transparent, and grey over a lit hillside is not a shape.
+    header.lockIcon = ns.NewGlyph(header.lock, ICON_SIZE, true)
     header.lockIcon:SetPoint("CENTER")
 
     header.label     = NewFontString(plate)
@@ -164,11 +172,39 @@ local function BuildPlate(watch)
     header.badgeText = NewFontString(plate)
 
     header.caretHover = NewTexture(plate, "BORDER")
-    header.caretHover:SetWidth(20)
-    header.caretHover:SetHeight(20)
+    header.caretHover:SetWidth(CARET_HIT)
+    header.caretHover:SetHeight(CARET_HIT)
     header.caretHover:Hide()
 
-    header.caret = ns.NewGlyph(plate, CARET_SIZE)
+    header.caret = ns.NewGlyph(plate, CARET_SIZE, true)
+
+    -- The caret's own click target.
+    --
+    -- Clicking the chevron used to depend on one of two things underneath it:
+    -- header.hit, which spans the row but sits below the tracker's frame level,
+    -- or Blizzard's collapse button, which is wherever the tracker put it and
+    -- is not the same rectangle as the glyph heroPanel draws. Once a tracker has
+    -- been unlocked in a session it keeps the mouse, and from then on header.hit
+    -- stops receiving anything - so the caret's live area shrank to whatever
+    -- part of Blizzard's button happened to be under it, which after the glyph
+    -- grew was a good deal smaller than the glyph.
+    --
+    -- A button of its own, raised above the tracker the way the lock is, means
+    -- the thing you click is the thing you can see.
+    header.caretButton = CreateFrame("Button", nil, plate)
+    header.caretButton:SetWidth(CARET_HIT)
+    header.caretButton:SetHeight(CARET_HIT)
+
+    -- The corner handle that scales the tracker. Hidden while the trackers are
+    -- locked, which is what it is for: it belongs to the state you are in while
+    -- you are arranging the panel, not to the state you play in.
+    plate.grip = ns.NewResizeGrip(plate, {
+        label    = "objective tracker",
+        deferred = true,   -- WatchFrame is protected, so a rescale can be refused
+        visible  = function() return not ns.IsLocked() end,
+        get      = function() return ns.db.frame.watch.scale or 1 end,
+        set      = function(scale) ns.SetScale("watch", scale) end,
+    })
 
     return plate
 end
@@ -402,12 +438,15 @@ local function AnchorCaret()
 
     header.caretHover:ClearAllPoints()
     header.caretHover:SetPoint("CENTER", header.caret, "CENTER", 0, 0)
+
+    header.caretButton:ClearAllPoints()
+    header.caretButton:SetPoint("CENTER", header.caret, "CENTER", 0, 0)
 end
 
 local function StylePlate()
     if not plate then return end
 
-    ns.StylePlateChrome(plate)
+    ns.StylePlateChrome(plate, ns.PanelStyle("watch"))
 
     ------------------------------------------------------------------
     -- Header row
@@ -419,7 +458,7 @@ local function StylePlate()
     -- on a collapsed tracker is most of what is left to see.
     -- Seven tenths of the border's weight: the divider is a suggestion of a
     -- line under the header rather than a second border across the panel.
-    local hr, hg, hb, ha, hasEdge = ns.BorderPaint(0.7)
+    local hr, hg, hb, ha, hasEdge = ns.BorderPaint(0.7, "watch")
     local divider = plate.divider
 
     divider.left:ClearAllPoints()
@@ -461,18 +500,22 @@ local function StylePlate()
     -- disappeared whatever it was set to, and a one-pixel black shadow is what
     -- makes text hold against a background heroPanel does not control.
     local lr, lg, lb = ns.HexToRGB(ns.PALETTE.headerLabel)
-    header.label:SetFont(ns.GetFontFile(), ns.GetFontSize(-0.5, "watch"))
+    header.label:SetFont(ns.GetFontFile(), ns.GetFontSize(0, "watchHeader"))
     header.label:SetTextColor(lr, lg, lb, 1)
-    header.label:SetShadowColor(0, 0, 0, 0.9)
-    header.label:SetShadowOffset(1, -1)
+    -- Forced on. The rest of the panel's shadow is a setting; the header band
+    -- is the part most often over open sky, and these two have carried a shadow
+    -- from the start for that reason. The configured size still applies.
+    ns.ApplyTextShadow(header.label, "watch", true)
     header.label:ClearAllPoints()
     header.label:SetPoint("LEFT", header.lock, "RIGHT", 8, 0)
 
     local mr, mg, mb = ns.HexToRGB(ns.PALETTE.headerCount)
-    header.badgeText:SetFont(ns.GetFontFile(), ns.GetFontSize(-2.5, "watch"))
+    -- Two and a half points under the label it sits beside. That step is the
+    -- design's, not a setting: the badge is an annotation on the header rather
+    -- than a second heading, and it stays one at every header size.
+    header.badgeText:SetFont(ns.GetFontFile(), ns.GetFontSize(-2.5, "watchHeader"))
     header.badgeText:SetTextColor(mr, mg, mb, 1)
-    header.badgeText:SetShadowColor(0, 0, 0, 0.9)
-    header.badgeText:SetShadowOffset(1, -1)
+    ns.ApplyTextShadow(header.badgeText, "watch", true)
     header.badgeText:ClearAllPoints()
     header.badgeText:SetPoint("LEFT", header.label, "RIGHT", 8 + BADGE_PAD_X, 0)
 
@@ -535,6 +578,18 @@ local function LayoutPlate(watch, contentBottom)
 
     header.lock:SetFrameStrata(strata)
     header.lock:SetFrameLevel(level + 1)
+
+    -- Same treatment as the lock, and for the same reason: an unlocked tracker
+    -- is mouse-enabled across its whole rectangle, so a collapse button left
+    -- below it would stop taking clicks the moment the tracker was first
+    -- unlocked in a session.
+    header.caretButton:SetFrameStrata(strata)
+    header.caretButton:SetFrameLevel(level + 1)
+
+    -- The grip is the other thing that has to take its own clicks: an unlocked
+    -- tracker is mouse-enabled across its whole rectangle, and the grip sits
+    -- inside it.
+    if plate.grip then plate.grip:Raise(strata, level) end
 
     local nativeHeader = NativeHeaderHeight(watch)
     local headerHeight = ns.db.header.show and HEADER_HEIGHT or 0
@@ -607,6 +662,7 @@ local function UpdateHeader(watch)
         header.badgeFill:Show()
         header.badgeText:Show()
         header.caret:Show()
+        header.caretButton:Show()
         -- The divider is an edge, so a border turned off keeps it off rather
         -- than having it come back on the next redraw.
         for _, texture in pairs(plate.divider) do
@@ -619,6 +675,7 @@ local function UpdateHeader(watch)
         header.badgeFill:Hide()
         header.badgeText:Hide()
         header.caret:Hide()
+        header.caretButton:Hide()
         header.caretHover:Hide()
         for _, texture in pairs(plate.divider) do texture:Hide() end
     end
@@ -642,6 +699,16 @@ local function Refresh(reason)
 
         local watch = ns.GetTrackerFrame("watch")
         if not watch then return end
+
+        -- Auto-hide wins over everything below. Without this the next refresh -
+        -- and a fight produces plenty - would put the plate straight back up
+        -- over a tracker that has been faded out from under it, which is the
+        -- worst of both: heroPanel's chrome on screen with no tracker in it.
+        if skin.IsAutoHidden and skin.IsAutoHidden() then
+            plate:Hide()
+            if ns.Lines then ns.Lines.ClearHover() end
+            return
+        end
 
         if not watch:IsVisible() then
             plate:Hide()
@@ -688,6 +755,93 @@ local function Refresh(reason)
     end)
 end
 skin.Refresh = Refresh
+
+--------------------------------------------------------------------------------
+-- Auto-hide
+--
+-- Getting the quest tracker out of the way on its own: during a fight, and for
+-- the length of a Mythic+ run, each independently.
+--
+-- The tracker is hidden by taking its alpha to zero rather than by calling Hide
+-- on it. That is not a shortcut - it is the only thing that works. WatchFrame is
+-- protected and Hide is among the calls the client refuses under lockdown, and
+-- "hide in combat" has to take effect at the exact moment lockdown begins, so
+-- the one route that would look obvious is the one route that is guaranteed to
+-- fail every single time. SetAlpha is neither protected nor something
+-- Blizzard's layout code reads back, so it lands whatever else is happening.
+--
+-- heroPanel's own plate is hidden properly, because that one is ours.
+--
+-- What this does not do is take the mouse off the tracker. EnableMouse *is*
+-- protected, so an invisible tracker that has been unlocked at some point in
+-- the session still occupies its rectangle for targeting purposes. That is the
+-- same trade the lock already makes and it is written down in Move.lua; making
+-- it worse in combat is not worth a call that would be refused anyway.
+--
+-- The alpha heroPanel took away is remembered, so turning the feature off - or
+-- turning the skin off - puts back whatever the tracker had rather than
+-- assuming it was 1.
+--------------------------------------------------------------------------------
+
+local autoHidden       = false
+local trackerAlphaSaved            -- the tracker's own alpha before we took it
+
+local function AutoHideWanted()
+    local auto = ns.db and ns.db.autoHide
+    if not auto then return false end
+    if auto.combat and InCombatLockdown() then return true end
+    -- Asked of the Mythic+ module rather than of the API directly, so there is
+    -- one answer to "is a key running" and the two panels cannot disagree.
+    if auto.mythic and ns.Mplus and ns.Mplus.IsActive and ns.Mplus.IsActive() then
+        return true
+    end
+    return false
+end
+
+-- Returns true when the tracker is currently hidden by this, which is what
+-- stops Refresh from showing the plate again underneath it.
+local function ApplyAutoHide()
+    local watch  = ns.GetTrackerFrame("watch")
+    local wanted = skin.enabled and AutoHideWanted() or false
+
+    if wanted == autoHidden then return autoHidden end
+    autoHidden = wanted
+
+    if wanted then
+        if watch then
+            if trackerAlphaSaved == nil then
+                local ok, alpha = pcall(watch.GetAlpha, watch)
+                trackerAlphaSaved = (ok and alpha) or 1
+            end
+            pcall(watch.SetAlpha, watch, 0)
+        end
+        if plate then plate:Hide() end
+        if ns.Lines then ns.Lines.ClearHover() end
+        ns.Debug("objective tracker auto-hidden.")
+    else
+        if watch and trackerAlphaSaved ~= nil then
+            pcall(watch.SetAlpha, watch, trackerAlphaSaved)
+            trackerAlphaSaved = nil
+        end
+        ns.Debug("objective tracker auto-hide lifted.")
+        Refresh("auto-hide lifted")
+    end
+
+    return autoHidden
+end
+skin.ApplyAutoHide = ApplyAutoHide
+
+function skin.IsAutoHidden() return autoHidden end
+
+-- Called by the options window when either toggle changes, so the state is
+-- re-evaluated without waiting for the next combat transition.
+function skin.RefreshAutoHide()
+    ApplyAutoHide()
+    if not autoHidden then Refresh("auto-hide setting changed") end
+end
+
+ns:On("PLAYER_REGEN_DISABLED", function() ApplyAutoHide() end)
+ns:On("PLAYER_REGEN_ENABLED",  function() ApplyAutoHide() end)
 
 --------------------------------------------------------------------------------
 -- Collapse
@@ -743,9 +897,14 @@ local function HoverTick()
         return
     end
 
+    -- The caret's own button and Blizzard's collapse button, which are the two
+    -- things that reliably collapse the tracker. It used to be the whole header
+    -- strip, and that stopped being honest once the tracker started keeping the
+    -- mouse after its first unlock: the strip is below the tracker's frame
+    -- level, so it would light up under a cursor whose click went nowhere.
     local overCollapse = ns.db.header.show
         and ((blizz.collapse and blizz.collapse:IsShown() and ns.MouseIsOver(blizz.collapse))
-             or ns.MouseIsOver(header.hit))
+             or ns.MouseIsOver(header.caretButton))
     if overCollapse then header.caretHover:Show() else header.caretHover:Hide() end
 
     if ns.Lines then ns.Lines.UpdateHover() end
@@ -790,6 +949,17 @@ local function InstallHooks(watch)
     header.hit:SetScript("OnMouseUp", function(_, button)
         if button == "LeftButton" then skin.ToggleCollapse() end
     end)
+
+    header.caretButton:SetScript("OnClick", function() skin.ToggleCollapse() end)
+    -- The tint is left to the hover ticker, which owns it: two things setting
+    -- the same texture from different events is how it ends up flickering.
+    header.caretButton:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine(ns.IsCollapsed("watch") and "Expand the tracker"
+            or "Collapse the tracker", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    header.caretButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     header.lock:SetScript("OnClick", function()
         ns:ToggleLock("watch")
@@ -843,6 +1013,19 @@ end
 
 function skin.Disable()
     skin.enabled = false
+
+    -- Before anything else, and unconditionally: a tracker heroPanel faded out
+    -- must not be left faded out by the switch that is supposed to hand it
+    -- back. ApplyAutoHide's own early return is keyed on the flag, so the flag
+    -- is cleared here rather than relying on it noticing.
+    if autoHidden then
+        local watch = ns.GetTrackerFrame("watch")
+        if watch and trackerAlphaSaved ~= nil then
+            pcall(watch.SetAlpha, watch, trackerAlphaSaved)
+        end
+        trackerAlphaSaved = nil
+        autoHidden = false
+    end
 
     if hoverTicker then hoverTicker:Stop() end
     if ns.Lines then ns.Lines.Restore() end
@@ -1376,8 +1559,22 @@ function skin.Probe(includeOurs)
         end, { maxDepth = PROBE_DEPTH, includeRegions = true })
     end
 
-    -- Top down, which is how the panel is read.
+    -- Foreign regions first, then top down within each half.
+    --
+    -- Position alone was the sort, and "/hp probe all" then buried its own
+    -- answer: heroPanel's regions are the overwhelming majority - the panel is
+    -- solid blocks, and an outlined glyph in its block fallback is five copies
+    -- of a shape that was already a few dozen textures - so a single piece of
+    -- another addon's art near the bottom of the panel fell past the listing
+    -- limit. That is the exact failure the note below describes, arriving by a
+    -- different route, and the fix belongs here rather than in a bigger limit:
+    -- the interesting rows go first, whatever the limit turns out to be.
+    for i = 1, #found do
+        found[i].ours = IsOurs(found[i].info.parent)
+    end
+
     table.sort(found, function(a, b)
+        if a.ours ~= b.ours then return b.ours end
         local aTop, bTop = a.region:GetTop() or 0, b.region:GetTop() or 0
         if aTop == bTop then return (a.region:GetLeft() or 0) < (b.region:GetLeft() or 0) end
         return aTop > bTop
@@ -1396,7 +1593,7 @@ function skin.Probe(includeOurs)
         local region = found[i].region
         local info   = found[i].info
         local owner  = info.parent
-        local ours   = IsOurs(owner)
+        local ours   = found[i].ours
 
         if ours then mine = mine + 1 end
 

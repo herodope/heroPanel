@@ -91,51 +91,135 @@ ns.defaults = {
         mplus = false,
     },
 
+    -- Panel chrome, one block per tracker.
+    --
+    -- This used to be one global set - db.bg, db.border, db.radius - shared by
+    -- both panels. Two panels sharing one background opacity is a compromise
+    -- rather than a setting: the Mythic+ panel is a dense block of numbers that
+    -- wants something solid behind it, and the quest tracker is a column of
+    -- lines a player often wants nearly transparent over the world. Neither
+    -- choice is wrong and there was no way to have both.
+    --
+    -- The backdrop texture stays global, below: it is one piece of art, and two
+    -- panels drawn from different ones would read as two addons.
+    panel = {
+        -- The options window's own background, and only that.
+        --
+        -- The rest of its chrome stays a design token: its border, its corner
+        -- and its shadow are what make it read as a dialog over the UI rather
+        -- than as a third tracker, and none of them is worth a control. The
+        -- background is different because it is the one thing a player looks
+        -- at for as long as the window is open.
+        options = {
+            bgColor = "#161826",
+        },
+        watch = {
+            bgColor     = "#14161F",
+            bgOpacity   = 1.0,
+            borderColor = "#33364A",
+            -- Still separate from the style, and still reaching the same place
+            -- from the other end: alpha 0 and style "none" both turn off every
+            -- edge heroPanel draws. There is no longer a control that sets it
+            -- to 0 - the border swatch row had a "Transparent" entry and it was
+            -- a second way to say what the style's None already said, which is
+            -- one control too many for one outcome. The key stays because
+            -- Plate.lua reads it, and the v4 migration turns an existing
+            -- alpha of 0 into style "none" so nobody loses the setting.
+            borderAlpha = 1.0,
+            borderStyle = "hairline",
+            -- Square, and no longer configurable.
+            --
+            -- There are no rounded corners on 3.3.5a and heroPanel ships no
+            -- corner art, so this was only ever a chamfer of nought to three
+            -- pixels approximated by stepping the plate in - four outcomes
+            -- behind a seventeen-position slider, and at gameplay distance the
+            -- difference between the four is not visible. It stays in the store
+            -- because Plate.lua reads it and a future build might ship real
+            -- corner art; it is not in the options window, because a control
+            -- nobody can see the effect of is a control that reads as broken.
+            radius      = 0,
+
+            -- A black outline behind every string this panel draws.
+            --
+            -- Off by default, because the design's colours were chosen against
+            -- a solid background and an outline on text that does not need one
+            -- only makes it muddy. It earns its place the moment the background
+            -- opacity comes down: the panel then reads over whatever the world
+            -- is doing behind it, and colour on its own cannot hold text
+            -- against a background heroPanel does not control.
+            --
+            -- The two header strings have carried a one-pixel shadow from the
+            -- start for exactly that reason. This is the same idea offered to
+            -- the rest of the panel and made adjustable, because how much of it
+            -- is wanted depends entirely on how transparent the panel was made.
+            textShadow     = false,
+            textShadowSize = 1,     -- 1 to 3 px
+        },
+        mplus = {
+            bgColor     = "#14161F",
+            bgOpacity   = 1.0,
+            borderColor = "#33364A",
+            borderAlpha = 1.0,
+            borderStyle = "hairline",
+            radius      = 0,
+            textShadow     = false,
+            textShadowSize = 1,
+        },
+    },
+
+    -- Getting the quest tracker out of the way on its own.
+    --
+    -- Both of these hide the tracker by taking its alpha to zero rather than by
+    -- calling Hide on it. That is not a shortcut, it is the only thing that
+    -- works: WatchFrame is protected, Hide is one of the calls the client
+    -- refuses under lockdown, and "hide in combat" has to take effect at the
+    -- exact moment lockdown begins. SetAlpha is not protected, so it lands
+    -- every time. heroPanel's own plate is hidden properly, since that one is
+    -- ours.
+    autoHide = {
+        combat = false,
+        mythic = false,
+    },
+
     bg = {
-        color   = "#14161F",
-        opacity = 1.0,
         texture = "flat",
     },
-
-    border = {
-        color = "#33364A",
-        -- Separate from the style, and reaching the same place from the other
-        -- end: alpha 0 and style "none" both turn off every edge heroPanel
-        -- draws. The options window offers both because "no border colour" and
-        -- "no border" are the same thought arrived at differently, and a player
-        -- who has set one does not expect the other to still be drawing.
-        alpha = 1.0,
-        style = "hairline",
-    },
-
-    radius = 8,
 
     font = {
         -- Resolved through LibSharedMedia by Media.lua. This value is the one
         -- face 3.3.5a always has, and it is answered without asking the library
         -- so the default cannot depend on LSM being installed.
         face = "Friz Quadrata TT",
-        -- 12, as the design's spec sheet has it.
-        --
-        -- This was 13 for a while, on the reasoning that objectives draw half a
-        -- point under the base and 12 would therefore put them at 11.5 - under
-        -- the tracker's own 12, so the skin would make its own text smaller than
-        -- the text it replaced. That is true and it is still the trade, but the
-        -- handoff fixes 12 as the default and the slider's marked default has to
-        -- mean something. Anyone who wants the old behaviour sets 13 in the
-        -- options panel and gets exactly it; Lines.lua's growth clamp is what
-        -- bounds how far up this can usefully go.
-        size = 12,
 
-        -- Per-panel multipliers on that base. The three panels are different
-        -- sizes and sit at different distances from where the player is
-        -- looking, so one number for all of them made every change a
-        -- compromise. 1.0 means "just the base", which is what every existing
-        -- store gets when this key is filled in.
-        scale = {
-            watch   = 1.0,
-            mplus   = 1.0,
-            options = 1.0,
+        -- Absolute point sizes, one per text role.
+        --
+        -- This was a single base size plus a per-panel multiplier, and that
+        -- shape was wrong twice over. The multiplier was applied to a base that
+        -- already carried the design's half-point steps, so the number a player
+        -- set and the number on screen were never the same one; and every role
+        -- inside a panel moved together, so making the quest names bigger made
+        -- the objectives bigger with them whether or not that was wanted.
+        --
+        -- These are what they say they are: the size that role is drawn at.
+        -- The small steps the design puts on one string relative to the rest of
+        -- its role - the tracked-quest badge sitting under the header beside
+        -- it, a boss row over the body of the Mythic+ panel - stay in the code
+        -- as deltas, because they are proportions rather than preferences.
+        size = {
+            watchHeader = 16,   -- "QUESTS" and the tracked-quest badge
+            watchTitle  = 14,   -- quest names
+            watchBody   = 12,   -- objectives, descriptions and their counts
+
+            -- The Mythic+ panel splits the same way the quest tracker does,
+            -- and for the same reason: one number moved the whole panel, so
+            -- making the boss rows readable also made the timer take a third
+            -- of the panel. The timer gets its own control because it is the
+            -- one element that is deliberately several times everything else.
+            mplusHeader = 13,   -- dungeon name and keystone level
+            mplusTimer  = 24,   -- the clock
+            mplusBody   = 12,   -- chest tiers, enemy forces, boss rows
+
+            options     = 16,   -- this options window
         },
     },
 
@@ -155,10 +239,13 @@ ns.defaults = {
         show = true,
     },
 
-    -- Where the options window was left. point = nil means "never moved", which
-    -- centres it - deliberately away from where either tracker lives, so the
-    -- config never opens on top of the frames it configures.
-    options = { point = nil, x = 0, y = 0 },
+    -- Where the options window was left, and how big it was left. point = nil
+    -- means "never moved", which centres it - deliberately away from where
+    -- either tracker lives, so the config never opens on top of the frames it
+    -- configures. x and y are in UIParent's space rather than the window's own,
+    -- because the window is scalable and an offset in its own units means a
+    -- different place on screen at a different scale.
+    options = { point = nil, x = 0, y = 0, scale = 1.0 },
 
     glyph = {
         -- auto | art | blocks. See the glyph notes in Util.lua; "auto" uses the
@@ -223,8 +310,131 @@ local function ApplyDefaults(target, defaults)
 end
 ns.ApplyDefaults = ApplyDefaults
 
+--------------------------------------------------------------------------------
+-- Migration
+--
+-- ApplyDefaults only ever fills in what is missing, which is right for a new
+-- key and useless for a key that has changed shape. Two of them have: one
+-- global panel style became one per tracker, and one base font size with
+-- per-panel multipliers became five absolute sizes.
+--
+-- A store written before that is not wrong, it is in the old shape, and
+-- dropping it would cost a player every colour they had chosen. So it is
+-- carried across once and the old keys are cleared, which is also what stops
+-- the next reader wondering which of the two is live.
+--------------------------------------------------------------------------------
+
+local DB_VERSION = 4
+
+local function Round(value)
+    return math.floor((tonumber(value) or 0) + 0.5)
+end
+
+local function MigrateStore(db)
+    if db.dbVersion == DB_VERSION then return end
+
+    -- v1 -> v2, panel chrome. Both panels inherit whatever the one global set
+    -- said, so the first thing a player sees after the upgrade is the panel
+    -- they already had.
+    -- Tested per key rather than on the bg block as a whole. A store missing
+    -- one of the three - written by a build that predates it, or hand-edited -
+    -- must still hand over the two it does have, because the old keys are
+    -- cleared below either way and anything not carried across here is gone.
+    local oldBg     = type(db.bg) == "table" and db.bg or nil
+    local oldBorder = type(db.border) == "table" and db.border or nil
+
+    if oldBg or oldBorder or db.radius then
+        if type(db.panel) ~= "table" then db.panel = {} end
+        for _, key in ipairs({ "watch", "mplus" }) do
+            if type(db.panel[key]) ~= "table" then db.panel[key] = {} end
+            local target = db.panel[key]
+            if oldBg then
+                target.bgColor   = target.bgColor   or oldBg.color
+                target.bgOpacity = target.bgOpacity or oldBg.opacity
+            end
+            if oldBorder then
+                target.borderColor = target.borderColor or oldBorder.color
+                target.borderAlpha = target.borderAlpha or oldBorder.alpha
+                target.borderStyle = target.borderStyle or oldBorder.style
+            end
+            target.radius = target.radius or db.radius
+        end
+        if oldBg then oldBg.color, oldBg.opacity = nil, nil end
+    end
+    db.border, db.radius = nil, nil
+
+    -- v1 -> v2, font sizes. The old base carried the design's half-point steps
+    -- and the old scale multiplied the result, so each role's new size is what
+    -- that role was actually being drawn at, rounded to a whole point - the
+    -- sizes are absolute now and half a point is not a thing a slider offers.
+    local font = db.font
+    if type(font) == "table" and type(font.size) ~= "table" then
+        local base   = tonumber(font.size) or 12
+        local scale  = type(font.scale) == "table" and font.scale or {}
+        local watch  = tonumber(scale.watch)   or 1
+        font.size = {
+            watchHeader = Round((base - 0.5) * watch),
+            watchTitle  = Round((base + 0.5) * watch),
+            watchBody   = Round((base - 0.5) * watch),
+            mplus       = Round(base * (tonumber(scale.mplus)   or 1)),
+            options     = Round(base * (tonumber(scale.options) or 1)),
+        }
+    end
+    if type(font) == "table" then font.scale = nil end
+
+    ------------------------------------------------------------------
+    -- v2 -> v3
+    ------------------------------------------------------------------
+
+    -- The corner radius control is gone, so a store still holding 8 would be
+    -- stuck at 8 with no way back. A stale value behind a removed control is
+    -- worse than a changed default: the player cannot see it and cannot reach
+    -- it. Font sizes are deliberately *not* forced the same way - those are
+    -- still controllable, so a value someone chose stays chosen.
+    if type(db.panel) == "table" then
+        for _, key in ipairs({ "watch", "mplus" }) do
+            if type(db.panel[key]) == "table" then db.panel[key].radius = 0 end
+        end
+    end
+
+    -- One Mythic+ font size became three. Each new role is what that part of
+    -- the panel was already being drawn at - the header a point over the base,
+    -- the clock twelve over it - so the panel looks identical afterwards and
+    -- the three controls start from where the one control left it.
+    if type(font) == "table" and type(font.size) == "table" and font.size.mplus then
+        local mplus = tonumber(font.size.mplus) or 12
+        font.size.mplusHeader = font.size.mplusHeader or (mplus + 1)
+        font.size.mplusTimer  = font.size.mplusTimer  or (mplus + 12)
+        font.size.mplusBody   = font.size.mplusBody   or mplus
+        font.size.mplus = nil
+    end
+
+    ------------------------------------------------------------------
+    -- v3 -> v4
+    ------------------------------------------------------------------
+
+    -- The border swatch row had a "Transparent" entry that set borderAlpha to
+    -- 0, which is the same outcome border style "None" already produced. Two
+    -- controls for one result is one too many, so the swatch is gone - and a
+    -- store that used it has to keep meaning what it meant, or a player's
+    -- borderless panel comes back with a border on. Saying it the way that is
+    -- still expressible is the whole job.
+    if type(db.panel) == "table" then
+        for _, key in ipairs({ "watch", "mplus" }) do
+            local saved = db.panel[key]
+            if type(saved) == "table" and saved.borderAlpha == 0 then
+                saved.borderAlpha = 1
+                saved.borderStyle = "none"
+            end
+        end
+    end
+
+    db.dbVersion = DB_VERSION
+end
+
 function ns.InitDB()
     if type(HEROPANEL_DB) ~= "table" then HEROPANEL_DB = {} end
+    MigrateStore(HEROPANEL_DB)
     ApplyDefaults(HEROPANEL_DB, ns.defaults)
     ns.db    = HEROPANEL_DB
     ns.DEBUG = HEROPANEL_DB.debug and true or false
@@ -319,10 +529,11 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp help|r - this list")
     ns.Print("  |cFFC2C6D8/hp lock|r - lock both trackers in place")
     ns.Print("  |cFFC2C6D8/hp unlock|r - unlock both trackers for dragging")
-    ns.Print("  |cFFC2C6D8/hp scale <watch|mplus> <0.5-1.5>|r - set tracker scale")
+    ns.Print("  |cFFC2C6D8/hp scale <watch|mplus> <0.5-1.5>|r - set tracker scale "
+        .. "(|cFF8B8FA3or unlock and drag the grip in a panel's bottom-right corner|r)")
     ns.Print("  |cFFC2C6D8/hp reset [watch|mplus]|r - clear saved position and scale")
     ns.Print("  |cFFC2C6D8/hp mode <auto|own|holder|yield>|r - who positions the trackers")
-    ns.Print("  |cFFC2C6D8/hp font <8-20>|r - set the base text size")
+    ns.Print("  |cFFC2C6D8/hp font <8-30>|r - set every text size at once")
     ns.Print("  |cFFC2C6D8/hp fontface <name>|r - set the LibSharedMedia face by name")
     ns.Print("  |cFFC2C6D8/hp glyphs <auto|art|blocks>|r - where the lock and caret come from")
     ns.Print("  |cFFC2C6D8/hp skin [on|off]|r - skin the trackers, or hand them back to Blizzard")
@@ -419,19 +630,30 @@ SlashCmdList["HEROPANEL"] = function(input)
             ns.Print("  |cFF8B8FA3blocks|r - always the drawn shapes")
         end
     elseif cmd == "font" then
-        -- Kept alongside the options panel's slider rather than replaced by it.
-        -- A changed default does not reach a store that already has the key -
-        -- ApplyDefaults only fills in what is missing, by design - so this is
-        -- also the quickest way to move a store written by an older build.
+        -- One number for every role, which is the only thing a single argument
+        -- can sensibly mean now that there are five of them. The per-role sizes
+        -- are the options window's job; this is the blunt instrument for
+        -- putting the whole skin back to a legible size in one line.
         local size = tonumber(rest)
-        if ns.db and size and size >= 8 and size <= 20 then
-            ns.db.font.size = size
+        if ns.db and size and size >= ns.FONT_SIZE_MIN and size <= ns.FONT_SIZE_MAX then
+            for role in pairs(ns.db.font.size) do
+                ns.db.font.size[role] = size
+            end
             ns.Media.Apply("font size changed")
             if ns.Options then pcall(ns.Options.Sync) end
-            ns.Print("font size set to |cFFC2C6D8%.1f|r.", size)
+            ns.Print("every font size set to |cFFC2C6D8%d|r.", size)
         else
-            ns.Print("usage: /hp font <8-20>  (currently %.1f)",
-                (ns.db and ns.db.font.size) or 12)
+            ns.Print("usage: /hp font <%d-%d> - sets every role at once "
+                .. "(|cFF8B8FA3/hp|r sets them individually)",
+                ns.FONT_SIZE_MIN, ns.FONT_SIZE_MAX)
+            if ns.db then
+                ns.Print("  quests: header %d, name %d, description %d",
+                    ns.GetFontSize(0, "watchHeader"), ns.GetFontSize(0, "watchTitle"),
+                    ns.GetFontSize(0, "watchBody"))
+                ns.Print("  Mythic+: header %d, timer %d, body %d; this window %d",
+                    ns.GetFontSize(0, "mplusHeader"), ns.GetFontSize(0, "mplusTimer"),
+                    ns.GetFontSize(0, "mplusBody"), ns.GetFontSize(0, "options"))
+            end
         end
     elseif cmd == "fontface" then
         -- The face is chosen from the options panel's dropdown, which previews

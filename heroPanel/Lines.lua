@@ -9,10 +9,11 @@
     nothing else. No line is re-anchored, resized, reparented, shown or hidden,
     and no script is attached to one. In particular:
 
-      * fonts are only ever made smaller, never larger. The tracker measures
-        each line and places the next one before heroPanel sees it, so growing
-        a line would wrap it into its neighbour - and fixing that would mean
-        moving lines, which is exactly what must not happen here.
+      * fonts are set, not moved. The tracker measures each line and places the
+        next one before heroPanel sees it, so text set large enough will crowd
+        the line under it - and the fix for that is never to start moving lines
+        here. It is the panel's resize grip, which scales the tracker and lets
+        the tracker lay itself out again at the new size.
       * the objective counter is highlighted by wrapping it in a colour escape.
         Escape sequences draw nothing and measure nothing, so the line is the
         same width afterwards as the width the tracker laid out.
@@ -211,6 +212,11 @@ end
 -- Styling
 --------------------------------------------------------------------------------
 
+-- The shadow is recorded along with the font and the colour, because heroPanel
+-- sets one now and Restore has to be able to take it off again. Blizzard's
+-- quest lines carry no shadow, so in practice this reads back as alpha 0 and a
+-- zero offset - but reading it is what makes that a fact rather than an
+-- assumption about a client heroPanel does not control.
 local function Remember(fontString)
     local original = originals[fontString]
     if original then return original end
@@ -218,36 +224,48 @@ local function Remember(fontString)
     local path, size, flags = fontString:GetFont()
     local r, g, b, a = fontString:GetTextColor()
     original = { path = path, size = size, flags = flags, r = r, g = g, b = b, a = a }
+
+    if type(fontString.GetShadowColor) == "function" then
+        local ok, sr, sg, sb, sa = pcall(fontString.GetShadowColor, fontString)
+        if ok then original.shadow = { sr, sg, sb, sa } end
+    end
+    if type(fontString.GetShadowOffset) == "function" then
+        local ok, ox, oy = pcall(fontString.GetShadowOffset, fontString)
+        if ok then original.shadowOffset = { ox, oy } end
+    end
+
     originals[fontString] = original
     return original
 end
 
--- How far a line may grow past the size the tracker laid it out at.
+-- The configured size, whatever it is.
 --
--- Lines used to be clamped to the tracker's own size and never allowed to grow
--- at all. The reason still holds - the tracker measures each line and places
--- the next one before heroPanel sees it, so a bigger font cannot ask for more
--- room - but the clamp also meant the objective size, half a point under the
--- base, could only ever come out *smaller* than Blizzard's. The skin was making
--- its own text harder to read than the text it replaced.
+-- This used to clamp growth to two points over the size the tracker had laid
+-- the line out at, on the reasoning that the tracker measures each line and
+-- places the next one before heroPanel sees it, so a bigger font cannot ask for
+-- more room. That reasoning is still true and the clamp was still wrong: this
+-- client lays quest text out at 12, so the ceiling was 14 and every font
+-- setting from 14 upwards drew identically. Dragging the size from 16 to 20
+-- moved the header and the objective counts - which are heroPanel's own
+-- FontStrings and were never clamped - and left the quest names and their
+-- descriptions exactly where they were. A control that stops responding
+-- half way along its track reads as broken, and explaining that it is a
+-- deliberate ceiling does not make it read as anything else.
 --
--- So growth is allowed, and bounded. This client lays lines out on a 14px pitch
--- with a 12px font, so a couple of points fits in the gap the tracker already
--- left; open-ended growth would run lines into each other, and no amount of
--- configuration should be able to do that.
-local FONT_GROW_MAX = 2
-
+-- So the size is applied as configured. Text large enough to crowd the line
+-- below it will crowd the line below it; the answer to that is the panel's
+-- resize grip, which is a thing the player can see themselves doing something
+-- about. Remember() still records the original, so Restore hands Blizzard's
+-- tracker back exactly as it was found.
 local function SetLineFont(fontString, wanted)
     local original = Remember(fontString)
     local path = ns.GetFontFile()
     if not path then return end
-
-    local size = wanted
-    if original.size and original.size > 0 then
-        local ceiling = original.size + FONT_GROW_MAX
-        if size > ceiling then size = ceiling end
-    end
-    pcall(fontString.SetFont, fontString, path, size, original.flags)
+    pcall(fontString.SetFont, fontString, path, wanted, original.flags)
+    -- Every line the skin touches, so turning the shadow on reaches the quest
+    -- text rather than only the header. This is the half of the panel that sits
+    -- over the world for the longest.
+    ns.ApplyTextShadow(fontString, "watch")
 end
 
 local function ClearDecoration(fontString)
@@ -608,6 +626,7 @@ local function ShowDash(dash, r, g, b)
     end
     Remember(dash)
     dash:SetTextColor(r, g, b, 1)
+    ns.ApplyTextShadow(dash, "watch")
 end
 
 --------------------------------------------------------------------------------
@@ -678,9 +697,12 @@ local function StyleCounter(placed, line, fontString, r, g, b)
     decorated[fontString] = { raw = line.raw, shown = label }
     fontString:SetText(label)
 
-    counter:SetFont(ns.GetFontFile(), ns.GetFontSize(-0.5, "watch"))
+    -- The right-aligned count is part of the objective it belongs to, so it
+    -- takes the description size rather than a size of its own.
+    counter:SetFont(ns.GetFontFile(), ns.GetFontSize(0, "watchBody"))
     counter:SetText(count)
     counter:SetTextColor(r, g, b, 1)
+    ns.ApplyTextShadow(counter, "watch")
 
     -- The plate and the tracker share a scale chain, so the line's measured top
     -- is usable directly as an offset on our own frame.
@@ -834,8 +856,8 @@ function lines.Apply(watch)
     end
     minLeft = minLeft or 0
 
-    local titleSize = ns.GetFontSize(0.5, "watch")
-    local lineSize  = ns.GetFontSize(-0.5, "watch")
+    local titleSize = ns.GetFontSize(0, "watchTitle")
+    local lineSize  = ns.GetFontSize(0, "watchBody")
 
     local tr, tg, tb = ns.HexToRGB(db.text.title)
     local nr, ng, nb = ns.HexToRGB(db.text.normal)
@@ -1068,6 +1090,18 @@ function lines.Restore()
         if original.r then
             pcall(fontString.SetTextColor, fontString, original.r, original.g, original.b, original.a or 1)
         end
+        -- The shadow goes back to whatever it was, which on this client is
+        -- nothing. Falling back to nothing rather than leaving it alone is the
+        -- point: leaving it would hand Blizzard's tracker back with heroPanel's
+        -- outline still on it, which is the sort of thing "/hp skin off restores
+        -- everything" has to actually mean.
+        local shadow = original.shadow
+        pcall(fontString.SetShadowColor, fontString,
+            shadow and shadow[1] or 0, shadow and shadow[2] or 0,
+            shadow and shadow[3] or 0, shadow and shadow[4] or 0)
+        local offset = original.shadowOffset
+        pcall(fontString.SetShadowOffset, fontString,
+            offset and offset[1] or 0, offset and offset[2] or 0)
     end
     wipe(originals)
 end

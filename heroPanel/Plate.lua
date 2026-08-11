@@ -97,6 +97,38 @@ function ns.BuildPlateChrome(plate)
 end
 
 --------------------------------------------------------------------------------
+-- One panel's chrome, resolved
+--
+-- The two trackers carry their own background, border and radius now, so
+-- nothing downstream reaches into HEROPANEL_DB for them - everything takes a
+-- resolved style table and only this function knows where the values live.
+-- That is what makes the options window's own chrome the same kind of thing as
+-- a tracker's: a style table, from a different source.
+--
+-- key is "watch" or "mplus". An unknown key resolves to the quest tracker,
+-- which is the panel a caller that has not said is almost certainly drawing.
+--------------------------------------------------------------------------------
+
+function ns.PanelStyle(key)
+    local saved = ns.db and ns.db.panel and ns.db.panel[key or "watch"]
+    if type(saved) ~= "table" then
+        saved = (ns.db and ns.db.panel and ns.db.panel.watch) or {}
+    end
+
+    -- Zero is a meaningful value for an opacity and an alpha, and zero is
+    -- truthy in Lua, so `or` is the right operator here: only a missing key
+    -- falls through to the literal.
+    return {
+        bgColor     = saved.bgColor     or "#14161F",
+        bgOpacity   = saved.bgOpacity   or 1,
+        borderColor = saved.borderColor or "#33364A",
+        borderAlpha = saved.borderAlpha or 1,
+        borderStyle = saved.borderStyle or "hairline",
+        radius      = saved.radius      or 8,
+    }
+end
+
+--------------------------------------------------------------------------------
 -- What an edge is painted with
 --
 -- The panel's border is not only the four lines around the plate. The header's
@@ -115,16 +147,14 @@ end
 -- fewer thing on screen that has to be explained.
 --------------------------------------------------------------------------------
 
-function ns.BorderPaint(alphaScale)
-    local db = ns.db
-    if not db then return 0, 0, 0, 0, false end
+function ns.BorderPaint(alphaScale, key)
+    if not ns.db then return 0, 0, 0, 0, false end
 
-    local style = db.border.style or "hairline"
-    local alpha = db.border.alpha or 1
-    if style == "none" or alpha <= 0 then return 0, 0, 0, 0, false end
+    local style = ns.PanelStyle(key)
+    if style.borderStyle == "none" or style.borderAlpha <= 0 then return 0, 0, 0, 0, false end
 
-    local r, g, b = ns.HexToRGB(db.border.color)
-    return r, g, b, alpha * (alphaScale or 1), true
+    local r, g, b = ns.HexToRGB(style.borderColor)
+    return r, g, b, style.borderAlpha * (alphaScale or 1), true
 end
 
 --------------------------------------------------------------------------------
@@ -133,15 +163,18 @@ end
 -- Reads the config and paints. Split from layout so a colour change from the
 -- options panel does not have to re-measure anything.
 --
--- ns.StylePlateChrome(plate) paints from HEROPANEL_DB, which is what both
--- trackers want. ns.StylePlateChrome(plate, style) overrides any subset of it:
+-- ns.StylePlateChrome(plate, style) paints from a resolved style table:
 --
 --     bgColor bgOpacity borderColor borderAlpha borderStyle radius shadowAlpha
 --
--- The options panel is the caller that needs this. Its own chrome is fixed by
--- the design and must not follow the player's panel colours, because it is the
--- window they change those colours in - a config panel that restyles itself as
--- you drag a swatch makes it impossible to see what you are actually setting.
+-- The trackers pass ns.PanelStyle("watch") / ns.PanelStyle("mplus"). The
+-- options panel passes one of its own, because its chrome is fixed by the
+-- design and must not follow the player's panel colours - it is the window they
+-- change those colours in, and a config panel that restyles itself as you drag
+-- a swatch makes it impossible to see what you are actually setting.
+--
+-- Omitting the style resolves the quest tracker's, so a caller that has not
+-- said still gets a panel rather than nothing.
 --
 -- Zero is a meaningful value for opacity, radius and alpha, and zero is truthy
 -- in Lua, so the plain `or` fallbacks below do the right thing with it.
@@ -151,23 +184,22 @@ function ns.StylePlateChrome(plate, style)
     if not (plate and plate.bg) then return end
 
     local db = ns.db
+    style = style or ns.PanelStyle("watch")
 
-    local bgColor     = (style and style.bgColor)     or db.bg.color
-    local bgOpacity   = (style and style.bgOpacity)   or db.bg.opacity
-    local borderColor = (style and style.borderColor) or db.border.color
-    local borderAlpha = (style and style.borderAlpha) or db.border.alpha or 1
-    local borderStyle = (style and style.borderStyle) or db.border.style or "hairline"
-    local radius      = (style and style.radius)      or db.radius
-    local shadowAlpha = (style and style.shadowAlpha) or 0.45
+    local bgColor     = style.bgColor     or "#14161F"
+    local bgOpacity   = style.bgOpacity   or 1
+    local borderColor = style.borderColor or "#33364A"
+    local borderAlpha = style.borderAlpha or 1
+    local borderStyle = style.borderStyle or "hairline"
+    local radius      = style.radius      or 8
+    local shadowAlpha = style.shadowAlpha or 0.45
 
     local notch  = ns.NotchFor(radius)
     local br, bg, bb = ns.HexToRGB(bgColor)
     local opacity    = ns.Clamp(bgOpacity, 0, 1)
     local er, eg, eb = ns.HexToRGB(borderColor)
 
-    -- Only the trackers' own texture setting is worth reporting on; the options
-    -- panel never asks for one.
-    if not style and db.bg.texture and db.bg.texture ~= "flat" then
+    if db and db.bg and db.bg.texture and db.bg.texture ~= "flat" then
         ns.Debug("backdrop texture '%s' is not implemented; drawing flat.", tostring(db.bg.texture))
     end
 
