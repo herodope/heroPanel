@@ -130,8 +130,19 @@ function methods:SetTexCoord(...) self.__texCoord = { ... } end
 -- fails the addon's own media the way a client that cannot read .tga would.
 local NOMEDIA = os.getenv("HP_NOMEDIA")
 
+-- Paths that never load, in every mode.
+--
+-- GetSpellInfo handing back an icon path is not a promise the client can draw
+-- it: Ascension's custom affixes return paths that resolve to nothing, and
+-- SetTexture does not complain - it just leaves the texture blank. A blank
+-- texture on a shown, mouse-enabled button is an invisible icon that still
+-- answers the cursor with a tooltip, which is what turned up on the live
+-- client. Modelled here so the guard against it is actually exercised.
+local UNLOADABLE = { ["Interface\\Icons\\affix_broken"] = true }
+
 function methods:SetTexture(path)
     if NOMEDIA and path and string.find(path, "\\media\\", 1, true) then return false end
+    if path and UNLOADABLE[path] then return false end
     self.__texture = path
     return true
 end
@@ -418,7 +429,12 @@ UIParent.__rect = { left = 0, right = 1600, top = 900, bottom = 0 }
 DEFAULT_CHAT_FRAME = { AddMessage = function(_, msg) note(msg) end }
 
 GameTooltip = new("Frame", "GameTooltip", UIParent)
-GameTooltip.SetOwner = function() end
+-- The owner is tracked rather than ignored, because "whose tooltip is this?"
+-- is a question heroPanel has to ask: a frame hidden while the cursor is on it
+-- never gets its OnLeave, so whatever opened the tooltip has to take it down
+-- on the way out or it stays on screen over nothing.
+GameTooltip.SetOwner = function(self, owner) self.__owner = owner; self:Show() end
+GameTooltip.IsOwned  = function(self, frame) return self.__owner == frame end
 GameTooltip.AddLine  = function() end
 
 GameFontNormal = new("Font", "GameFontNormal", nil)
@@ -682,7 +698,17 @@ MYTHIC_PLUS_BONUS_LEVEL_PERCENT = { 0.55, 0.4 }
 
 function GetLFGDungeonInfo(id) return "Halls of Reflection" end
 
-local AFFIX_NAMES = { [1001] = "Tyrannical", [1002] = "Bolstering", [1003] = "Volcanic" }
+-- Eight, because that is what a key on this client can carry, plus one whose
+-- icon does not load - the shape of Ascension's own creature and player affixes.
+local AFFIX_NAMES = {
+    [1001] = "Tyrannical", [1002] = "Bolstering", [1003] = "Volcanic",
+    [1004] = "Sanguine",   [1005] = "Necrotic",   [1006] = "Raging",
+    [1007] = "Quaking",    [1008] = "Grievous",
+    [1099] = "Pack Tactics",
+}
+
+-- The one with no usable art.
+local AFFIX_BROKEN = 1099
 
 -- Encounter state, which is the authority on whether a boss is down. The
 -- tracker's rows are told about a kill before the server has committed it, so
@@ -703,6 +729,9 @@ end
 function GetSpellInfo(spellID)
     local name = AFFIX_NAMES[spellID]
     if not name then return nil end
+    -- A real path as far as GetSpellInfo is concerned; UNLOADABLE above is what
+    -- decides it will not draw, which is the client's half of the same lie.
+    if spellID == AFFIX_BROKEN then return name, "Level 2", "Interface\\Icons\\affix_broken" end
     return name, "Level 2", "Interface\\Icons\\affix_" .. spellID
 end
 
@@ -2017,6 +2046,150 @@ check(keyLabel ~= nil, "the keystone level should be drawn inline as (12)")
 check(mplusTracker.HeaderText:GetText() == "Halls of Reflection",
     "Ascension's own header string must not be rewritten")
 
+--------------------------------------------------------------------------------
+-- Short dungeon names
+--
+-- The header gives the dungeon name about 158px between the padlock and the
+-- affix icons, and nothing clamps it: a long name runs underneath them. The
+-- table in Mplus.lua shortens the long ones.
+--
+-- What this mock CAN check is the table and the wiring. What it cannot check is
+-- whether a given short name fits, because it measures five pixels per
+-- character regardless of font size - so the budget is enforced here as a
+-- character limit, which is the thing that was actually measured against real
+-- font metrics. See the note in "Known unverified" in TESTING.md.
+--------------------------------------------------------------------------------
+
+local NAME_CHAR_LIMIT = 20
+
+check(ns.Mplus.ShortName("Blackrock Depths - Upper City") == "BRD - Upper City",
+    "a long dungeon name should be shortened, got "
+    .. tostring(ns.Mplus.ShortName("Blackrock Depths - Upper City")))
+
+-- Matching is on a normalised form, so whichever separator this client uses
+-- lands on the same row.
+for _, spelling in ipairs({ "Blackrock Depths: Upper City", "Blackrock Depths Upper City",
+                            "blackrock depths - upper city", "BLACKROCK DEPTHS UPPER CITY" }) do
+    check(ns.Mplus.ShortName(spelling) == "BRD - Upper City",
+        "the separator and case should not matter: " .. spelling .. " gave "
+        .. tostring(ns.Mplus.ShortName(spelling)))
+end
+
+check(ns.Mplus.ShortName("Some Dungeon Ascension Added") == "Some Dungeon Ascension Added",
+    "a name the table does not know should come back untouched")
+check(ns.Mplus.ShortName("Deadmines") == "Deadmines",
+    "a name that is already short enough should come back untouched")
+check(ns.Mplus.ShortName(nil) == nil, "a nil name should not error")
+
+-- The whole table, spelled out, because two things about it are easy to break
+-- by editing one row: the character budget, and the naming convention.
+--
+-- The convention is "dungeon - wing", with the same " - " separator every time.
+-- It was mixed at first - "SM Graveyard" beside "DM - East" - which reads as
+-- two different schemes rather than one, so it is pinned here rather than left
+-- to whoever adds the next row.
+local EXPECTED = {
+    { "Ragefire Chasm",                "Ragefire Chasm" },
+    { "Deadmines",                     "Deadmines" },
+    { "Stormwind Stockades",           "Stockades" },
+    { "Scarlet Monastery - Graveyard", "SM - Graveyard" },
+    { "Scarlet Monastery - Library",   "SM - Library" },
+    { "Scarlet Monastery - Armory",    "SM - Armory" },
+    { "Scarlet Monastery - Cathedral", "SM - Cathedral" },
+    { "Razorfen Kraul",                "Razorfen Kraul" },
+    { "Razorfen Downs",                "Razorfen Downs" },
+    { "Gnomeregan",                    "Gnomeregan" },
+    { "Uldaman",                       "Uldaman" },
+    { "Maraudon",                      "Mara" },
+    { "Maraudon - Purple Crystals",    "Mara - Purple" },
+    { "Maraudon - Orange Crystals",    "Mara - Orange" },
+    { "Maraudon - Pristine Waters",    "Mara - Princess" },
+    { "Zul'Farrak",                    "Zul'Farrak" },
+    { "Sunken Temple",                 "Sunken Temple" },
+    { "Scholomance",                   "Scholo" },
+    { "Scholomance - Lower",           "Scholo - Lower" },
+    { "Scholomance - Upper",           "Scholo - Upper" },
+    { "Lower Blackrock Spire",         "LBRS" },
+    { "Upper Blackrock Spire",         "UBRS" },
+    { "Stratholme",                    "Strat" },
+    { "Stratholme - Main Gate",        "Strat - Live" },
+    { "Stratholme - Service Gate",     "Strat - Undead" },
+    { "Dire Maul",                     "DM" },
+    { "Dire Maul - East",              "DM - East" },
+    { "Dire Maul - West",              "DM - West" },
+    { "Dire Maul - North",             "DM - North" },
+    { "Blackrock Depths",              "BRD" },
+    { "Blackrock Depths - Prison",     "BRD - Prison" },
+    { "Blackrock Depths - Upper City", "BRD - Upper City" },
+}
+
+for _, row in ipairs(EXPECTED) do
+    local full, want = row[1], row[2]
+    local short = ns.Mplus.ShortName(full)
+
+    check(short == want,
+        string.format("%s should shorten to %q, got %q", full, want, tostring(short)))
+
+    -- The budget. This is the check that stops a future entry being added
+    -- straight back into the overlap the table exists to prevent.
+    check(short ~= nil and #short <= NAME_CHAR_LIMIT,
+        string.format("%s shortens to %q, %d chars, over the %d-char budget",
+            full, tostring(short), #tostring(short), NAME_CHAR_LIMIT))
+
+    -- A wing is joined with " - " and nothing else. A short name that splits on
+    -- a bare space when the full name had a wing is the mixed scheme coming
+    -- back: "SM Graveyard" rather than "SM - Graveyard".
+    if string.find(full, " %- ") then
+        check(string.find(short, " %- ") ~= nil,
+            string.format("%s has a wing, so %q should join it with ' - '", full, short))
+    end
+end
+
+-- ...and the wiring: the panel draws the short name while Read still reports
+-- the raw one, so /hp mplus can show a table row that never matched.
+--
+-- Both sources are set, because they are the two routes to data.dungeon and
+-- which one runs depends on the client: GetLFGDungeonInfo when C_MythicPlus is
+-- there, the tracker's own HeaderText when it is not. Shortening happens where
+-- the name is drawn, so it has to reach a name that arrived either way - and
+-- under HP_MINIMAL this is the only route there is.
+GetLFGDungeonInfo = function() return "Blackrock Depths - Upper City" end
+mplusTracker.HeaderText:SetText("Blackrock Depths - Upper City")
+ns.Mplus.Refresh("test: a long dungeon name")
+tick(); tick()
+
+local shortLabel, rawLabel
+for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+    local text = region.GetText and region:GetText()
+    if text == "BRD - Upper City" then shortLabel = region end
+    if text == "Blackrock Depths - Upper City" then rawLabel = region end
+end
+check(shortLabel ~= nil, "the header should draw the shortened name")
+check(rawLabel == nil, "the header should not still be drawing the full name")
+check(ns.Mplus.Read().dungeon == "Blackrock Depths - Upper City",
+    "Read should still report the name the game gave, got "
+    .. tostring(ns.Mplus.Read().dungeon))
+
+-- The name and keystone have the whole row to themselves now that the affixes
+-- have their own beneath it, so what has to hold is that the pair stays inside
+-- the panel. The affix collision is checked in the affix section, vertically -
+-- the two are no longer competing for the same horizontal space.
+if shortLabel then
+    local keystone
+    for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+        if region.GetText and region:GetText() == "(12)" then keystone = region end
+    end
+    check(keystone and keystone:GetRight() <= HeroPanelMplusPlate:GetRight() - 13,
+        "the name and keystone should stay inside the panel's content column, got "
+        .. tostring(keystone and keystone:GetRight()) .. " against "
+        .. tostring(HeroPanelMplusPlate:GetRight() - 13))
+end
+
+GetLFGDungeonInfo = function() return "Halls of Reflection" end
+mplusTracker.HeaderText:SetText("Halls of Reflection")
+ns.Mplus.Refresh("test: back to the usual name")
+tick(); tick()
+
 -- The timer row reads remaining time, and the total beside it.
 local clock, total
 for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
@@ -2343,14 +2516,34 @@ tick(); tick()
 --------------------------------------------------------------------------------
 -- Affixes
 --
--- Drawn as heroPanel's own buttons from the keystone's affix spell IDs, in the
--- header's top-right corner, each with the game's tooltip on hover.
+-- Drawn as heroPanel's own buttons from the keystone's affix spell IDs, on
+-- their own row under the dungeon name, each with the game's tooltip on hover.
+--
+-- They used to share the name row, anchored right-to-left from the panel's
+-- top-right corner. Eight of them at 20px is 181px of a 262px content width, so
+-- sharing meant driving through the dungeon name whatever it was shortened to.
 --------------------------------------------------------------------------------
 
-local affixButtons = {}
-for _, child in ipairs(HeroPanelMplusPlate.__children) do
-    if child.affixID then table.insert(affixButtons, child) end
+local function shownAffixes()
+    local found = {}
+    for _, child in ipairs(HeroPanelMplusPlate.__children) do
+        if child.affixID and child:IsShown() then table.insert(found, child) end
+    end
+    table.sort(found, function(a, b) return a:GetLeft() < b:GetLeft() end)
+    return found
 end
+
+local function setAffixes(list)
+    C_MythicPlus.GetActiveKeystoneInfo = function()
+        return { keystoneLevel = 12, dungeonID = 668, rewardMultiplier = 1,
+                 activeAffixes = list }
+    end
+    ns.Mplus.Refresh("test: affixes")
+    tick(); tick()
+    return shownAffixes()
+end
+
+local affixButtons = shownAffixes()
 
 if MINIMAL then
     -- No C_MythicPlus, so no affix list to read; the row is simply absent
@@ -2360,18 +2553,43 @@ else
     check(#affixButtons == 3,
         "the keystone's three affixes should be drawn, got " .. #affixButtons)
 
-    table.sort(affixButtons, function(a, b) return a:GetRight() > b:GetRight() end)
+    local plateTop, plateLeft = HeroPanelMplusPlate:GetTop(), HeroPanelMplusPlate:GetLeft()
 
-    check(affixButtons[1]:GetRight() <= HeroPanelMplusPlate:GetRight(),
+    check(affixButtons[1]:GetLeft() >= plateLeft,
+        "affixes belong inside the panel's left edge")
+    check(affixButtons[#affixButtons]:GetRight() <= HeroPanelMplusPlate:GetRight(),
         "affixes belong inside the panel's right edge")
-    check(affixButtons[1]:GetTop() > HeroPanelMplusPlate:GetTop() - 30,
-        "affixes belong in the header row")
-    check(affixButtons[1]:GetRight() > affixButtons[2]:GetRight(),
-        "affixes should lay out right to left, first one outermost")
+
+    -- Their own row: below the 30px name row, not in it.
+    check(affixButtons[1]:GetTop() <= plateTop - 30,
+        "affixes belong under the name row, got top "
+        .. tostring(affixButtons[1]:GetTop()) .. " against a plate top of " .. tostring(plateTop))
+
+    -- On the panel's content column, the same left margin as the timer glyph,
+    -- the bars and the enemy-forces row.
+    check(math.abs(affixButtons[1]:GetLeft() - (plateLeft + 13)) < 0.01,
+        "the affix row should start on the content column at +13, got "
+        .. tostring(affixButtons[1]:GetLeft() - plateLeft))
+
+    check(affixButtons[1]:GetLeft() < affixButtons[2]:GetLeft(),
+        "affixes should lay out left to right, first one leftmost")
+    check(affixButtons[1]:GetWidth() == 20,
+        "an affix icon should be 20px, got " .. tostring(affixButtons[1]:GetWidth()))
     check(affixButtons[1].icon:GetTexture() == "Interface\\Icons\\affix_1001",
         "the affix icon should come from GetSpellInfo, got "
         .. tostring(affixButtons[1].icon:GetTexture()))
     check(affixButtons[1]:IsMouseEnabled(), "an affix needs the mouse for its tooltip")
+
+    -- The dungeon name is what the old placement collided with, and the point
+    -- of the move is that it now cannot.
+    local nameRow
+    for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+        if region.GetText and region:GetText() == "Halls of Reflection" then nameRow = region end
+    end
+    if nameRow then
+        check(affixButtons[#affixButtons]:GetTop() <= nameRow:GetBottom(),
+            "no affix should reach up into the dungeon name's row")
+    end
 
     -- The tooltip is the whole reason these take the mouse, so it has to run.
     local enter = affixButtons[1]:GetScript("OnEnter")
@@ -2380,6 +2598,122 @@ else
         local ok = pcall(enter, affixButtons[1])
         check(ok, "hovering an affix must not error")
     end
+
+    ------------------------------------------------------------------
+    -- Eight of them, which is this client's maximum
+    ------------------------------------------------------------------
+
+    local eight = setAffixes({ 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008 })
+    check(#eight == 8, "all eight affixes should be drawn, got " .. #eight)
+    check(eight[8]:GetRight() <= HeroPanelMplusPlate:GetRight() - 13,
+        "eight affixes should still sit inside the content column's right edge, got "
+        .. tostring(eight[8]:GetRight()) .. " against "
+        .. tostring(HeroPanelMplusPlate:GetRight() - 13))
+
+    -- One row, not two: every icon shares a top edge.
+    for i = 2, #eight do
+        check(math.abs(eight[i]:GetTop() - eight[1]:GetTop()) < 0.01,
+            "affix " .. i .. " should share the row's top edge")
+    end
+
+    -- A client that reports more than the panel plans for is clamped rather
+    -- than allowed to run off the edge.
+    local nine = setAffixes({ 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1001 })
+    check(#nine == 8, "more than eight affixes should be capped at eight, got " .. #nine)
+
+    ------------------------------------------------------------------
+    -- An affix whose icon does not load is not drawn at all
+    --
+    -- This is the invisible-affix bug: the button was shown and mouse-enabled
+    -- on the strength of GetSpellInfo returning a path, without anyone checking
+    -- the path drew anything. What was left was a hoverable hole - no icon, but
+    -- a tooltip on mouseover.
+    ------------------------------------------------------------------
+
+    local mixed = setAffixes({ 1001, AFFIX_BROKEN, 1002 })
+    check(#mixed == 2,
+        "an affix with an unloadable icon should not be drawn, expected 2 got " .. #mixed)
+
+    for _, button in ipairs(mixed) do
+        check(button.affixID ~= AFFIX_BROKEN,
+            "the affix with no art should not be left holding an affixID - that is "
+            .. "what makes an invisible button answer with a tooltip")
+        check(button.icon:GetTexture() ~= "Interface\\Icons\\affix_broken",
+            "no drawn affix should be wearing the icon that does not load")
+    end
+
+    -- The two that did load close the gap rather than leaving a hole where the
+    -- third would have been.
+    check(math.abs(mixed[1]:GetLeft() - (HeroPanelMplusPlate:GetLeft() + 13)) < 0.01,
+        "the first drawn affix still starts the row")
+    check(math.abs((mixed[2]:GetLeft() - mixed[1]:GetLeft()) - 23) < 0.01,
+        "the surviving affixes should sit next to each other, got a gap of "
+        .. tostring(mixed[2]:GetLeft() - mixed[1]:GetLeft()))
+
+    -- Every affix unloadable: the row goes away entirely rather than leaving a
+    -- band of invisible buttons across the panel.
+    local none = setAffixes({ AFFIX_BROKEN })
+    check(#none == 0, "an affix list with no usable art should draw nothing, got " .. #none)
+
+    ------------------------------------------------------------------
+    -- A tooltip does not outlive the button that opened it
+    --
+    -- The affix list changes mid-run - a key ends, a refresh lands - and a
+    -- button hidden while the cursor is on it never receives OnLeave. Without
+    -- this the tooltip is left up over an empty panel.
+    ------------------------------------------------------------------
+
+    local hovered = setAffixes({ 1001, 1002, 1003 })[2]
+    hovered:GetScript("OnEnter")(hovered)
+    check(GameTooltip:IsOwned(hovered), "the hovered affix should own the tooltip")
+    check(GameTooltip:IsShown(), "hovering should put the tooltip up")
+
+    setAffixes({ 1001 })
+    check(not hovered:IsShown(), "the affix that went away should be hidden")
+    check(not GameTooltip:IsShown(),
+        "hiding the hovered affix should take its tooltip with it - a hidden "
+        .. "button gets no OnLeave, so nothing else will")
+
+    ------------------------------------------------------------------
+    -- The row's height is the panel's, and only when there is a row
+    ------------------------------------------------------------------
+
+    local function timerTop()
+        for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+            local text = region.GetText and region:GetText()
+            if text and string.match(text, "^%d+:%d%d$") then return region:GetTop() end
+        end
+    end
+
+    local function forcesLabelTop()
+        for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+            if region.GetText and region:GetText() == "Enemy Forces" then return region:GetTop() end
+        end
+    end
+
+    setAffixes({})
+    local bareTimer = timerTop()
+    setAffixes({ 1001, 1002, 1003 })
+    local rowTimer = timerTop()
+
+    if bareTimer and rowTimer then
+        check(math.abs((bareTimer - rowTimer) - 24) < 0.01,
+            "the affix row should push the timer down by 4 + 20, got "
+            .. tostring(bareTimer - rowTimer))
+    end
+
+    -- The panel's own height does NOT change, and that is right: with boss rows
+    -- on screen LayoutPlate sizes the plate from the tracker's content, not from
+    -- heroPanel's block. What the extra 24px can do is push heroPanel's rows
+    -- down into the tracker's first boss row, and that is what has to hold.
+    -- The topmost boss row is at 470 in this mock.
+    local forcesTop = forcesLabelTop()
+    check(forcesTop and forcesTop > 470,
+        "the enemy-forces row must still clear the topmost boss row at 470 with "
+        .. "the affix row in place, got " .. tostring(forcesTop))
+
+    -- Back to the three the rest of the run expects.
+    setAffixes({ 1001, 1002, 1003 })
 end
 
 --------------------------------------------------------------------------------

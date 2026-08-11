@@ -52,11 +52,26 @@ local PAD_LEFT        = 14
 local PAD_RIGHT       = 14
 local PAD_BOTTOM      = 11
 local HEADER_PAD_X    = 13
-local HEADER_HEIGHT   = 30
+local HEADER_HEIGHT   = 30    -- the name row alone, not the whole header block
 local HEADER_GAP      = 7     -- lock -> dungeon name
 local KEY_GAP         = 3     -- dungeon name -> keystone level, deliberately tighter
-local AFFIX_SIZE      = 15
+
+-- The affixes have their own row under the dungeon name.
+--
+-- They used to be anchored right-to-left from the header's top-right corner,
+-- sharing the name row. That only works while there are few of them and they
+-- are small: this client runs up to eight, and at 20px eight of them are 181px
+-- of a 262px content width, so they would take the whole row and drive straight
+-- through the dungeon name whatever the name was shortened to. A row of their
+-- own removes the contest rather than tuning it.
+--
+-- Left to right on the panel's own content column, so the first affix is
+-- leftmost and the row starts where the timer glyph, the bars and the enemy
+-- forces row start.
+local AFFIX_SIZE      = 20
 local AFFIX_GAP       = 3
+local AFFIX_ROW_TOP   = 4     -- gap between the name row and the affix row
+local AFFIX_MAX       = 8     -- what this client can put on a key
 
 local TIMER_ROW_TOP   = 12    -- margin above the timer row
 local TIMER_GLYPH     = 14
@@ -110,6 +125,102 @@ local STRATA_BELOW = {
 }
 
 --------------------------------------------------------------------------------
+-- SHORT DUNGEON NAMES
+--
+-- The header draws the dungeon name between the padlock and the affix icons,
+-- and nothing arbitrates that gap: the name is anchored left and grows right,
+-- the affixes are anchored right and grow left, so a long name runs underneath
+-- them. At the design's 288px panel and the 13px header default the name has
+-- about 158px to live in - roughly 20 characters in a font of Friz Quadrata's
+-- width - and "Blackrock Depths: Upper City" is half as long again.
+--
+-- So the long ones are shortened here. Every dungeon is listed, including the
+-- ones whose name is already short enough, so that the whole set is in one
+-- place if this ever becomes something the player can edit.
+--
+-- A dungeon with wings reads "dungeon - wing", with the same " - " separator
+-- every time: "SM - Graveyard", "DM - East", "BRD - Upper City". A dungeon with
+-- no wings is just its own name. Mixing the two - "SM Graveyard" beside
+-- "DM - East" - reads as two schemes rather than one, so the harness pins it.
+--
+-- Each row is { short name, full name, alias, alias, ... }. Matching is done on
+-- a normalised form - lowercased, with everything that is not a letter or digit
+-- removed - so "SM: Graveyard", "SM - Graveyard" and "Scarlet Monastery
+-- Graveyard" all land on the same row and the separator Ascension happens to
+-- use does not matter. A name that matches nothing is drawn as the game gave
+-- it, which is what the panel did before this existed.
+--
+-- The aliases are guesses at what this client's GetLFGDungeonInfo returns, and
+-- a wrong guess fails silently - the full name simply keeps being drawn. That
+-- is why `data.dungeon` below stays raw and only the *drawn* string is
+-- shortened: `/hp mplus` reports the name the game actually gave, so a row that
+-- never fires can be seen and corrected.
+--------------------------------------------------------------------------------
+
+local SHORT_NAMES = {
+    { "Ragefire Chasm", "Ragefire Chasm" },
+    { "Deadmines",      "Deadmines", "The Deadmines" },
+    { "Stockades",      "Stormwind Stockades", "The Stockade", "The Stockades" },
+
+    { "SM - Graveyard", "Scarlet Monastery - Graveyard", "SM Graveyard" },
+    { "SM - Library",   "Scarlet Monastery - Library",   "SM Library" },
+    { "SM - Armory",    "Scarlet Monastery - Armory",    "SM Armory" },
+    { "SM - Cathedral", "Scarlet Monastery - Cathedral", "SM Cathedral" },
+
+    { "Razorfen Kraul", "Razorfen Kraul" },
+    { "Razorfen Downs", "Razorfen Downs" },
+    { "Gnomeregan",     "Gnomeregan" },
+    { "Uldaman",        "Uldaman" },
+
+    { "Mara",            "Maraudon" },
+    { "Mara - Purple",   "Maraudon - Purple Crystals", "Mara Purple Crystals" },
+    { "Mara - Orange",   "Maraudon - Orange Crystals", "Mara Orange Crystals" },
+    -- Princess Theradras is behind the Pristine Waters entrance, and she is
+    -- what the wing gets called in a group.
+    { "Mara - Princess", "Maraudon - Pristine Waters", "Mara Pristine Waters" },
+
+    { "Zul'Farrak",     "Zul'Farrak" },
+    { "Sunken Temple",  "Sunken Temple", "The Temple of Atal'Hakkar" },
+
+    { "Scholo",         "Scholomance" },
+    { "Scholo - Lower", "Scholomance - Lower", "Scholomance Lower" },
+    { "Scholo - Upper", "Scholomance - Upper", "Scholomance Upper" },
+
+    { "LBRS",           "Lower Blackrock Spire" },
+    { "UBRS",           "Upper Blackrock Spire" },
+
+    { "Strat",          "Stratholme" },
+    { "Strat - Live",   "Stratholme - Main Gate",    "Stratholme Main Gate" },
+    { "Strat - Undead", "Stratholme - Service Gate", "Stratholme Service Gate" },
+
+    { "DM",             "Dire Maul" },
+    { "DM - East",      "Dire Maul - East",  "Dire Maul East" },
+    { "DM - West",      "Dire Maul - West",  "Dire Maul West" },
+    { "DM - North",     "Dire Maul - North", "Dire Maul North" },
+
+    { "BRD",            "Blackrock Depths" },
+    { "BRD - Prison",     "Blackrock Depths - Prison",     "Blackrock Depths Prison" },
+    { "BRD - Upper City", "Blackrock Depths - Upper City", "Blackrock Depths Upper City" },
+}
+
+local function NormaliseName(name)
+    return (string.gsub(string.lower(tostring(name or "")), "[^%a%d]", ""))
+end
+
+-- Built once from the rows above rather than written out twice.
+local shortByName = {}
+for i = 1, #SHORT_NAMES do
+    local row = SHORT_NAMES[i]
+    for alias = 2, #row do shortByName[NormaliseName(row[alias])] = row[1] end
+end
+
+-- The name as the header should draw it. Unknown names come back untouched.
+function mplus.ShortName(name)
+    if not name or name == "" then return name end
+    return shortByName[NormaliseName(name)] or name
+end
+
+--------------------------------------------------------------------------------
 -- State
 --------------------------------------------------------------------------------
 
@@ -119,6 +230,10 @@ local faded    = {}             -- region -> original alpha, for Disable()
 local original = {}             -- FontString -> font/colour, for Disable()
 local rows     = {}             -- pooled boss-row decorations
 local affixes  = {}             -- pooled affix icons
+-- How much the affix row adds to the header block, recomputed by LayoutAffixes
+-- on every draw. Zero when there are no affixes to draw, so a panel without
+-- them is exactly as tall as it was before the row existed.
+local affixRowHeight = 0
 local decorated = {}            -- FontString -> { raw, shown }, text we rewrote
 local lockMouse = {}            -- button -> original mouse state, for Disable()
 local hooked   = false
@@ -793,37 +908,76 @@ local function GetAffixButton(index)
     return button
 end
 
--- Right to left from the header's right edge, so the first affix is always
--- outermost however many there are.
+-- Taken out of service: cleared, untooltipped and hidden.
+--
+-- The tooltip matters. A hidden frame gets no OnLeave, so a button that is
+-- hidden while the cursor is on it leaves its tooltip on screen with nothing
+-- under it to dismiss it.
+local function HideAffix(button)
+    if not button then return end
+    button.affixID = nil
+
+    if _G.GameTooltip and type(GameTooltip.IsOwned) == "function" then
+        local ok, owned = pcall(GameTooltip.IsOwned, GameTooltip, button)
+        if ok and owned then pcall(GameTooltip.Hide, GameTooltip) end
+    end
+
+    button:Hide()
+end
+
+-- Left to right along the affix row, under the dungeon name.
+--
+-- A button is only shown once its icon has actually loaded, which is the fix
+-- for the invisible affixes. GetSpellInfo returning a texture path is not the
+-- same as that path resolving to art: this client's custom affixes hand back
+-- paths the client will not draw, and SetTexture does not complain. What was
+-- left was a shown, mouse-enabled button with nothing in it - an invisible icon
+-- that still answered the cursor with a tooltip.
+--
+-- ns.SetTextureFile is the addon's existing answer to "did that actually load",
+-- and it substitutes ns.SOLID when nothing in the chain did. A button that ends
+-- up on the substitute is not drawn at all, so it takes no space and no mouse.
 local function LayoutAffixes(list)
     local shown = 0
+    local count = math.min(#(list or {}), AFFIX_MAX)
 
-    for i = 1, #(list or {}) do
+    for i = 1, count do
         local affixID = tonumber(list[i])
-        local icon
+
+        local path
         if affixID and type(_G.GetSpellInfo) == "function" then
             local ok, _, _, texture = pcall(_G.GetSpellInfo, affixID)
-            if ok then icon = texture end
+            if ok and type(texture) == "string" and texture ~= "" then path = texture end
         end
-        if affixID and icon then
-            shown = shown + 1
-            local button = GetAffixButton(shown)
-            button.affixID = affixID
-            button.icon:SetTexture(icon)
 
-            button:ClearAllPoints()
-            button:SetPoint("RIGHT", plate, "TOPRIGHT",
-                -HEADER_PAD_X - (shown - 1) * (AFFIX_SIZE + AFFIX_GAP),
-                -HEADER_HEIGHT / 2)
-            button:Show()
+        if affixID and path then
+            local button = GetAffixButton(shown + 1)
+            button:SetWidth(AFFIX_SIZE)
+            button:SetHeight(AFFIX_SIZE)
+
+            if ns.SetTextureFile(button.icon, path) == path then
+                shown = shown + 1
+                button.affixID = affixID
+
+                button:ClearAllPoints()
+                button:SetPoint("TOPLEFT", plate, "TOPLEFT",
+                    HEADER_PAD_X + (shown - 1) * (AFFIX_SIZE + AFFIX_GAP),
+                    -(HEADER_HEIGHT + AFFIX_ROW_TOP))
+                button:Show()
+            else
+                -- Left out rather than drawn blank. The affix is still on the
+                -- key and still in /hp mplus; it just has no art to say so
+                -- with, and a hoverable hole is worse than a gap.
+                HideAffix(button)
+                ns.Debug("mplus: affix %s icon %s did not load, not drawn.",
+                    tostring(affixID), tostring(path))
+            end
         end
     end
 
-    for i = shown + 1, #affixes do
-        affixes[i].affixID = nil
-        affixes[i]:Hide()
-    end
+    for i = shown + 1, #affixes do HideAffix(affixes[i]) end
 
+    affixRowHeight = (shown > 0) and (AFFIX_ROW_TOP + AFFIX_SIZE) or 0
     return shown
 end
 
@@ -1016,7 +1170,11 @@ local function LayoutPlate(tracker, contentBottom)
     width = width > 60 and (width + PAD_LEFT + PAD_RIGHT) or PANEL_MIN_WIDTH
 
     local top    = tracker:GetTop()
-    local height = HEADER_HEIGHT + TIMER_ROW_TOP + TIMER_ROW_H + BAR_TOP + BAR_HEIGHT
+    -- affixRowHeight is whatever the last LayoutAffixes resolved, and is zero
+    -- when there are none. Redraw lays the affixes out between its two calls
+    -- here, so the second one is the one that sizes the panel correctly.
+    local headerBlock = HEADER_HEIGHT + affixRowHeight
+    local height = headerBlock + TIMER_ROW_TOP + TIMER_ROW_H + BAR_TOP + BAR_HEIGHT
                  + FORCES_TOP + FORCES_LABEL_H + FORCES_BAR_TOP + FORCES_BAR_H
 
     if contentBottom and top then
@@ -1026,7 +1184,7 @@ local function LayoutPlate(tracker, contentBottom)
     plate:ClearAllPoints()
     plate:SetPoint("TOPLEFT", tracker, "TOPLEFT", -PAD_LEFT, 0)
     plate:SetWidth(width)
-    plate:SetHeight(math.max(HEADER_HEIGHT, height))
+    plate:SetHeight(math.max(headerBlock, height))
 
     return width
 end
@@ -1047,7 +1205,9 @@ end
 -- The timer row, the bar and its ticks. Split out because it is the only part
 -- of the panel that is redrawn on the clock ticker rather than on a refresh.
 local function LayoutTimer(data, width)
-    local rowTop = -(HEADER_HEIGHT + TIMER_ROW_TOP)
+    -- Below the affix row when there is one, so the timer keeps the design's
+    -- distance from whatever the header block ended up being.
+    local rowTop = -(HEADER_HEIGHT + affixRowHeight + TIMER_ROW_TOP)
 
     ui.timerGlyph:ClearAllPoints()
     ui.timerGlyph:SetPoint("BOTTOMLEFT", plate, "TOPLEFT", HEADER_PAD_X, rowTop - TIMER_ROW_H + 3)
@@ -1466,7 +1626,10 @@ local function Redraw()
 
     LayoutHeader()
 
-    ui.dungeon:SetText(data.dungeon or "Mythic+")
+    -- Shortened at the point of drawing, not in Read: data.dungeon stays the
+    -- string the game gave so /hp mplus can still report it, which is how a
+    -- row in SHORT_NAMES that never matches gets noticed.
+    ui.dungeon:SetText(mplus.ShortName(data.dungeon) or "Mythic+")
     if data.level then
         ui.keystone:SetText("(" .. data.level .. ")")
         ui.keystone:Show()

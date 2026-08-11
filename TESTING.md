@@ -440,6 +440,79 @@ With both trackers visible and quests tracked:
 - [ ] Enemy forces over 100% still reads over 100% — the bar clamps, the number
       does not, and that disagreement is deliberate
 
+### 9a. The affix row
+
+The affixes moved out of the header's top-right corner onto their own row under
+the dungeon name, and grew from 15px to 20px. Eight at 20px is 181px of a 262px
+content width, so sharing the name row was never going to survive a full key
+however short the dungeon name was made.
+
+- [ ] The affixes sit **under the dungeon name**, left to right, starting on the
+      same left margin as the timer glyph and the bars
+- [ ] **Nothing overlaps the dungeon name**, on a key with the most affixes you
+      can find
+- [ ] A key with **eight** affixes still fits inside the panel on one row
+- [ ] Hovering each one gives the game's own tooltip, and it goes away on leave
+- [ ] The timer, bars, enemy forces and boss rows all moved down by the row's
+      height and nothing collides with the first boss row
+- [ ] A key with no affixes draws **no row and no extra height** — the panel is
+      exactly as tall as it was before
+
+### 9b. Invisible affixes
+
+The bug: an affix with no icon was still drawn as a button and still took the
+mouse, so there was a hoverable hole in the header that answered with a tooltip.
+`GetSpellInfo` returning an icon path is not a promise the client can draw it,
+and `SetTexture` does not complain — Ascension's own creature and player affixes
+are the ones that do this.
+
+An affix whose icon does not load is now left out of the row entirely.
+
+- [ ] The affixes on screen are exactly the ones with **visible art**. No gaps,
+      no dead space in the row
+- [ ] Sweep the cursor along the affix row and to the **left of the `+3` text**,
+      where the ghosts used to be: no tooltip appears anywhere there is nothing
+      drawn
+- [ ] `/hp debug` on: an affix that was dropped says so, naming the spell ID and
+      the path that failed. Compare that list against the affixes the key
+      actually has — a real affix being dropped is a different bug from a ghost
+      being suppressed, and this is what tells them apart
+- [ ] Hover an affix and **let the key end while the cursor is still on it**.
+      The tooltip goes away with the panel
+
+Known limit: the guard asks the client whether the texture loaded. On a client
+that does not report texture results — `ns.SetTextureFile` probes for this once,
+and `/hp debug` prints which way it answered at boot — there is nothing to ask,
+every path is taken on faith, and the ghosts would come back. This client
+reports, so the guard works here.
+
+### 9c. Short dungeon names
+
+The header gives the dungeon name about 158px between the padlock and the affix
+icons, and nothing clamps it — a long name runs underneath them. `SHORT_NAMES`
+in `Mplus.lua` shortens the long ones to 20 characters or less, which is what
+fits at the 13px header default.
+
+The mock checks the table and the wiring. What it cannot check is whether the
+aliases match the strings *this* client returns, because it supplies its own —
+and a wrong alias fails silently, leaving the full name drawn.
+
+- [ ] Run a key in **Blackrock Depths - Upper City** and one in **Dire Maul -
+      East**. The header reads **BRD - Upper City** and **DM - East**
+- [ ] `/hp mplus` reports the **full** name, not the short one. That is
+      deliberate: it is how an alias that never matched gets noticed
+- [ ] Run one key in a dungeon of each shape — a wing (`SM Library`), a
+      gate (`Strat - Live`), a plain one (`Gnomeregan`). Any that still show
+      their full name need their row's alias corrected to whatever `/hp mplus`
+      printed
+- [ ] With three affixes up, the name and the `(12)` clear the affix icons with
+      room to spare. **Four affixes** costs about two and a half characters —
+      if this client's keys ever carry four, check the longest name again
+- [ ] Raise the **Mythic+ header font size** past 16px: the name starts running
+      under the affixes again. Known and not fixed by the table — a character
+      limit cannot follow a runtime setting, and the fix for that is a width cap
+      on the name, which has not been written
+
 ## 10. Collapse and reload
 
 - [ ] Collapse and expand the quest tracker: the skin survives both, and the
@@ -476,6 +549,16 @@ ElvUI is installed in this client. DeModal, if you have it.
   wrapping or clipping in the options window has to be seen. This matters more
   now: the font sizes go to 30 and nothing clamps them, so the wrapping in
   section 4 is real behaviour rather than a thing the addon prevents.
+
+  It is also why the Mythic+ header's name budget is enforced as a **character**
+  limit rather than a pixel one. The pixel budget is real and the mock resolves
+  it exactly — 158px at three affixes, 140px at four — but converting that to
+  characters took measuring real faces at 13px outside the mock, which put a
+  Friz-Quadrata-width font at about 7.2px per character. Twenty characters is
+  that number with room left for a wider face and a fourth affix.
+* **Whether the aliases in `SHORT_NAMES` match this client.** The mock supplies
+  its own dungeon names, so it can only check that a name it already knows is
+  shortened. Section 9c.
 * **The scrollbar thumb's drag.** The harness drives the wheel, which goes
   through the same slider, but a thumb that draws in the wrong place or cannot
   be grabbed is geometry the mock does not model. Section 3.
