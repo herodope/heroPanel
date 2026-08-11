@@ -2057,6 +2057,49 @@ tick(); tick()
 check(visibleSubRows() == 0, "the long list should be gone once its rows are")
 
 --------------------------------------------------------------------------------
+-- Enemy forces overflows past 100% on purpose
+--
+-- Ascension's own row clamps the count with MClamp and shows a flat 100%,
+-- which throws away how much trash was overpulled. heroPanel keeps it. The bar
+-- still clamps, because a fill cannot run past its track, so above 100% the
+-- two deliberately disagree. This check exists so that never gets "fixed".
+--------------------------------------------------------------------------------
+
+TRASH_DEAD = 160
+mplusTracker.ObjectiveBlock.EnemyForces.progress = 160
+ns.Mplus.Refresh("test: overpulled")
+tick(); tick()
+
+local forcesPct
+for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+    local text = region.GetText and region:GetText()
+    if text and region:IsShown() and string.match(text, "^%d+%%$") then forcesPct = text end
+end
+
+check(forcesPct == "160%",
+    "enemy forces should report the overpull, not clamp to 100%; got " .. tostring(forcesPct))
+
+-- ...while the bar itself stays inside its track.
+check(ns.Mplus.GetPlate() ~= nil, "the panel should still be there")
+local forcesBarRight, trackRight
+for _, region in ipairs(HeroPanelMplusPlate.__regions) do
+    local r = region:GetRight()
+    if r and region:GetHeight() == 4 then
+        if not trackRight or r > trackRight then trackRight = r end
+        if region:IsShown() then forcesBarRight = math.max(forcesBarRight or 0, r) end
+    end
+end
+if forcesBarRight and trackRight then
+    check(forcesBarRight <= trackRight + 0.01,
+        "the enemy-forces fill must not run past its track even when overpulled")
+end
+
+TRASH_DEAD = 84
+mplusTracker.ObjectiveBlock.EnemyForces.progress = 84
+ns.Mplus.Refresh("test: back to normal")
+tick(); tick()
+
+--------------------------------------------------------------------------------
 -- Affixes
 --
 -- Drawn as heroPanel's own buttons from the keystone's affix spell IDs, in the

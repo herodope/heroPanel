@@ -302,6 +302,15 @@ tools/
   collapsed — collapsed it is an ordinary completed objective and was already
   green, so the same finished run used to read as unfinished depending on which
   way the chevron pointed.
+* **Enemy forces can read over 100%, on purpose.** `GetActiveKeystoneTrash`
+  reports raw counts, so a group that pulled more than the key needed shows
+  114% or 160%. Ascension's own objective row clamps that away with `MClamp`
+  and shows a flat 100%; heroPanel does not, because the overflow is the one
+  number that says how much trash was overpulled, which is worth knowing both
+  during a run and after one. The bar underneath *does* clamp — a fill cannot
+  run past the end of its track — so above 100% the two deliberately disagree:
+  the bar says "done", the number says "and this much again". This is a
+  feature. Do not "fix" it.
 * **The extra-bosses list is drawn by heroPanel, not restyled in place.** This
   is the one place that departs from "recolour and refont only", and the reason
   is length: a dungeon can offer far more minibosses than the key requires —

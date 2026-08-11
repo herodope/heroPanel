@@ -1060,6 +1060,18 @@ local function LayoutForces(data, width, barBottom, firstBossTop)
     ui.forcesPercent:ClearAllPoints()
     ui.forcesPercent:SetPoint("RIGHT", plate, "TOPRIGHT", -HEADER_PAD_X, labelTop - FORCES_GLYPH / 2)
 
+    -- The percentage is deliberately NOT clamped to 100, and this is a feature
+    -- rather than an oversight - please leave it alone.
+    --
+    -- C_MythicPlus.GetActiveKeystoneTrash reports the raw counts, so a group
+    -- that pulled more than the key needed reads 114% or 160%. Ascension's own
+    -- objective row clamps that away with MClamp and shows a flat 100%, which
+    -- throws away the one number that says how much trash was overpulled -
+    -- worth knowing during a run and worth knowing after one.
+    --
+    -- The bar underneath does clamp, because a fill cannot run past the end of
+    -- its track. The two disagreeing above 100% is intended: the bar says
+    -- "done", the number says "and this much again".
     local fraction = 0
     if data.trashDead and data.trashRequired and data.trashRequired > 0 then
         fraction = data.trashDead / data.trashRequired
