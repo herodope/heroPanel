@@ -281,7 +281,8 @@ draws. Having both meant a panel with no border raised the question of which of
 the two it was obeying. The style kept the job, because "no border" belongs with
 the other border shapes rather than among the colours. `borderAlpha` stays in
 the store because `Plate.lua` reads it, picking a colour now sets it back to 1,
-and the v4 migration rewrites an existing 0 as style None.
+and a store from a build that had that swatch is discarded rather than
+rewritten, along with everything else in it.
 
 A scalable window brings one obligation with it: `HEROPANEL_DB.options.x/y` are
 in UIParent's space, not the window's own. A `SetPoint` offset is read in the
@@ -420,8 +421,8 @@ shadow to set — is in *Reading over bright terrain* above.
 
 The border has an `alpha` of its own, separate from its style. Nothing in the
 options window sets it to 0 any more; border style **None** is the single way to
-say "no border", and the v4 migration rewrites a store that used the old
-Transparent swatch into that form.
+say "no border". A store from a build that had the old Transparent swatch is
+discarded like any other stale store rather than being translated.
 
 **"No border" means every edge**, not only the four lines around the plate. The
 header's divider and the Mythic+ footer's rule are edges too, and they were
@@ -520,13 +521,31 @@ tools/
 
 ## The store
 
-`HEROPANEL_DB`, stamped with `dbVersion` so a change of shape can be migrated
-rather than dropped. `ns.ApplyDefaults` only ever fills in what is *missing*,
-which is right for a new key and useless for a key that has changed meaning — so
-`MigrateStore` in `Core.lua` runs first, carries the old values across, and
-clears the keys they came from. Clearing them matters as much as carrying them:
-two copies of a setting is how the next reader ends up guessing which one is
-live.
+`HEROPANEL_DB`, stamped with `dbVersion`. A store carrying any other version is
+**discarded**, not migrated: heroPanel is pre-release, the shape has changed four
+times already and will change again, and nobody is running a build old enough
+for an old store to be worth carrying forward.
+
+That is a trade with an expiry date. There was a migration chain here — each
+shape change knew how to re-say itself in the next shape, so a player's colours
+survived an upgrade — and it was the right code to write for a released addon
+and the wrong code to keep for one that is not. Every step had to go on working
+and being tested forever, to protect settings that take a minute to set again.
+**When this is released, that calculation inverts and a migration path is owed;
+the comment above `DB_VERSION` in `Core.lua` is the place that says so.**
+
+The number is a stamp, not a chain. Nothing reads the ones before it and its
+absolute value means nothing — all that matters is that it differs from the last
+build whose shape is incompatible. Bump it when a key changes meaning or shape;
+leave it alone when only a default moves, since a changed default reaching an
+existing store is what `ns.ApplyDefaults` deliberately does not do.
+
+`DiscardStaleStore` is narrow on purpose: it fires on a version mismatch, treats
+an *empty* store as a fresh install rather than a stale one — a first login has
+no stamp either, and announcing the reset of settings that never existed is
+worse than saying nothing — and it says out loud when it does throw something
+away. `ns.ApplyDefaults` then fills in whatever is missing, which is what every
+login after a small change needs.
 
 ```
 enabled  debug  dbVersion
@@ -547,26 +566,9 @@ options  where the window was left, and its scale; x and y are in UIParent's
 glyph    mode
 ```
 
-**v1 → v2** was two changes. One global `bg` / `border` / `radius` block became
-`panel.watch` and `panel.mplus`, with both inheriting whatever the single block
-said — so the first thing a player sees after upgrading is the panel they
-already had. And one `font.size` number with a `font.scale` percentage per panel
-became absolute sizes per role, each computed from what that role was actually
-being drawn at, rounded to a whole point.
-
-**v2 → v3** split the single `mplus` font size into `mplusHeader`, `mplusTimer`
-and `mplusBody`, again derived from what each was already drawn at so the panel
-looks identical afterwards and the three controls start from where the one
-control left it. It also forces `panel.*.radius` to 0. That one is the exception
-to leaving a player's choices alone, and deliberately: the radius control has
-been removed, so a store still holding 8 would be stuck at 8 with no way to see
-it and no way to change it. A stale value behind a reachable control is a
-preference; behind a removed one it is a bug.
-
-**v3 → v4** rewrites a `borderAlpha` of 0 — which is what the removed
-"Transparent" swatch wrote — as `borderStyle = "none"`. Same outcome, said in the
-form that still has a control behind it. A panel that was not transparent is left
-exactly alone.
+The versions before this one are not documented because nothing reads them. What
+each shape change was is in the git history; what the store is *now* is the table
+above.
 
 ## Development notes
 

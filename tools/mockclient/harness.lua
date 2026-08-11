@@ -3520,20 +3520,6 @@ do
     check(bodyNow == 10,
         "and the description at its own, got " .. tostring(bodyNow))
 
-    -- A store from before this existed has a number where the table goes.
-    -- InitDB's migration turns it into five roles rather than dropping it, so a
-    -- player who had set 16 comes back with a skin at about 16 rather than at
-    -- the default.
-    ns.db.font.size  = 16
-    ns.db.font.scale = { watch = 1.0, mplus = 1.0, options = 1.0 }
-    ns.db.dbVersion  = nil
-    ns.InitDB()
-    check(type(ns.db.font.size) == "table", "the migration should turn the old number into a table")
-    check(ns.db.font.size.watchTitle == 17 and ns.db.font.size.watchBody == 16,
-        "...carrying the old base and its half-point steps across, got "
-        .. tostring(ns.db.font.size.watchTitle) .. " / " .. tostring(ns.db.font.size.watchBody))
-    check(ns.db.font.scale == nil, "...and clearing the multiplier it replaced")
-
     for role in pairs(ns.db.font.size) do
         ns.db.font.size[role] = ns.defaults.font.size[role]
     end
@@ -3542,76 +3528,68 @@ do
 end
 
 --------------------------------------------------------------------------------
--- The v1 store migrates rather than being dropped
+-- A stale store is discarded, not migrated
 --
--- One global panel style became two, and ApplyDefaults only ever fills in what
--- is missing - so without a migration a player's chosen colours would sit in
--- keys nothing reads while both panels came up at the defaults.
+-- heroPanel is pre-release, its shape has changed four times and will change
+-- again, and nobody is running a build old enough for an old store to be worth
+-- carrying forward. There was a migration chain here - each shape change knew
+-- how to re-say itself in the next shape - and it was the right code for a
+-- released addon and the wrong code to keep for one that is not: every step had
+-- to go on working and being tested forever, to protect settings that take a
+-- minute to set again.
+--
+-- So the rule is one rule: a store stamped with anything other than this
+-- build's version is thrown away. What has to be true is that the rule is
+-- narrow - it fires on a mismatch, it does not fire on a fresh install, and it
+-- says so out loud when it does.
 --------------------------------------------------------------------------------
 
 do
     local saved = HEROPANEL_DB
+
+    -- An old store goes, whatever was in it.
     HEROPANEL_DB = {
-        bg     = { color = "#232532", opacity = 0.4, texture = "flat" },
-        border = { color = "#E7C67C", alpha = 1, style = "inset" },
-        radius = 12,
-        font   = { face = "Friz Quadrata TT", size = 14, scale = { watch = 1.0 } },
+        dbVersion = 1,
+        enabled   = false,
+        bg        = { color = "#232532", opacity = 0.4 },
+        border    = { color = "#E7C67C", alpha = 1, style = "inset" },
+        radius    = 12,
+        font      = { face = "Some Old Face", size = 14 },
     }
+    local before = #log
     ns.InitDB()
+    local said = table.concat(log, "\n", before + 1)
 
-    check(ns.db.panel.watch.bgColor == "#232532" and ns.db.panel.mplus.bgColor == "#232532",
-        "both panels should inherit the one background the old store had")
-    check(ns.db.panel.watch.bgOpacity == 0.4, "...including its opacity")
-    check(ns.db.panel.watch.borderStyle == "inset" and ns.db.panel.mplus.borderColor == "#E7C67C",
-        "...and its border")
-    -- The radius is the deliberate exception. v3 removed its control, and a
-    -- stale value behind a control nobody can reach is worse than a changed
-    -- default: it cannot be seen and it cannot be undone.
-    check(ns.db.panel.watch.radius == 0,
-        "the radius is forced square, because there is no longer a control for it; got "
-        .. tostring(ns.db.panel.watch.radius))
-    check(ns.db.border == nil and ns.db.radius == nil,
-        "the keys it came from should be cleared, so there is one live copy")
-    check(ns.db.bg.texture == "flat", "the backdrop texture stays global and survives")
-    check(ns.db.dbVersion == 4, "the store should be stamped so this runs once")
-
-    -- v1 had one Mythic+ size, and v3 wants three. A v1 store therefore crosses
-    -- both migrations in one pass, which is the case a version stamp exists to
-    -- get right.
-    check(ns.db.font.size.mplus == nil, "the single Mythic+ size should be gone")
-    check(ns.db.font.size.mplusTimer == ns.db.font.size.mplusBody + 12,
-        "...and the clock should keep the step it was drawn with, got "
-        .. tostring(ns.db.font.size.mplusTimer) .. " against a body of "
-        .. tostring(ns.db.font.size.mplusBody))
-
-    -- A store carrying only some of the three old keys still has to hand over
-    -- what it has. Everything below is cleared by the migration either way, so
-    -- anything not carried across at this point is gone for good.
-    HEROPANEL_DB = { border = { color = "#9184D9", alpha = 1, style = "none" } }
-    ns.InitDB()
-    check(ns.db.panel.watch.borderColor == "#9184D9" and ns.db.panel.watch.borderStyle == "none",
-        "a store with a border and no background should still hand the border over")
+    check(ns.db.enabled == true,
+        "a store from an older shape should be discarded, not merged; enabled came back "
+        .. tostring(ns.db.enabled))
+    check(ns.db.font.face == ns.DEFAULT_FONT_FACE,
+        "...so its font face is gone too, got " .. tostring(ns.db.font.face))
+    check(ns.db.bg.color == nil and ns.db.border == nil and ns.db.radius == nil,
+        "...and none of the old keys survive to confuse the next reader")
     check(ns.db.panel.watch.bgColor == ns.defaults.panel.watch.bgColor,
-        "...and take the default for what it did not have")
+        "...and the new shape is filled in from the defaults")
+    check(ns.db.dbVersion == 4, "...and stamped, so it is not discarded twice")
+    check(string.find(said, "older build", 1, true) ~= nil,
+        "throwing settings away is not something to do silently, got:\n" .. said)
 
-    -- v3 -> v4: the border swatch row had a "Transparent" entry that zeroed the
-    -- alpha, which is what border style None already does. The swatch is gone,
-    -- so a store that used it has to be re-said in the form that still exists
-    -- or a player's borderless panel comes back with a border on.
-    HEROPANEL_DB = {
-        dbVersion = 3,
-        panel = {
-            watch = { borderAlpha = 0, borderStyle = "hairline" },
-            mplus = { borderAlpha = 1, borderStyle = "inset" },
-        },
-    }
+    -- A fresh install is not a stale store. It has no stamp either, and warning
+    -- someone that their nonexistent settings were reset is worse than saying
+    -- nothing at all.
+    HEROPANEL_DB = nil
+    before = #log
     ns.InitDB()
-    check(ns.db.panel.watch.borderStyle == "none" and ns.db.panel.watch.borderAlpha == 1,
-        "a transparent border should become style None, got "
-        .. tostring(ns.db.panel.watch.borderStyle) .. " at alpha "
-        .. tostring(ns.db.panel.watch.borderAlpha))
-    check(ns.db.panel.mplus.borderStyle == "inset",
-        "...and a panel that was not transparent should be left alone")
+    said = table.concat(log, "\n", before + 1)
+    check(ns.db.dbVersion == 4, "a fresh store is stamped")
+    check(string.find(said, "older build", 1, true) == nil,
+        "...and says nothing about being reset, got:\n" .. said)
+
+    -- A current store is left exactly alone, which is the case that runs every
+    -- login and the one a too-eager rule would quietly destroy.
+    HEROPANEL_DB = { dbVersion = 4, enabled = false, font = { face = "Kept Face" } }
+    ns.InitDB()
+    check(ns.db.enabled == false and ns.db.font.face == "Kept Face",
+        "a store stamped for this build must survive untouched")
 
     HEROPANEL_DB = saved
     ns.InitDB()
@@ -3801,16 +3779,24 @@ do
     check(HEROPANEL_DB.frame.locked == true, "a fresh store is locked")
     check(HEROPANEL_DB.options ~= nil, "a fresh store has somewhere to remember the window")
 
-    -- Half a store, as written by an older build that had fewer keys. The font
-    -- size here is the old scalar, so this is the migration path as well as the
-    -- fill-in one - which is the realistic shape of a stale store.
-    HEROPANEL_DB = { enabled = false, font = { size = 15 } }
+    -- Half a store, stamped for this build. This is what ApplyDefaults is
+    -- actually for now that a *stale* store is discarded outright: a store of
+    -- the right shape that predates one added key, which is what every login
+    -- after a small change looks like. A missing sub-table and a sub-table with
+    -- a missing key are different shapes and it has to survive both.
+    HEROPANEL_DB = {
+        dbVersion = 4,
+        enabled   = false,
+        font      = { size = { watchBody = 15 } },
+    }
     local ok2, err2 = pcall(ns.InitDB)
     check(ok2, "a partial store must be filled in without error: " .. tostring(err2))
     check(HEROPANEL_DB.enabled == false, "an existing value must not be clobbered")
     check(HEROPANEL_DB.font.size.watchBody == 15,
-        "an existing font size must be carried over, not dropped, got "
-        .. tostring(HEROPANEL_DB.font.size.watchBody))
+        "...nor an existing font size, got " .. tostring(HEROPANEL_DB.font.size.watchBody))
+    check(HEROPANEL_DB.font.size.watchTitle == ns.defaults.font.size.watchTitle,
+        "a missing key beside it is filled in, got "
+        .. tostring(HEROPANEL_DB.font.size.watchTitle))
     check(HEROPANEL_DB.font.face == ns.DEFAULT_FONT_FACE, "a missing face is filled in")
     check(HEROPANEL_DB.text.title == ns.defaults.text.title, "a missing sub-table is filled in")
 

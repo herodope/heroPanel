@@ -69,38 +69,44 @@ store cannot exercise.
 - [ ] Pill reads **ENABLED**
 - [ ] Log out and back in: the store is written and everything comes back
 
-## 1b. Upgrading an existing store
+## 1b. A store from an older build is discarded
 
-The store has changed shape twice and `InitDB` migrates rather than dropping,
-stamping `dbVersion` so each step runs once. A store written before any of this
-crosses both migrations in a single login, which is the case worth testing.
+heroPanel is pre-release. Its store has changed shape four times already and
+will change again, and nobody is running a build old enough for an old store to
+be worth carrying forward — so a store stamped with anything other than this
+build's `dbVersion` is **thrown away**, not migrated.
 
-* **v1 → v2** — one global panel style became one per tracker; one base font
-  size with per-panel percentages became absolute sizes per role.
-* **v2 → v3** — the single Mythic+ size became three, and the corner radius is
-  forced to 0 because its control is gone. That last one is deliberate: a stale
-  value behind a removed control cannot be seen and cannot be undone.
-* **v3 → v4** — a border alpha of 0, which is what the removed "Transparent"
-  swatch wrote, becomes border style **None**. Same outcome, said in the form
-  that still has a control.
+That is a deliberate trade and it only holds until release. There was a
+migration chain here and it was the right code for a released addon: every shape
+change knew how to re-say itself in the next shape. It was the wrong code to
+keep for one that is not released, because each step had to go on working and
+being tested forever, to protect settings that take a minute to set again.
 
-Do this with a SavedVariables file written by an earlier build, before touching
-anything in the options window.
+What has to be true is that the rule is **narrow**. It should fire on a
+mismatch, stay quiet on a fresh install, and never touch a current store.
 
-- [ ] Both panels come up with **the colours you had**, not the defaults
-- [ ] Border style likewise, on both panels
-- [ ] Both panels are square, whatever radius the old store held
-- [ ] A panel that had **Transparent** as its border colour still draws no
-      border, and its border style now reads **None**
-- [ ] Text is about the size it was — a v1 base of 16 lands as header 15, quest
-      name 17, description 15
-- [ ] The Mythic+ clock is still about twice the boss rows, i.e. the three new
-      sizes were derived from the one they replaced rather than defaulted
-- [ ] `/hp font` with no argument lists all seven sizes and none of them is nil
-- [ ] `/reload` and it is all still there, i.e. the migration wrote the new keys
-      rather than recomputing them from the old ones every login
+With a SavedVariables file written by an earlier build:
 
-Then put the old SavedVariables back if you want your positions.
+- [ ] Everything comes up at **the defaults**, not at what the old store said
+- [ ] A chat line says the settings were written by an older build and have been
+      reset, naming the version it found. Throwing settings away is not
+      something to do silently
+- [ ] `/reload` and the message does **not** come back — the new store is
+      stamped, so it is discarded once and not on every login
+- [ ] No Lua error on the way through
+
+On a genuinely fresh install (no SavedVariables at all):
+
+- [ ] Everything comes up at the defaults, and **no** reset message appears.
+      A first login has no stamp either, and warning someone that their
+      nonexistent settings were reset is worse than saying nothing
+
+And the case that runs every normal login, which a too-eager rule would quietly
+destroy:
+
+- [ ] Change some settings, `/reload`. **They survive.** A store stamped for
+      this build is left exactly alone
+- [ ] Change a setting, log out fully, log back in. Still there
 
 ## 2. Fonts
 

@@ -311,131 +311,53 @@ end
 ns.ApplyDefaults = ApplyDefaults
 
 --------------------------------------------------------------------------------
--- Migration
+-- Schema version
 --
--- ApplyDefaults only ever fills in what is missing, which is right for a new
--- key and useless for a key that has changed shape. Two of them have: one
--- global panel style became one per tracker, and one base font size with
--- per-panel multipliers became five absolute sizes.
+-- heroPanel has never been released. The store's shape has changed four times
+-- already and will change again, and there is nobody running a build old enough
+-- for a stale store to be worth carrying forward - so a store that does not
+-- match this build is discarded rather than migrated.
 --
--- A store written before that is not wrong, it is in the old shape, and
--- dropping it would cost a player every colour they had chosen. So it is
--- carried across once and the old keys are cleared, which is also what stops
--- the next reader wondering which of the two is live.
+-- That is a deliberate trade and it only holds while this is true. There used
+-- to be a migration chain here: each shape change knew how to re-say itself in
+-- the next shape, so a player's colours survived an upgrade. It was the right
+-- code to write for a released addon and the wrong code to keep for one that
+-- is not, because every step had to go on working forever and be tested
+-- forever, to protect settings that take a minute to set again.
+--
+-- The number is a stamp, not a chain. Nothing reads the ones before it and its
+-- absolute value means nothing; all that matters is that it *differs* from the
+-- last build whose store shape is incompatible. Bump it whenever a key changes
+-- meaning or shape, and leave it alone when only a default moves - a changed
+-- default reaching an existing store is what ApplyDefaults deliberately does
+-- not do, and is not a reason to throw the store away.
+--
+-- When this addon is released, this comment is the thing to come back to: at
+-- that point stores start being worth keeping and a migration path is owed.
 --------------------------------------------------------------------------------
 
 local DB_VERSION = 4
 
-local function Round(value)
-    return math.floor((tonumber(value) or 0) + 0.5)
-end
+-- Empty is not stale. A first login has no version stamp either, and a fresh
+-- store is not something to announce the discarding of.
+local function DiscardStaleStore()
+    if type(HEROPANEL_DB) ~= "table" then return false end
+    if HEROPANEL_DB.dbVersion == DB_VERSION then return false end
+    if next(HEROPANEL_DB) == nil then return false end
 
-local function MigrateStore(db)
-    if db.dbVersion == DB_VERSION then return end
-
-    -- v1 -> v2, panel chrome. Both panels inherit whatever the one global set
-    -- said, so the first thing a player sees after the upgrade is the panel
-    -- they already had.
-    -- Tested per key rather than on the bg block as a whole. A store missing
-    -- one of the three - written by a build that predates it, or hand-edited -
-    -- must still hand over the two it does have, because the old keys are
-    -- cleared below either way and anything not carried across here is gone.
-    local oldBg     = type(db.bg) == "table" and db.bg or nil
-    local oldBorder = type(db.border) == "table" and db.border or nil
-
-    if oldBg or oldBorder or db.radius then
-        if type(db.panel) ~= "table" then db.panel = {} end
-        for _, key in ipairs({ "watch", "mplus" }) do
-            if type(db.panel[key]) ~= "table" then db.panel[key] = {} end
-            local target = db.panel[key]
-            if oldBg then
-                target.bgColor   = target.bgColor   or oldBg.color
-                target.bgOpacity = target.bgOpacity or oldBg.opacity
-            end
-            if oldBorder then
-                target.borderColor = target.borderColor or oldBorder.color
-                target.borderAlpha = target.borderAlpha or oldBorder.alpha
-                target.borderStyle = target.borderStyle or oldBorder.style
-            end
-            target.radius = target.radius or db.radius
-        end
-        if oldBg then oldBg.color, oldBg.opacity = nil, nil end
-    end
-    db.border, db.radius = nil, nil
-
-    -- v1 -> v2, font sizes. The old base carried the design's half-point steps
-    -- and the old scale multiplied the result, so each role's new size is what
-    -- that role was actually being drawn at, rounded to a whole point - the
-    -- sizes are absolute now and half a point is not a thing a slider offers.
-    local font = db.font
-    if type(font) == "table" and type(font.size) ~= "table" then
-        local base   = tonumber(font.size) or 12
-        local scale  = type(font.scale) == "table" and font.scale or {}
-        local watch  = tonumber(scale.watch)   or 1
-        font.size = {
-            watchHeader = Round((base - 0.5) * watch),
-            watchTitle  = Round((base + 0.5) * watch),
-            watchBody   = Round((base - 0.5) * watch),
-            mplus       = Round(base * (tonumber(scale.mplus)   or 1)),
-            options     = Round(base * (tonumber(scale.options) or 1)),
-        }
-    end
-    if type(font) == "table" then font.scale = nil end
-
-    ------------------------------------------------------------------
-    -- v2 -> v3
-    ------------------------------------------------------------------
-
-    -- The corner radius control is gone, so a store still holding 8 would be
-    -- stuck at 8 with no way back. A stale value behind a removed control is
-    -- worse than a changed default: the player cannot see it and cannot reach
-    -- it. Font sizes are deliberately *not* forced the same way - those are
-    -- still controllable, so a value someone chose stays chosen.
-    if type(db.panel) == "table" then
-        for _, key in ipairs({ "watch", "mplus" }) do
-            if type(db.panel[key]) == "table" then db.panel[key].radius = 0 end
-        end
-    end
-
-    -- One Mythic+ font size became three. Each new role is what that part of
-    -- the panel was already being drawn at - the header a point over the base,
-    -- the clock twelve over it - so the panel looks identical afterwards and
-    -- the three controls start from where the one control left it.
-    if type(font) == "table" and type(font.size) == "table" and font.size.mplus then
-        local mplus = tonumber(font.size.mplus) or 12
-        font.size.mplusHeader = font.size.mplusHeader or (mplus + 1)
-        font.size.mplusTimer  = font.size.mplusTimer  or (mplus + 12)
-        font.size.mplusBody   = font.size.mplusBody   or mplus
-        font.size.mplus = nil
-    end
-
-    ------------------------------------------------------------------
-    -- v3 -> v4
-    ------------------------------------------------------------------
-
-    -- The border swatch row had a "Transparent" entry that set borderAlpha to
-    -- 0, which is the same outcome border style "None" already produced. Two
-    -- controls for one result is one too many, so the swatch is gone - and a
-    -- store that used it has to keep meaning what it meant, or a player's
-    -- borderless panel comes back with a border on. Saying it the way that is
-    -- still expressible is the whole job.
-    if type(db.panel) == "table" then
-        for _, key in ipairs({ "watch", "mplus" }) do
-            local saved = db.panel[key]
-            if type(saved) == "table" and saved.borderAlpha == 0 then
-                saved.borderAlpha = 1
-                saved.borderStyle = "none"
-            end
-        end
-    end
-
-    db.dbVersion = DB_VERSION
+    local was = HEROPANEL_DB.dbVersion
+    HEROPANEL_DB = {}
+    ns.Warn("your settings were written by an older build and have been reset "
+        .. "(store %s, this build wants %d). heroPanel is pre-release and does not "
+        .. "carry settings between shapes.", tostring(was or "unstamped"), DB_VERSION)
+    return true
 end
 
 function ns.InitDB()
     if type(HEROPANEL_DB) ~= "table" then HEROPANEL_DB = {} end
-    MigrateStore(HEROPANEL_DB)
+    DiscardStaleStore()
     ApplyDefaults(HEROPANEL_DB, ns.defaults)
+    HEROPANEL_DB.dbVersion = DB_VERSION
     ns.db    = HEROPANEL_DB
     ns.DEBUG = HEROPANEL_DB.debug and true or false
     return ns.db
