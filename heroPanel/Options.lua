@@ -41,14 +41,19 @@ local CONTENT_WIDTH = PANEL_WIDTH - PAD_X * 2
 -- 768 units tall whatever the monitor is, because the client scales the UI to
 -- suit, so the budget is fixed and it is not generous: laid out at the design's
 -- spacing this came to 752, which fits by eight pixels a side and does not fit
--- at all once a player nudges their UI scale up. The rows below are tightened
--- to land near 680, and the harness fails the run if the total goes over 768.
-local HEADER_HEIGHT = 58
+-- at all once a player nudges their UI scale up. It has been tightened twice
+-- now - once for the design's own spacing and again when the three per-panel
+-- font scales added another hundred pixels - and lands at 684. The harness
+-- fails the run if it ever goes over 768.
+--
+-- Eight sliders is what makes this tight. If another group of them arrives, the
+-- answer is a scrolling body rather than a third round of shaving rows.
+local HEADER_HEIGHT = 56
 local GROUP_GAP     = 10
 local ROW_HEIGHT    = 28
-local SLIDER_HEIGHT = 40
-local FOOTER_HEIGHT = 48
-local ENABLE_HEIGHT = 50
+local SLIDER_HEIGHT = 34
+local FOOTER_HEIGHT = 44
+local ENABLE_HEIGHT = 48
 
 -- The tallest the window may be. UIParent's height in UI units at the client's
 -- default scale.
@@ -159,7 +164,7 @@ end
 -- applied to the control you picked it with is the fastest way to know it took.
 local function NewText(parent, delta, colour, text, layer)
     local fs = parent:CreateFontString(nil, layer or "OVERLAY")
-    fs:SetFont(ns.GetFontFile(), ns.GetFontSize(delta or 0))
+    fs:SetFont(ns.GetFontFile(), ns.GetFontSize(delta or 0, "options"))
     if colour then fs:SetTextColor(ns.HexToRGB(colour)) end
     if text then fs:SetText(text) end
     table.insert(fontStrings, { fs = fs, delta = delta or 0 })
@@ -196,7 +201,7 @@ end
 local function GroupLabel(parent, y, text)
     local fs = NewText(parent, -3, TEXT_GROUP, string.upper(text))
     fs:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X, -y)
-    return y + 18
+    return y + 16
 end
 
 --------------------------------------------------------------------------------
@@ -280,7 +285,7 @@ local function NewSlider(parent, y, label, minValue, maxValue, step, get, set, f
     slider:SetOrientation("HORIZONTAL")
     slider:SetWidth(CONTENT_WIDTH)
     slider:SetHeight(16)
-    slider:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X, -(y + 22))
+    slider:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X, -(y + 18))
     slider:SetMinMaxValues(minValue, maxValue)
     slider:SetValueStep(step)
 
@@ -478,7 +483,7 @@ local function NewTileRow(parent, y, label, entries, get, set)
     end
 
     table.insert(controls, widget)
-    return y + TILE_SIZE + 4, widget
+    return y + TILE_SIZE + 2, widget
 end
 
 --------------------------------------------------------------------------------
@@ -559,7 +564,7 @@ local function NewStateColours(parent, y, label, entries)
     end
 
     table.insert(controls, widget)
-    return y + SWATCH_SIZE + 16, widget
+    return y + SWATCH_SIZE + 14, widget
 end
 
 --------------------------------------------------------------------------------
@@ -618,11 +623,17 @@ local function NewFontDropdown(parent, y, label, sublabel)
             local face = faces[i + offset]
             if face then
                 row.face = face
-                row.text:SetText(face)
-                -- Preview in the face itself. FontFileFor falls back the same
-                -- way GetFontFile does, so a row can always be drawn even if
-                -- the face turns out to be unreadable.
+                -- Font before text, and not the other way round: SetText on a
+                -- FontString that has no font yet throws "Font not set" on this
+                -- client, and these rows deliberately start without one so a
+                -- window-wide restyle cannot overwrite the face each is
+                -- previewing.
+                --
+                -- FontFileFor falls back the same way GetFontFile does, so a row
+                -- can always be drawn even if the face turns out to be
+                -- unreadable.
                 row.text:SetFont(ns.Media.FontFileFor(face), 12)
+                row.text:SetText(face)
                 local selected = (ns.db.font.face == face)
                 row.text:SetTextColor(ns.HexToRGB(selected and ACCENT or TEXT_BODY))
                 row:Show()
@@ -646,7 +657,11 @@ local function NewFontDropdown(parent, y, label, sublabel)
 
         -- Not registered with NewText: this string carries the face being
         -- previewed, so a window-wide font restyle must not overwrite it.
+        -- Given a font at birth all the same, so it is never a FontString
+        -- without one - RedrawRows sets the real face before every SetText, but
+        -- an empty row must not be a trap for the next person either.
         row.text = row:CreateFontString(nil, "OVERLAY")
+        row.text:SetFont(ns.GetFontFile(), 12)
         row.text:SetPoint("LEFT", row, "LEFT", 6, 0)
 
         row:SetScript("OnEnter", function() highlight:Show() end)
@@ -924,6 +939,35 @@ local function Build()
         end,
         function(value) return string.format("%d px", Int(value)) end)
 
+    -- Per-panel multipliers on that base. The three panels are different sizes
+    -- and sit at different distances from where the player is looking, so one
+    -- number for all of them made every change a compromise.
+    --
+    -- What the quest tracker actually takes is bounded by Lines.lua: the
+    -- tracker measures and places each line before heroPanel sees it, so a line
+    -- can never ask for more room and growth is clamped per line. Turning this
+    -- past that ceiling is not an error, it just stops making a difference.
+    local FONT_SCALES = {
+        { key = "watch",   label = "Quest tracker font" },
+        { key = "mplus",   label = "M+ tracker font"    },
+        { key = "options", label = "This window's font" },
+    }
+
+    for i = 1, #FONT_SCALES do
+        local entry = FONT_SCALES[i]
+        y = NewSlider(panel, y, entry.label, 50, 150, 5,
+            function()
+                local scales = ns.db.font.scale
+                return ((scales and scales[entry.key]) or 1) * 100
+            end,
+            function(value)
+                if type(ns.db.font.scale) ~= "table" then ns.db.font.scale = {} end
+                ns.db.font.scale[entry.key] = value / 100
+                Apply("font scale changed")
+            end,
+            function(value) return string.format("%d%%", Int(value)) end)
+    end
+
     y = NewStateColours(panel, y, "State colors", {
         { label = "Title",  get = function() return ns.db.text.title  end,
                             set = function(hex) ns.db.text.title  = hex end },
@@ -933,24 +977,12 @@ local function Build()
                             set = function(hex) ns.db.text.done   = hex end },
     })
 
-    ------------------------------------------------------------------
-    -- HEADER
-    ------------------------------------------------------------------
-
-    y = y + GROUP_GAP
-    y = GroupLabel(panel, y, "Header")
-
-    -- Named for what it actually controls. HEROPANEL_DB.header.show is the
-    -- quest tracker's header row; the Mythic+ panel's header carries the
-    -- dungeon name, the keystone level, the affix icons and its own lock, and
-    -- turning all four off with a control labelled "Show header" would be a
-    -- surprise rather than a setting.
-    y = select(1, NewToggle(panel, y, "Show quest header", nil,
-        function() return ns.db.header.show end,
-        function(value)
-            ns.db.header.show = value and true or false
-            Apply("header visibility changed")
-        end))
+    -- There is no HEADER group. header.show still exists and still governs the
+    -- quest tracker's header row, but it is on and there is no control for it:
+    -- heroPanel's header is where the lock, the count and the collapse caret
+    -- live, so turning it off takes the skin's own chrome with it, and an
+    -- option whose only sensible value is the default is a row of the window
+    -- spent on nothing.
 
     ------------------------------------------------------------------
     -- Footer
@@ -1129,7 +1161,7 @@ function options.Restyle()
     local file = ns.GetFontFile()
     for i = 1, #fontStrings do
         local entry = fontStrings[i]
-        pcall(entry.fs.SetFont, entry.fs, file, ns.GetFontSize(entry.delta))
+        pcall(entry.fs.SetFont, entry.fs, file, ns.GetFontSize(entry.delta, "options"))
     end
 end
 

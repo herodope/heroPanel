@@ -120,6 +120,17 @@ ns.defaults = {
         -- options panel and gets exactly it; Lines.lua's growth clamp is what
         -- bounds how far up this can usefully go.
         size = 12,
+
+        -- Per-panel multipliers on that base. The three panels are different
+        -- sizes and sit at different distances from where the player is
+        -- looking, so one number for all of them made every change a
+        -- compromise. 1.0 means "just the base", which is what every existing
+        -- store gets when this key is filled in.
+        scale = {
+            watch   = 1.0,
+            mplus   = 1.0,
+            options = 1.0,
+        },
     },
 
     text = {

@@ -551,9 +551,31 @@ end
 -- Font sizes in the design are expressed relative to the configured base size
 -- (12 by default): the quest title is half a point up from it, objectives half
 -- a point down, and so on.
-function ns.GetFontSize(delta)
+--
+-- scope is "watch", "mplus" or "options", and applies that frame's own font
+-- scale on top of the base. The three panels are different sizes on screen and
+-- sit at different distances from where the player is actually looking, so one
+-- number for all of them meant every change was a compromise. Omitting scope
+-- gives the unscaled size, which is what a caller that is not drawing on one of
+-- the three wants.
+--
+-- The scale multiplies the offset size rather than the base, so the design's
+-- relative steps - title half a point over, objective half a point under -
+-- stay proportional instead of collapsing together as the scale goes up.
+--
+-- Lines.lua still bounds how much of this actually reaches a quest line: the
+-- tracker measures and places each line before heroPanel sees it, so a line can
+-- never ask for more room, and growth is clamped per line however large the
+-- configuration is.
+function ns.GetFontSize(delta, scope)
     local base = (ns.db and tonumber(ns.db.font.size)) or 12
-    return math.max(6, base + (delta or 0))
+
+    local scale = 1
+    if scope and ns.db and type(ns.db.font.scale) == "table" then
+        scale = tonumber(ns.db.font.scale[scope]) or 1
+    end
+
+    return math.max(6, (base + (delta or 0)) * scale)
 end
 
 --------------------------------------------------------------------------------

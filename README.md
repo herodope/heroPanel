@@ -178,23 +178,36 @@ tracker beats opening off the edge of the screen where it cannot be reached.
 Once the window has been dragged, that position is remembered and never
 second-guessed.
 
-**Two controls do not do what their labels might suggest.**
+**Backdrop texture does not do what its label suggests.**
 
 * **Backdrop texture** offers Flat, Noise, Gradient and Glow, and only Flat
   draws. heroPanel ships no texture art, so the other three are greyed and say
   so on hover. They are present rather than absent because a control that is
   missing reads as a build that is behind, and one that silently does nothing
   reads as a bug.
-* **Show quest header** is `header.show`, and it is the *quest* tracker's header
-  row. The Mythic+ panel's header carries the dungeon name, the keystone level,
-  the affix icons and that panel's own lock button, and turning all four off from
-  a control labelled "show header" would be a surprise rather than a setting.
+There is no header control. `header.show` still exists and still governs the
+quest tracker's header row, but it is on and nothing in the window turns it off:
+heroPanel's header is where the lock, the count and the collapse caret live, so
+turning it off takes the skin's own chrome with it, and an option whose only
+sensible value is the default is a row of the window spent on nothing.
+
+**Font size is a base plus three multipliers.** One number for all three panels
+made every change a compromise — they are different sizes and sit at different
+distances from where the player is looking — so `font.size` is the base and
+`font.scale.watch` / `.mplus` / `.options` scale it per panel. What the quest
+tracker actually takes is still bounded by `Lines.lua`: the tracker measures and
+places each line before heroPanel sees it, so growth is clamped per line and
+turning the quest scale past that ceiling stops making a difference rather than
+breaking the layout.
 
 The window height is a fixed budget. `UIParent` is about 768 units tall whatever
 the monitor is, because the client scales the UI to suit; laid out at the
 design's spacing the panel came to 752, which fits by eight pixels a side and
-does not fit at all once a player nudges their UI scale up. It is tightened to
-684, and the mock client fails the run if it ever goes over 768.
+does not fit at all once a player nudges their UI scale up. It has been tightened
+twice — once for that, and again when the three per-panel font scales added a
+hundred pixels — and lands at 684. The mock client fails the run if it ever goes
+over 768. Eight sliders is what makes this tight; another group of them means a
+scrolling body rather than a third round of shaving rows.
 
 ## Fonts
 
@@ -534,6 +547,22 @@ tools/
   client reports texture load failures at all, because believing a client that
   always answers `nil` would reject every path.
 
+* **Scale goes to the tracker; position goes to the mover.** They used to be the
+  same frame, which made "scale the quest tracker" slide it sideways instead of
+  resizing it. A holder is a frame the tracker is anchored *to*, not one it is
+  parented to — ElvUI's `WatchFrameHolder` is a child of `UIParent` and ElvUI
+  does `WatchFrame:SetPoint("TOP", WatchFrameHolder, "TOP")` — so scaling the
+  holder cannot scale the tracker, because scale is inherited through parentage
+  and the tracker is not its child. What it *does* do is move it: the holder's
+  `TOP` is its horizontal centre, a scaled holder is wider on screen, so its
+  centre shifts and the tracker hanging off it shifts with it. `ns.GetScaleTarget`
+  is the tracker, `ns.GetActiveMover` is the holder, and with no holder in play
+  they are the same frame and nothing changes. Skin.lua's plate follows too, since
+  it reads the tracker's own scale.
+* **`SetText` on a FontString with no font set throws** — "Font not set", not a
+  silent no-op. The font dropdown's rows deliberately start without one so a
+  window-wide restyle cannot overwrite the face each is previewing, which made
+  the order matter: `SetFont` first, then `SetText`.
 * **`ns.StylePlateChrome(plate, style)` takes an optional override.** The
   trackers paint from `HEROPANEL_DB`; the options window passes its own fixed
   tokens. Zero is a meaningful value for opacity, radius and alpha, and zero is

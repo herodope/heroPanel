@@ -584,7 +584,7 @@ end
 
 local function NewFontString(parent, layer)
     local fontString = parent:CreateFontString(nil, layer or "OVERLAY")
-    fontString:SetFont(ns.GetFontFile(), ns.GetFontSize(0))
+    fontString:SetFont(ns.GetFontFile(), ns.GetFontSize(0, "mplus"))
     return fontString
 end
 
@@ -843,30 +843,30 @@ local function StyleStatic()
     ui.lockIcon:SetColor(ir, ig, ib, 1)
 
     local br, bg, bb = ns.HexToRGB(ns.PALETTE.bright)
-    ui.dungeon:SetFont(font, ns.GetFontSize(1))
+    ui.dungeon:SetFont(font, ns.GetFontSize(1, "mplus"))
     ui.dungeon:SetTextColor(br, bg, bb, 1)
 
     local kr, kg, kb = ns.HexToRGB(ns.PALETTE.accentLight)
-    ui.keystone:SetFont(font, ns.GetFontSize(0))
+    ui.keystone:SetFont(font, ns.GetFontSize(0, "mplus"))
     ui.keystone:SetTextColor(kr, kg, kb, 1)
 
     local mr, mg, mb = ns.HexToRGB(ns.PALETTE.muted)
     ui.timerGlyph:SetColor(mr, mg, mb, 1)
     ui.forcesGlyph:SetColor(mr, mg, mb, 1)
 
-    ui.time:SetFont(font, ns.GetFontSize(12))
+    ui.time:SetFont(font, ns.GetFontSize(12, "mplus"))
     ui.time:SetTextColor(br, bg, bb, 1)
 
     local dr, dg, db = ns.HexToRGB(ns.PALETTE.icon)
-    ui.total:SetFont(font, ns.GetFontSize(-1))
+    ui.total:SetFont(font, ns.GetFontSize(-1, "mplus"))
     ui.total:SetTextColor(dr, dg, db, 1)
 
     local cr, cg, cb = ns.HexToRGB(ns.PALETTE.chest)
-    ui.tier:SetFont(font, ns.GetFontSize(-1))
+    ui.tier:SetFont(font, ns.GetFontSize(-1, "mplus"))
     ui.tier:SetTextColor(cr, cg, cb, 1)
 
     local tr, tg, tb = ns.HexToRGB(ns.PALETTE.chestTime)
-    ui.tierTime:SetFont(font, ns.GetFontSize(-1))
+    ui.tierTime:SetFont(font, ns.GetFontSize(-1, "mplus"))
     ui.tierTime:SetTextColor(tr, tg, tb, 1)
 
     local hr, hg, hb = ns.HexToRGB(ns.PALETTE.hairline)
@@ -880,16 +880,16 @@ local function StyleStatic()
     end
 
     local fr, fg, fb = ns.HexToRGB(ns.PALETTE.forces)
-    ui.forcesLabel:SetFont(font, ns.GetFontSize(-1))
+    ui.forcesLabel:SetFont(font, ns.GetFontSize(-1, "mplus"))
     ui.forcesLabel:SetTextColor(fr, fg, fb, 1)
 
-    ui.forcesPercent:SetFont(font, ns.GetFontSize(-1))
+    ui.forcesPercent:SetFont(font, ns.GetFontSize(-1, "mplus"))
     ui.forcesPercent:SetTextColor(br, bg, bb, 1)
 
     ui.rule:SetVertexColor(hr, hg, hb, 0.06)
 
     local ar, ag, ab = ns.HexToRGB(ns.PALETTE.accentDeep)
-    ui.mark:SetFont(font, ns.GetFontSize(-3.5))
+    ui.mark:SetFont(font, ns.GetFontSize(-3.5, "mplus"))
     ui.mark:SetTextColor(ar, ag, ab, 1)
 end
 mplus.Restyle = StyleStatic
@@ -1149,11 +1149,11 @@ local function StyleBossRow(index, boss)
     -- Three sizes, which is what makes the block read as a hierarchy rather
     -- than a list: the required boss is the title, the extra-bosses heading
     -- sits a step under it, and the bosses under that are body text.
-    local size = ns.GetFontSize(-0.5)
+    local size = ns.GetFontSize(-0.5, "mplus")
     if boss.primary then
-        size = ns.GetFontSize(1.5)
+        size = ns.GetFontSize(1.5, "mplus")
     elseif boss.group then
-        size = ns.GetFontSize(0.5)
+        size = ns.GetFontSize(0.5, "mplus")
     end
     pcall(boss.label.SetFont, boss.label, font, size)
 
@@ -1290,7 +1290,7 @@ local function LayoutSubList(list, top)
     subVisible = math.min(subCount, SUB_MAX_ROWS)
 
     local font  = ns.GetFontFile()
-    local size  = ns.GetFontSize(-1)
+    local size  = ns.GetFontSize(-1, "mplus")
     local left  = HEADER_PAD_X + SUB_INDENT
     local bottom = top
 

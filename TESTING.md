@@ -27,8 +27,8 @@ store cannot exercise.
 - [ ] `/hp status` reports both frames found and hooked
 - [ ] `/hp` opens the window, centred, with every control populated
 - [ ] Font family reads **Friz Quadrata TT**, font size **12**, radius **8**,
-      opacity **100%**, border style **Hairline**, backdrop **Flat**, both
-      scales **100%**, Show quest header **on**, pill reads **ENABLED**
+      opacity **100%**, border style **Hairline**, backdrop **Flat**, both frame
+      scales and all three font scales **100%**, pill reads **ENABLED**
 - [ ] Log out and back in: the store is written and everything comes back
 
 Then put the old SavedVariables back if you want your positions.
@@ -40,6 +40,8 @@ Then put the old SavedVariables back if you want your positions.
       so a short list means heroPanel is using its own embedded copy instead of
       theirs and the two are not sharing a LibStub
 - [ ] Each row is drawn in its own face, not all in one
+- [ ] Opening the dropdown does not error — it did, on `SetText` before
+      `SetFont`, and the rows have a font at birth now
 - [ ] Picking a face changes the text on **both** trackers immediately, with no
       reload
 - [ ] It also changes the options window's own labels
@@ -81,14 +83,30 @@ with no reload:
 - [ ] Corner radius slider — the chamfer steps at 4, 8 and 12
 - [ ] Quest tracker scale slider, and M+ tracker scale slider
 - [ ] Font size slider
+- [ ] **Quest tracker font**, **M+ tracker font** and **This window's font** —
+      each moves only its own panel. The quest one stops making a difference
+      past a couple of points, because the tracker measured the line first and
+      `Lines.lua` clamps growth per line; that is the ceiling, not a bug
 - [ ] State colour swatches — each opens the client's colour picker, previews as
       you drag inside it, and Cancel puts the old colour back
-- [ ] Show quest header — turns heroPanel's row off and gives Blizzard's header
-      back; the M+ header is untouched, by design
 - [ ] Backdrop texture: Flat is selectable, the other three are greyed and
       explain themselves on hover
 
-## 5. Scale stays in step
+## 5. Scale
+
+ElvUI is loaded on this client and docks the quest tracker into
+`WatchFrameHolder`, so `/hp status` reports **positioning: moving holder
+WatchFrameHolder**. That is the case the scale bug lived in: heroPanel scaled
+the holder, which is a sibling of the tracker rather than its parent, so the
+tracker never resized — it only slid sideways as the holder's centre moved.
+Scale now goes to the tracker and position keeps going to the holder.
+
+- [ ] **Quest tracker scale actually resizes the tracker**, and does not move it
+      left or right
+- [ ] heroPanel's panel behind it resizes with it, rather than staying put and
+      leaving the text hanging off the edge
+- [ ] The same for the M+ tracker, which has no holder and should be unchanged
+- [ ] Dragging the tracker still works and still moves the holder
 
 The sliders and `/hp scale` are the same function, and the sliders re-read the
 store when the window opens.

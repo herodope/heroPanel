@@ -578,7 +578,7 @@ local function StyleCounter(placed, line, fontString, r, g, b)
     decorated[fontString] = { raw = line.raw, shown = label }
     fontString:SetText(label)
 
-    counter:SetFont(ns.GetFontFile(), ns.GetFontSize(-0.5))
+    counter:SetFont(ns.GetFontFile(), ns.GetFontSize(-0.5, "watch"))
     counter:SetText(count)
     counter:SetTextColor(r, g, b, 1)
 
@@ -734,8 +734,8 @@ function lines.Apply(watch)
     end
     minLeft = minLeft or 0
 
-    local titleSize = ns.GetFontSize(0.5)
-    local lineSize  = ns.GetFontSize(-0.5)
+    local titleSize = ns.GetFontSize(0.5, "watch")
+    local lineSize  = ns.GetFontSize(-0.5, "watch")
 
     local tr, tg, tb = ns.HexToRGB(db.text.title)
     local nr, ng, nb = ns.HexToRGB(db.text.normal)

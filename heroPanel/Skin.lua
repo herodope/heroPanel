@@ -113,7 +113,7 @@ end
 
 local function NewFontString(parent, layer)
     local fontString = parent:CreateFontString(nil, layer or "OVERLAY")
-    fontString:SetFont(ns.GetFontFile(), ns.GetFontSize(0))
+    fontString:SetFont(ns.GetFontFile(), ns.GetFontSize(0, "watch"))
     return fontString
 end
 
@@ -443,13 +443,13 @@ local function StylePlate()
     header.caret:SetColor(ir, ig, ib, 1)
 
     local lr, lg, lb = ns.HexToRGB(ns.PALETTE.headerLabel)
-    header.label:SetFont(ns.GetFontFile(), ns.GetFontSize(-0.5))
+    header.label:SetFont(ns.GetFontFile(), ns.GetFontSize(-0.5, "watch"))
     header.label:SetTextColor(lr, lg, lb, 1)
     header.label:ClearAllPoints()
     header.label:SetPoint("LEFT", header.lock, "RIGHT", 8, 0)
 
     local mr, mg, mb = ns.HexToRGB(ns.PALETTE.muted)
-    header.badgeText:SetFont(ns.GetFontFile(), ns.GetFontSize(-2.5))
+    header.badgeText:SetFont(ns.GetFontFile(), ns.GetFontSize(-2.5, "watch"))
     header.badgeText:SetTextColor(mr, mg, mb, 1)
     header.badgeText:ClearAllPoints()
     header.badgeText:SetPoint("LEFT", header.label, "RIGHT", 8 + BADGE_PAD_X, 0)

@@ -115,6 +115,32 @@ local function ActiveMoverName(key)
     return record.moverName
 end
 
+-- The frame heroPanel *scales*, which is never the holder.
+--
+-- This is not the same frame as the mover and it was, which made "scale the
+-- quest tracker" slide it sideways instead of resizing it. A holder is a frame
+-- the tracker is anchored *to*, not one it is parented to - ElvUI's
+-- WatchFrameHolder is a child of UIParent that does
+-- WatchFrame:SetPoint("TOP", WatchFrameHolder, "TOP") - so:
+--
+--   * scaling the holder cannot scale the tracker, because scale is inherited
+--     through parentage and the tracker is not its child; and
+--   * scaling the holder *does* move the tracker, because a wider holder has
+--     its TOP - the anchor the tracker hangs off - further to the right.
+--
+-- So scale goes to the tracker itself and position keeps going to the mover.
+-- The two are independent: scaling the tracker leaves the mover's geometry
+-- untouched, and moving the holder leaves the tracker's scale alone. It also
+-- makes Skin.lua's plate follow, since that reads the tracker's own scale.
+--
+-- With no holder in play these are the same frame and nothing changes.
+local function ScaleTarget(key)
+    local record = ns.trackers[key]
+    if not record then return nil end
+    return record.frame or record.mover
+end
+ns.GetScaleTarget = ScaleTarget
+
 --------------------------------------------------------------------------------
 -- Coordinate helpers
 --
@@ -343,11 +369,16 @@ function ns.ResetPosition(key)
                 ns.savedManagedPositions[record.moverName] = nil
             end
 
-            local frame = record.mover
-            if frame then
+            -- Scale comes off the tracker and user-placed comes off the mover,
+            -- because that is where each of them was put.
+            local target = ScaleTarget(record.key)
+            local frame  = record.mover
+            if target or frame then
                 ns.RunWhenSafe(function()
-                    frame:SetScale(1.0)
-                    if frame.SetUserPlaced then pcall(frame.SetUserPlaced, frame, false) end
+                    if target then target:SetScale(1.0) end
+                    if frame and frame.SetUserPlaced then
+                        pcall(frame.SetUserPlaced, frame, false)
+                    end
                 end, "Reset:" .. record.key)
             end
             ns.Print("%s reset. Reload the UI to put it back where the game wants it.", record.label)
@@ -359,25 +390,32 @@ end
 --------------------------------------------------------------------------------
 -- Scale
 --
--- Scale is set from /hp scale and, from Phase 4, the options panel. There is
--- deliberately no mousewheel binding on the tracker frames.
+-- Set from /hp scale and from the options window's sliders, which call this
+-- same function so the two cannot disagree. There is deliberately no mousewheel
+-- binding on the tracker frames.
 --------------------------------------------------------------------------------
 
 function ns.SetScale(key, scale)
-    local frame = ActiveMover(key)
-    local saved = GetSaved(key)
-    if not frame or not saved then return false end
+    local target = ScaleTarget(key)
+    local mover  = ActiveMover(key)
+    local saved  = GetSaved(key)
+    if not target or not saved then return false end
 
     scale = ns.Snap(ns.Clamp(scale, SCALE_MIN, SCALE_MAX), SCALE_STEP)
     saved.scale = scale
 
     ns.RunWhenSafe(function()
-        frame:SetScale(scale)
-        -- Offsets are stored in UIParent space, so re-apply to keep the frame's
-        -- top-left corner pinned where the user put it.
-        if saved.point and ns.GetMode(key) ~= "yield" then
+        target:SetScale(scale)
+
+        -- Re-pin the mover's top-left corner. Offsets are stored in UIParent
+        -- space and converted using the mover's own effective scale, so this
+        -- only actually changes anything when the mover and the scaled frame
+        -- are the same object - which is the no-holder case. It is run either
+        -- way because it costs nothing and getting it wrong is a frame that
+        -- creeps every time it is rescaled.
+        if mover and saved.point and ns.GetMode(key) ~= "yield" then
             applying[key] = true
-            ApplyUIOffsets(frame, saved.x or 0, saved.y or 0)
+            ApplyUIOffsets(mover, saved.x or 0, saved.y or 0)
             applying[key] = nil
         end
     end, "SetScale:" .. key)
@@ -385,11 +423,11 @@ function ns.SetScale(key, scale)
 end
 
 function ns.RestoreScale(key)
-    local frame = ActiveMover(key)
-    local saved = GetSaved(key)
-    if not frame or not saved then return false end
+    local target = ScaleTarget(key)
+    local saved  = GetSaved(key)
+    if not target or not saved then return false end
     local scale = ns.Clamp(saved.scale or 1.0, SCALE_MIN, SCALE_MAX)
-    return ns.RunWhenSafe(function() frame:SetScale(scale) end, "RestoreScale:" .. key)
+    return ns.RunWhenSafe(function() target:SetScale(scale) end, "RestoreScale:" .. key)
 end
 
 --------------------------------------------------------------------------------

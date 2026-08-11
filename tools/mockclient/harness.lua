@@ -1238,10 +1238,10 @@ check(colourOf(nativeHeaderText) ~= "E7C67C",
 -- rather than the offsets it is supposed to be checking.
 local _, titleSize = trackerLines[1].__text:GetFont()
 local _, lineSize  = trackerLines[2].__text:GetFont()
-check(titleSize == ns.GetFontSize(0.5),
-    "title font should be base + 0.5 (" .. tostring(ns.GetFontSize(0.5)) .. "), got " .. tostring(titleSize))
-check(lineSize == ns.GetFontSize(-0.5),
-    "objective font should be base - 0.5 (" .. tostring(ns.GetFontSize(-0.5)) .. "), got " .. tostring(lineSize))
+check(titleSize == ns.GetFontSize(0.5, "watch"),
+    "title font should be base + 0.5 (" .. tostring(ns.GetFontSize(0.5, "watch")) .. "), got " .. tostring(titleSize))
+check(lineSize == ns.GetFontSize(-0.5, "watch"),
+    "objective font should be base - 0.5 (" .. tostring(ns.GetFontSize(-0.5, "watch")) .. "), got " .. tostring(lineSize))
 
 -- ...and the bound holds however large the config goes. Unbounded growth would
 -- run lines into each other, since the tracker placed them on its own pitch.
@@ -2087,11 +2087,11 @@ local function msize(fontString) return fontString.__font and fontString.__font[
 
 -- Against the configured base rather than fixed numbers, because /hp font
 -- moves all three together and an earlier test in this run changes it.
-check(msize(finalRow.Text) == ns.GetFontSize(1.5),
+check(msize(finalRow.Text) == ns.GetFontSize(1.5, "mplus"),
     "the required boss should be title-sized, got " .. tostring(msize(finalRow.Text)))
-check(msize(heading.Text) == ns.GetFontSize(0.5),
+check(msize(heading.Text) == ns.GetFontSize(0.5, "mplus"),
     "the extra-bosses heading should sit a step under it, got " .. tostring(msize(heading.Text)))
-check(msize(subRow("Falric")) == ns.GetFontSize(-1),
+check(msize(subRow("Falric")) == ns.GetFontSize(-1, "mplus"),
     "a boss row should be body text, got " .. tostring(msize(subRow("Falric"))))
 check(msize(finalRow.Text) > msize(heading.Text)
       and msize(heading.Text) > msize(subRow("Falric")),
@@ -2592,7 +2592,7 @@ do
     check(ns.db.enabled == true, "reset should leave the skin enabled")
 
     local _, titleAfterReset = trackerLines[1].__text:GetFont()
-    check(titleAfterReset == ns.GetFontSize(0.5),
+    check(titleAfterReset == ns.GetFontSize(0.5, "watch"),
         "reset should re-apply the skin, not just write the store; got " .. tostring(titleAfterReset))
 end
 
@@ -2607,6 +2607,134 @@ end
 
 ns.Options.Hide()
 check(not ns.Options.IsShown(), "Save & close should hide the window")
+
+--------------------------------------------------------------------------------
+-- Scaling a tracker that another addon has docked into a holder
+--
+-- The bug this exists for: "quest tracker scale" slid the tracker sideways
+-- instead of resizing it.
+--
+-- A holder is a frame the tracker is anchored *to*, not one it is parented to.
+-- ElvUI's is the case in hand - WatchFrameHolder is a child of UIParent and
+-- ElvUI does WatchFrame:SetPoint("TOP", WatchFrameHolder, "TOP") - so scaling
+-- the holder cannot scale the tracker, because scale is inherited through
+-- parentage and the tracker is not its child. What it does do is move it: the
+-- holder's TOP is its horizontal centre, a scaled holder is wider on screen, so
+-- its centre shifts and the tracker hanging off it shifts with it.
+--
+-- So scale goes to the tracker and position keeps going to the mover.
+--------------------------------------------------------------------------------
+
+do
+    local holder = CreateFrame("Frame", "TestWatchFrameHolder", UIParent)
+    holder:SetWidth(207)
+    holder:SetHeight(22)
+    holder.__rect = { left = 1000, right = 1207, top = 800, bottom = 778 }
+
+    local record = ns.trackers.watch
+    local realHolderFrame, realHolderName = record.holderFrame, record.holderName
+    local realOwnership = HEROPANEL_DB.frame.ownership
+
+    record.holderFrame = holder
+    record.holderName  = "TestWatchFrameHolder"
+    ns.SetOwnership("holder", "watch")
+
+    check(ns.GetMode("watch") == "holder", "the tracker should be in holder mode for this check")
+    check(ns.GetActiveMover("watch") == holder, "the mover should be the holder")
+    check(ns.GetScaleTarget("watch") == WatchFrame,
+        "the scale target must be the tracker itself, never the holder")
+
+    local holderScaleBefore = holder:GetScale()
+    ns.SetScale("watch", 1.3)
+    tick(); tick()
+
+    check(math.abs(WatchFrame:GetScale() - 1.3) < 0.001,
+        "scaling should reach the tracker, got " .. tostring(WatchFrame:GetScale()))
+    check(math.abs(holder:GetScale() - holderScaleBefore) < 0.001,
+        "scaling must not touch the holder - that is what moved the tracker sideways; got "
+        .. tostring(holder:GetScale()))
+
+    -- ...and the plate follows, because it reads the tracker's own scale.
+    ns.Skin.Refresh("scaled in holder mode")
+    tick(); tick()
+    check(math.abs(HeroPanelWatchPlate:GetScale() - 1.3) < 0.001,
+        "the plate should follow the tracker's scale, got "
+        .. tostring(HeroPanelWatchPlate:GetScale()))
+
+    ns.SetScale("watch", 1.0)
+    tick(); tick()
+    check(math.abs(WatchFrame:GetScale() - 1.0) < 0.001, "and back down again")
+
+    record.holderFrame, record.holderName = realHolderFrame, realHolderName
+    ns.SetOwnership(realOwnership or "auto", "watch")
+    ns.Skin.Refresh("holder check finished")
+    tick(); tick()
+end
+
+--------------------------------------------------------------------------------
+-- Per-panel font scales
+--------------------------------------------------------------------------------
+
+do
+    local base = ns.db.font.size
+
+    ns.db.font.scale.watch = 1.5
+    ns.db.font.scale.mplus = 1.0
+    check(ns.GetFontSize(0, "watch") == (base + 0) * 1.5,
+        "the quest scale should multiply the base, got " .. tostring(ns.GetFontSize(0, "watch")))
+    check(ns.GetFontSize(0, "mplus") == base,
+        "...and it should not touch the other panel, got " .. tostring(ns.GetFontSize(0, "mplus")))
+    check(ns.GetFontSize(0) == base,
+        "no scope means no scale, got " .. tostring(ns.GetFontSize(0)))
+
+    -- The design's relative steps stay proportional rather than collapsing
+    -- together as the scale goes up.
+    check(ns.GetFontSize(0.5, "watch") > ns.GetFontSize(-0.5, "watch"),
+        "a scaled panel keeps its title over its objectives")
+
+    -- ...and it actually reaches the tracker, subject to the growth clamp that
+    -- Lines.lua applies because the tracker measured the line first.
+    ns.Options.Apply("font scale test")
+    tick(); tick()
+    local _, scaledTitle = trackerLines[1].__text:GetFont()
+
+    ns.db.font.scale.watch = 1.0
+    ns.Options.Apply("font scale test reset")
+    tick(); tick()
+    local _, plainTitle = trackerLines[1].__text:GetFont()
+    check(scaledTitle > plainTitle,
+        "scaling the quest font should grow the title, got " .. tostring(scaledTitle)
+        .. " scaled against " .. tostring(plainTitle))
+
+    -- A store from before this existed has no scale table at all.
+    ns.db.font.scale = nil
+    check(ns.GetFontSize(0, "watch") == base,
+        "a missing scale table should read as 1.0, not error")
+    ns.InitDB()
+    check(type(ns.db.font.scale) == "table", "InitDB should fill the scale table back in")
+end
+
+--------------------------------------------------------------------------------
+-- The header option is gone, and the header is on
+--------------------------------------------------------------------------------
+
+check(ns.db.header.show == true, "the quest header stays on by default")
+check(ns.defaults.header.show == true, "...and that is the default, not a leftover")
+
+do
+    local labels = {}
+    ns.WalkFrameTree(HeroPanelOptionsFrame, function(object, info)
+        if info.kind == "region" and object.GetText then
+            local text = object:GetText()
+            if text then labels[text] = true end
+        end
+    end, { maxDepth = 4 })
+
+    check(not labels["Show quest header"],
+        "the header toggle should be gone from the window")
+    check(labels["Quest tracker font"] and labels["M+ tracker font"] and labels["This window's font"],
+        "the three per-panel font scales should be in the window")
+end
 
 --------------------------------------------------------------------------------
 -- Combat, with both panels up and the options window open
