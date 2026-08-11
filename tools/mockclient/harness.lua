@@ -890,6 +890,7 @@ function CreateMplusTracker()
     timer.GetMinMaxValues = function(self) return self.__min, self.__max end
     timer.GetValue        = function(self) return self.__value end
     timer.__fill          = timer:CreateTexture(nil, "ARTWORK")
+    table.remove(timer.__regions)   -- as above: a status bar's fill is not a region
     timer.GetStatusBarTexture = function(self) return self.__fill end
     timer.PlusTwoNotch    = timer:CreateTexture(nil, "OVERLAY")
     timer.PlusThreeNotch  = timer:CreateTexture(nil, "OVERLAY")
@@ -954,9 +955,29 @@ function CreateMplusTracker()
     -- Last, below the bosses, which is where Ascension anchors it.
     block.EnemyForces = BuildObjectiveRow(block, "MplusEnemyForces",
         "Enemy Forces", TRASH_DEAD, TRASH_REQUIRED, 400)
-    block.EnemyForces.StatusBar = new("Frame", nil, block.EnemyForces)
-    block.EnemyForces.StatusBar.__rect = { left = 1320, right = 1540, top = 396, bottom = 388 }
-    block.EnemyForces.StatusBar.__border = block.EnemyForces.StatusBar:CreateTexture()
+
+    -- The bar Ascension animates as trash dies.
+    --
+    -- Two things here are what the animation costs heroPanel. The fill is a
+    -- status-bar texture rather than one of the frame's regions, so a walk over
+    -- GetRegions never sees it; and Play() writes alpha and shown state
+    -- directly, exactly as an alpha animation does, so whatever the skin set
+    -- before it ran is gone. Both are modelled rather than described: a fade
+    -- that only holds until the first pull is the bug this stands in for.
+    local bar = new("Frame", nil, block.EnemyForces)
+    bar.__rect  = { left = 1320, right = 1540, top = 396, bottom = 388 }
+    bar.__border = bar:CreateTexture()
+    bar.__fill   = bar:CreateTexture(nil, "ARTWORK")
+    table.remove(bar.__regions)   -- the fill is the bar's own, not one of its regions
+    bar.GetStatusBarTexture = function(self) return self.__fill end
+    bar.Glow = bar:CreateTexture(nil, "OVERLAY")
+    function bar:Play()
+        for _, region in ipairs({ self.__fill, self.Glow }) do
+            region:Show()
+            region:SetAlpha(1)
+        end
+    end
+    block.EnemyForces.StatusBar = bar
 
     return t
 end
@@ -1885,7 +1906,45 @@ check(mplusTracker.MainBlock.TimeLeft3:GetAlpha() == 0,
     "Ascension's miscomputed +3 clock should be faded")
 check(mplusTracker.MainBlock.Timer.PlusTwoNotch:GetAlpha() == 0,
     "the tracker's own threshold notches should be faded")
+check(mplusTracker.MainBlock.Timer.__fill:GetAlpha() == 0,
+    "the keystone timer's fill is a status-bar texture and has to be asked for by name")
 check(mplusTracker.MainBlock.Affix1.__normal:GetAlpha() == 0, "affix button art should be faded")
+
+--------------------------------------------------------------------------------
+-- The enemy-forces bar, which fights back
+--
+-- Every other piece of Ascension's chrome sits still once it has been faded.
+-- That row does not: it animates on every trash kill, and an animation writes
+-- the alpha of what it animates for as long as it plays, so a zero set before
+-- it ran is gone. In game that drew Ascension's glow across the bottom of the
+-- panel on every pull.
+--
+-- So the row is hidden as well as faded, and the checks are in that order: the
+-- fill must be found at all - it is a status-bar texture, not one of the
+-- frame's regions - it must be off the screen, and it must still be off the
+-- screen after the animation has run.
+--------------------------------------------------------------------------------
+
+local forcesBar = mplusTracker.ObjectiveBlock.EnemyForces.StatusBar
+
+check(forcesBar.__fill:GetAlpha() == 0,
+    "the enemy-forces fill is a status-bar texture and has to be asked for by name")
+check(not forcesBar.__fill:IsShown(), "the enemy-forces fill should be hidden, not just faded")
+check(not forcesBar.Glow:IsShown(), "the enemy-forces glow should be hidden, not just faded")
+
+forcesBar:Play()
+check(not forcesBar.Glow:IsShown(),
+    "an animation showing the glow again must not put it back on screen")
+check(not forcesBar.__fill:IsShown(),
+    "an animation showing the fill again must not put it back on screen")
+
+-- ...and the row is still where it was. Hiding regions is the whole of it -
+-- nothing about the frame the tracker laid out may change.
+check(mplusTracker.ObjectiveBlock.EnemyForces:IsShown(),
+    "the enemy-forces row itself must not be hidden")
+check(forcesBar:IsShown(), "the enemy-forces bar frame must not be hidden")
+check(mplusTracker.ObjectiveBlock.EnemyForces:GetTop() == 400,
+    "the enemy-forces row must not be moved")
 
 -- Boss text survives: the rows are recoloured and refonted, never hidden.
 local finalRow = mplusTracker.ObjectiveBlock.FinalEncounter
@@ -2336,7 +2395,7 @@ check(heading.isExpanded, "this check is only meaningful while the row is expand
 -- The count moves out of the right-aligned counter and into the sentence,
 -- where it reads as part of the heading rather than as a stray number against
 -- the panel's far edge.
-check(heading.Text:GetText() == "Defeat additional bosses (2/2)",
+check(heading.Text:GetText() == "additional bosses (2/2)",
     "the heading should carry its count inline, got " .. tostring(heading.Text:GetText()))
 check(heading.Counter:GetAlpha() == 0,
     "the heading's right-aligned counter should be faded once the count is inline")
@@ -2344,18 +2403,18 @@ check(heading.Counter:GetAlpha() == 0,
 -- ...and only once there is something to count.
 heading:SetObjective("Defeat additional bosses", 0, 6)
 tick(); tick()
-check(heading.Text:GetText() == "Defeat additional bosses",
+check(heading.Text:GetText() == "additional bosses",
     "no count should be shown before the first extra boss dies, got "
     .. tostring(heading.Text:GetText()))
 
 heading:SetObjective("Defeat additional bosses", 1, 6)
 tick(); tick()
-check(heading.Text:GetText() == "Defeat additional bosses (1/6)",
+check(heading.Text:GetText() == "additional bosses (1/6)",
     "the count should appear on the first kill, got " .. tostring(heading.Text:GetText()))
 
 -- The rewrite must not compound: reading the row back gives the raw string.
 tick(); tick()
-check(heading.Text:GetText() == "Defeat additional bosses (1/6)",
+check(heading.Text:GetText() == "additional bosses (1/6)",
     "a second pass must not stack a second count, got " .. tostring(heading.Text:GetText()))
 
 --------------------------------------------------------------------------------
@@ -2368,7 +2427,7 @@ local function msize(fontString) return fontString.__font and fontString.__font[
 -- moves all three together and an earlier test in this run changes it.
 check(msize(finalRow.Text) == ns.GetFontSize(1.5, "mplus"),
     "the required boss should be title-sized, got " .. tostring(msize(finalRow.Text)))
-check(msize(heading.Text) == ns.GetFontSize(0.5, "mplus"),
+check(msize(heading.Text) == ns.GetFontSize(0, "mplus"),
     "the extra-bosses heading should sit a step under it, got " .. tostring(msize(heading.Text)))
 check(msize(subRow("Falric")) == ns.GetFontSize(-1, "mplus"),
     "a boss row should be body text, got " .. tostring(msize(subRow("Falric"))))
@@ -2691,15 +2750,64 @@ else
         end
     end
 
+    ------------------------------------------------------------------
+    -- With room, the affix row costs exactly its own height
+    --
+    -- The tracker's objective rows are pushed down first, so heroPanel's block
+    -- fits above them with room to spare and the gap budget stays at its design
+    -- values. That is the case the 4 + 20 is a promise about.
+    ------------------------------------------------------------------
+
+    local function shiftObjectiveRows(dy)
+        local seen = {}
+        local function shift(object)
+            if not object or seen[object] then return end
+            seen[object] = true
+            if object.__rect then
+                object.__rect.top    = object.__rect.top + dy
+                object.__rect.bottom = object.__rect.bottom + dy
+            end
+            for _, region in ipairs(object.__regions or {}) do shift(region) end
+            for _, child  in ipairs(object.__children or {}) do shift(child) end
+        end
+        shift(mplusTracker.ObjectiveBlock)
+    end
+
+    shiftObjectiveRows(-60)
+
+    setAffixes({})
+    local roomyBare = timerTop()
+    setAffixes({ 1001, 1002, 1003 })
+    local roomyRow = timerTop()
+
+    if roomyBare and roomyRow then
+        check(math.abs((roomyBare - roomyRow) - 24) < 0.01,
+            "with room above the boss rows the affix row should push the timer "
+            .. "down by 4 + 20, got " .. tostring(roomyBare - roomyRow))
+    end
+
+    shiftObjectiveRows(60)
+
+    ------------------------------------------------------------------
+    -- Without room, the gaps pay for part of it
+    --
+    -- This mock's tracker is compact: its first boss row is 130px under the
+    -- tracker's top and heroPanel's block does not fit above it with the affix
+    -- row in place. The gaps give until the bar clears the row again, so the
+    -- affix row costs less than its own height and the panel is tighter rather
+    -- than overlapping.
+    ------------------------------------------------------------------
+
     setAffixes({})
     local bareTimer = timerTop()
     setAffixes({ 1001, 1002, 1003 })
     local rowTimer = timerTop()
 
     if bareTimer and rowTimer then
-        check(math.abs((bareTimer - rowTimer) - 24) < 0.01,
-            "the affix row should push the timer down by 4 + 20, got "
-            .. tostring(bareTimer - rowTimer))
+        local cost = bareTimer - rowTimer
+        check(cost > 0 and cost < 24,
+            "on a tracker with no room the affix row should cost less than its "
+            .. "own 24px, with the gaps paying the rest; got " .. tostring(cost))
     end
 
     -- The panel's own height does NOT change, and that is right: with boss rows
@@ -2711,6 +2819,27 @@ else
     check(forcesTop and forcesTop > 470,
         "the enemy-forces row must still clear the topmost boss row at 470 with "
         .. "the affix row in place, got " .. tostring(forcesTop))
+
+    -- The label clearing the boss row is not the same as the block clearing it.
+    -- The bar hangs 19px under the label and is the lowest thing heroPanel draws
+    -- before the tracker's own rows start, so it is the one that has to clear -
+    -- checking the label alone is how the bar came to be drawn straight through
+    -- "Lord Vyletongue" with the affix row in place.
+    local function forcesBarBottom()
+        local lowest
+        for _, region in ipairs(HeroPanelMplusPlate.__regions) do
+            if region:IsShown() and region:GetHeight() == 4 then
+                local bottom = region:GetBottom()
+                if bottom and (not lowest or bottom < lowest) then lowest = bottom end
+            end
+        end
+        return lowest
+    end
+
+    local barBottom = forcesBarBottom()
+    check(barBottom and barBottom >= 470,
+        "the enemy-forces bar must clear the topmost boss row at 470 too, got "
+        .. tostring(barBottom))
 
     -- Back to the three the rest of the run expects.
     setAffixes({ 1001, 1002, 1003 })
@@ -2729,16 +2858,63 @@ check(mplusTracker.LockButton:IsMouseEnabled(),
     "disabling should give Ascension's lock button its mouse back")
 check(falric.Icon:GetAlpha() == 1, "disabling should restore the boss icon")
 check(falric.Counter:GetAlpha() == 1, "disabling should restore the boss counter")
+
+-- The heading loses its verb and gains its count on the way in, and both are
+-- heroPanel's edits to a string Ascension wrote. Disabling gives the sentence
+-- back whole - the verb included, which the panel drops for width and has no
+-- business dropping once it is not the one drawing.
+local restoredHeading = heading.Text:GetText() or ""
+check(string.sub(restoredHeading, 1, 7) == "Defeat ",
+    "disabling should give the heading its verb back, got " .. restoredHeading)
+check(not string.find(restoredHeading, "(", 1, true),
+    "disabling should take heroPanel's inline count back off, got " .. restoredHeading)
 check(HeroPanelMplusPlate:IsShown() == false, "disabling should hide the panel")
+
+-- The enemy-forces row is the one thing heroPanel hides rather than fades, so
+-- it is also the one thing that can come back invisible. Both halves of what
+-- was taken from it have to be handed back, and its animation has to be free to
+-- show it again once the skin is off.
+check(forcesBar.Glow:GetAlpha() == 1, "disabling should restore the enemy-forces glow's alpha")
+check(forcesBar.Glow:IsShown(), "disabling should show the enemy-forces glow again")
+check(forcesBar.__fill:IsShown(), "disabling should show the enemy-forces fill again")
+forcesBar.Glow:Hide()
+forcesBar:Play()
+check(forcesBar.Glow:IsShown(), "with the skin off, the animation owns the row again")
 
 ns.Mplus.Enable()
 tick(); tick()
 check(HeroPanelMplusPlate:IsShown(), "re-enabling should bring the panel back")
 check(mplusTracker.HeaderText:GetAlpha() == 0, "re-enabling should fade the header text again")
+check(not forcesBar.Glow:IsShown(), "re-enabling should take the enemy-forces glow back off")
 
 -- The reports have to work whether or not a keystone is running.
 ns.Mplus.Dump()
 ns.Mplus.PrintStatus()
+
+-- The dump sweeps the tracker for art still drawing below the panel, which is
+-- how a strip of Ascension's chrome under it gets named rather than guessed at
+-- from a screenshot. A sweep that silently does not run is worse than no
+-- sweep - it reads as "nothing found" - so the line it prints is checked for.
+do
+    local swept
+    for i = #log, 1, -1 do
+        if string.find(log[i], "below the panel", 1, true) then swept = log[i]; break end
+    end
+    check(swept ~= nil, "the dump should report what is drawing below the panel")
+    check(swept == nil or not string.find(swept, "stray", 1, true),
+        "the skinned tracker should leave nothing drawing below the panel; got " .. tostring(swept))
+
+    -- ...and the same for the gap budget. This mock's tracker is compact enough
+    -- that the squeeze is running here, so the line is reporting a real number
+    -- rather than the trivial case.
+    local cleared
+    for i = #log, 1, -1 do
+        if string.find(log[i], "clears the first boss row", 1, true) then cleared = log[i]; break end
+    end
+    check(cleared ~= nil, "the dump should report the forces bar's clearance over the boss row")
+    check(cleared == nil or not string.find(cleared, "drawn over the row", 1, true),
+        "the panel must not be drawing its forces bar over a boss row; got " .. tostring(cleared))
+end
 
 --------------------------------------------------------------------------------
 -- Fonts through LibSharedMedia

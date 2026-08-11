@@ -110,6 +110,77 @@ local PULSE_PERIOD    = 1.6
 local PULSE_MIN       = 0.35
 local TICK_INTERVAL   = 0.25  -- how often the clock, bar and tier are redrawn
 
+--------------------------------------------------------------------------------
+-- The gap budget
+--
+-- Everything above the first boss row is heroPanel's - header, affix row, timer
+-- row, timer bar, enemy forces - and the boss row itself is Ascension's, drawn
+-- where Ascension put it. heroPanel does not move objective rows, so the space
+-- between the top of the tracker and that row is a fixed budget, and on a
+-- compact tracker heroPanel's block is taller than it.
+--
+-- It used to overflow silently: LayoutForces would give up on sitting above the
+-- boss row and fall back to sitting under the timer bar, which on this client
+-- put heroPanel's own enemy-forces bar straight through "Lord Vyletongue". The
+-- affix row is what tipped it over - 24px of header block that was not there
+-- when the spacing was chosen - but the overflow was always one design change
+-- away, because nothing was checking.
+--
+-- So the gaps give. Each one has a floor, pixels are taken from them in this
+-- order until the bar clears the row again, and a tracker with room keeps every
+-- gap at its design value - the squeeze only exists on the trackers that need
+-- it. Every gap here is worth exactly one pixel of clearance, the forces gap
+-- included: shrinking it lifts the whole block by a pixel and gives a pixel
+-- back to the row below in the same move.
+--
+-- What it squeezes *to* is FORCES_MIN_CLEAR, not the design gap. Asking for the
+-- design gap back would tighten panels that are merely snug rather than broken,
+-- which is spending the budget where there is no bug.
+--
+-- If the floors are not enough the block still overruns, by however much is
+-- left. That is reported rather than hidden - see the debug line in Redraw.
+--------------------------------------------------------------------------------
+
+local FORCES_MIN_CLEAR = 7    -- least gap the squeeze will settle for
+
+local GAP_BUDGET = {
+    { key = "forces",   default = FORCES_TOP,    floor = 7 },
+    { key = "timerRow", default = TIMER_ROW_TOP, floor = 6 },
+    { key = "bar",      default = BAR_TOP,       floor = 5 },
+    { key = "affixRow", default = AFFIX_ROW_TOP, floor = 2 },
+}
+
+-- Resolved once per draw. Read by every Layout function instead of the
+-- constants above, which stay as the design values the budget starts from.
+local gap = {}
+
+local function ResetGaps()
+    for i = 1, #GAP_BUDGET do
+        local entry = GAP_BUDGET[i]
+        gap[entry.key] = entry.default
+    end
+end
+ResetGaps()
+
+-- Takes `wanted` pixels out of the gaps and returns whatever it could not find.
+-- Zero or less asks for nothing and puts every gap back to its design value.
+local function SqueezeGaps(wanted)
+    ResetGaps()
+    if not wanted or wanted <= 0 then return 0 end
+
+    for i = 1, #GAP_BUDGET do
+        local entry = GAP_BUDGET[i]
+        local give  = math.min(entry.default - entry.floor, wanted)
+        if give > 0 then
+            gap[entry.key] = entry.default - give
+            wanted = wanted - give
+            if wanted <= 0 then return 0 end
+        end
+    end
+
+    return wanted
+end
+
 -- Same reasoning as Skin.lua: frame levels bottom out at zero and only compare
 -- inside a strata, so the plate goes a strata below the tracker rather than a
 -- couple of levels below it.
@@ -236,6 +307,7 @@ local affixes  = {}             -- pooled affix icons
 local affixRowHeight = 0
 local decorated = {}            -- FontString -> { raw, shown }, text we rewrote
 local lockMouse = {}            -- button -> original mouse state, for Disable()
+local hiddenArt = {}            -- region -> original shown state, for Disable()
 local hooked   = false
 local queued   = false
 -- Forward declaration: the row hooks installed during a draw have to be able
@@ -569,6 +641,10 @@ end
 -- geometry: unlike WatchFrame, this tracker is built from an XML template
 -- heroPanel can read, so the widgets are known and there is nothing to guess.
 -- Anything the template does not have is simply absent and skipped.
+--
+-- The one exception is the enemy-forces row, whose art is hidden as well -
+-- alpha alone cannot hold against the animation Ascension plays on it. The
+-- reasoning is written out above ClearSubtree.
 --------------------------------------------------------------------------------
 
 local function FadeRegion(region)
@@ -587,6 +663,30 @@ local function FadeRegionsOf(frame)
     for i = 1, #regions do FadeRegion(regions[i]) end
 end
 
+-- A status bar's fill is a texture the frame owns rather than one of its
+-- regions, so GetRegions never returns it and a subtree walk goes straight past
+-- it. Anything that answers GetStatusBarTexture gets asked for it by name.
+local function FadeFill(bar, fade)
+    if not bar or type(bar.GetStatusBarTexture) ~= "function" then return end
+    local ok, fill = pcall(bar.GetStatusBarTexture, bar)
+    if ok and fill then (fade or FadeRegion)(fill) end
+end
+
+-- A button's four state textures, which are its own rather than its regions and
+-- so are missed by exactly the same walk the status-bar fill is.
+local BUTTON_TEXTURES = { "GetNormalTexture", "GetPushedTexture",
+                          "GetHighlightTexture", "GetDisabledTexture" }
+
+local function FadeButtonTextures(button, fade)
+    for i = 1, #BUTTON_TEXTURES do
+        local getter = button[BUTTON_TEXTURES[i]]
+        if type(getter) == "function" then
+            local ok, texture = pcall(getter, button)
+            if ok and texture then (fade or FadeRegion)(texture) end
+        end
+    end
+end
+
 -- A button's own textures, plus everything drawn anywhere beneath it.
 --
 -- Fading the four button textures and the frame's own regions was not enough.
@@ -597,28 +697,71 @@ end
 local function FadeSubtree(frame)
     if not frame then return end
     FadeRegionsOf(frame)
-
-    local getters = { "GetNormalTexture", "GetPushedTexture", "GetHighlightTexture", "GetDisabledTexture" }
-    local function ButtonTextures(button)
-        for i = 1, #getters do
-            local getter = button[getters[i]]
-            if type(getter) == "function" then
-                local ok, texture = pcall(getter, button)
-                if ok and texture then FadeRegion(texture) end
-            end
-        end
-    end
-    ButtonTextures(frame)
+    FadeButtonTextures(frame)
 
     ns.WalkFrameTree(frame, function(object, info)
         if info.kind == "region" then
             FadeRegion(object)
         elseif info.objectType == "Button" then
-            ButtonTextures(object)
+            FadeButtonTextures(object)
         end
     end, { maxDepth = 4, includeRegions = true })
 end
 local FadeButton = FadeSubtree
+
+-- The enemy-forces row, which needs more than alpha
+--
+-- Ascension animates that bar as trash dies: the fill runs up to its new value
+-- and a glow runs across it. An animation owns the alpha of what it animates -
+-- it writes the value every frame for as long as it plays - so the zero
+-- FadeRegion set is simply gone for the length of the animation, and Ascension's
+-- glow drew across the bottom of heroPanel's panel on every pull. Re-fading does
+-- not help either: the next frame of the animation writes over that too.
+--
+-- So this one row is hidden as well as faded. Hiding is what the rest of this
+-- file avoids, for the reason in the header - the tracker's layout reads back
+-- what it laid out - but that objection is about frames, and this hides regions
+-- only. A texture that is not shown does not draw whatever an animation does to
+-- its alpha, and the row's own height, anchors and children are untouched, so
+-- the tracker still measures it exactly as it did before.
+--
+-- Show is hooked to keep it that way: the animation's own scripts show the glow
+-- again on the next kill, and there is no event heroPanel could hang a re-hide
+-- off that lands before the frame it would be visible on. The hook is gated on
+-- mplus.enabled, so Disable() hands the row straight back.
+local function HideArt(region)
+    if not region or type(region.Hide) ~= "function" then return end
+    FadeRegion(region)
+
+    if hiddenArt[region] == nil then
+        local ok, shown = pcall(region.IsShown, region)
+        hiddenArt[region] = (ok and shown) or false
+        pcall(hooksecurefunc, region, "Show", function(self)
+            if mplus.enabled then pcall(self.Hide, self) end
+        end)
+    end
+    pcall(region.Hide, region)
+end
+
+-- Everything drawn anywhere beneath a frame, taken off the screen rather than
+-- turned transparent. Frames are walked into but never hidden themselves.
+local function ClearSubtree(frame)
+    if not frame then return end
+
+    FadeFill(frame, HideArt)
+    FadeButtonTextures(frame, HideArt)
+
+    -- The walk covers the row's own regions at depth zero, so there is no
+    -- separate pass over them here.
+    ns.WalkFrameTree(frame, function(object, info)
+        if info.kind == "region" then
+            HideArt(object)
+        else
+            FadeFill(object, HideArt)
+            if info.objectType == "Button" then FadeButtonTextures(object, HideArt) end
+        end
+    end, { maxDepth = 4, includeRegions = true })
+end
 
 local function FadeTrackerChrome(tracker)
     -- The tracker's own header: heroPanel draws one in its place.
@@ -650,19 +793,16 @@ local function FadeTrackerChrome(tracker)
     local main = tracker.MainBlock
     if main then
         FadeSubtree(main)
-        if main.Timer and type(main.Timer.GetStatusBarTexture) == "function" then
-            -- A status bar's fill is a texture the frame owns rather than one
-            -- of its regions, so it needs asking for by name.
-            local ok, fill = pcall(main.Timer.GetStatusBarTexture, main.Timer)
-            if ok then FadeRegion(fill) end
-        end
+        FadeFill(main.Timer)
     end
 
-    -- The enemy-forces row is redrawn too, so its art goes; the boss rows keep
-    -- their text and lose only the icon heroPanel replaces.
+    -- The enemy-forces row is redrawn too, so its art goes - cleared rather
+    -- than faded, because that row animates and an animation writes alpha of
+    -- its own. See ClearSubtree. The boss rows keep their text and lose only
+    -- the icon heroPanel replaces.
     local block = tracker.ObjectiveBlock
     if block then
-        if block.EnemyForces then FadeSubtree(block.EnemyForces) end
+        if block.EnemyForces then ClearSubtree(block.EnemyForces) end
 
         -- The expandable row's own expand control is Ascension's art and does
         -- not belong on this panel; heroPanel draws the same chevron the quest
@@ -677,6 +817,13 @@ local function FadeTrackerChrome(tracker)
 end
 
 local function RestoreChrome()
+    -- Shown state first, then alpha: a region that comes back invisible looks
+    -- exactly like one that was never restored at all.
+    for region, shown in pairs(hiddenArt) do
+        if shown then pcall(region.Show, region) end
+    end
+    wipe(hiddenArt)
+
     for region, alpha in pairs(faded) do
         pcall(region.SetAlpha, region, alpha)
     end
@@ -962,7 +1109,7 @@ local function LayoutAffixes(list)
                 button:ClearAllPoints()
                 button:SetPoint("TOPLEFT", plate, "TOPLEFT",
                     HEADER_PAD_X + (shown - 1) * (AFFIX_SIZE + AFFIX_GAP),
-                    -(HEADER_HEIGHT + AFFIX_ROW_TOP))
+                    -(HEADER_HEIGHT + gap.affixRow))
                 button:Show()
             else
                 -- Left out rather than drawn blank. The affix is still on the
@@ -977,7 +1124,7 @@ local function LayoutAffixes(list)
 
     for i = shown + 1, #affixes do HideAffix(affixes[i]) end
 
-    affixRowHeight = (shown > 0) and (AFFIX_ROW_TOP + AFFIX_SIZE) or 0
+    affixRowHeight = (shown > 0) and (gap.affixRow + AFFIX_SIZE) or 0
     return shown
 end
 
@@ -1174,8 +1321,8 @@ local function LayoutPlate(tracker, contentBottom)
     -- when there are none. Redraw lays the affixes out between its two calls
     -- here, so the second one is the one that sizes the panel correctly.
     local headerBlock = HEADER_HEIGHT + affixRowHeight
-    local height = headerBlock + TIMER_ROW_TOP + TIMER_ROW_H + BAR_TOP + BAR_HEIGHT
-                 + FORCES_TOP + FORCES_LABEL_H + FORCES_BAR_TOP + FORCES_BAR_H
+    local height = headerBlock + gap.timerRow + TIMER_ROW_H + gap.bar + BAR_HEIGHT
+                 + gap.forces + FORCES_LABEL_H + FORCES_BAR_TOP + FORCES_BAR_H
 
     if contentBottom and top then
         height = (top - contentBottom) + FOOTER_TOP + FOOTER_HEIGHT + PAD_BOTTOM
@@ -1202,12 +1349,22 @@ local function LayoutHeader()
     ui.keystone:SetPoint("LEFT", ui.dungeon, "RIGHT", KEY_GAP, -1)
 end
 
+-- Where the timer bar's bottom edge lands, in plate coordinates.
+--
+-- Its own function because two callers need it and they have to agree:
+-- LayoutTimer draws from it, and ForcesShortfall has to know it before
+-- LayoutTimer has run in order to decide how far the gaps must give.
+local function TimerBarBottom()
+    return -(HEADER_HEIGHT + affixRowHeight + gap.timerRow
+             + TIMER_ROW_H + gap.bar + BAR_HEIGHT)
+end
+
 -- The timer row, the bar and its ticks. Split out because it is the only part
 -- of the panel that is redrawn on the clock ticker rather than on a refresh.
 local function LayoutTimer(data, width)
     -- Below the affix row when there is one, so the timer keeps the design's
     -- distance from whatever the header block ended up being.
-    local rowTop = -(HEADER_HEIGHT + affixRowHeight + TIMER_ROW_TOP)
+    local rowTop = -(HEADER_HEIGHT + affixRowHeight + gap.timerRow)
 
     ui.timerGlyph:ClearAllPoints()
     ui.timerGlyph:SetPoint("BOTTOMLEFT", plate, "TOPLEFT", HEADER_PAD_X, rowTop - TIMER_ROW_H + 3)
@@ -1246,7 +1403,7 @@ local function LayoutTimer(data, width)
     ------------------------------------------------------------------
 
     local barWidth = width - HEADER_PAD_X * 2
-    local barTop   = rowTop - TIMER_ROW_H - BAR_TOP
+    local barTop   = rowTop - TIMER_ROW_H - gap.bar
 
     ui.bar.track:ClearAllPoints()
     ui.bar.track:SetPoint("TOPLEFT", plate, "TOPLEFT", HEADER_PAD_X, barTop)
@@ -1281,7 +1438,39 @@ local function LayoutTimer(data, width)
         tick.mark:Show()
     end
 
-    return barTop - BAR_HEIGHT
+    return TimerBarBottom()
+end
+
+-- The top of the highest boss row heroPanel styles in place, which is the floor
+-- its own block has to stop above. Sub-rows are excluded: those are redrawn on
+-- the panel and sit below the ones that are not.
+local function FirstBossTop(bosses)
+    local top
+    for i = 1, #bosses do
+        local boss = bosses[i]
+        if not boss.sub and boss.label then
+            local rowTop = boss.label:GetTop()
+            if rowTop and (not top or rowTop > top) then top = rowTop end
+        end
+    end
+    return top
+end
+
+-- The gap the forces bar will actually leave above the first boss row, with the
+-- gaps as they currently stand. Negative means it is drawn over the row.
+--
+-- Two cases, and the smaller wins, which is what LayoutForces resolves to: the
+-- block sits against the row and leaves exactly gap.forces, or it does not fit
+-- and is stranded under the timer bar, leaving whatever is left over - which on
+-- a compact tracker is a negative number, and was "the bar drawn through Lord
+-- Vyletongue".
+local function ForcesClearance(firstBossTop)
+    local plateTop = plate and plate:GetTop()
+    if not (firstBossTop and plateTop) then return gap.forces end
+
+    local strandedBottom = TimerBarBottom() - gap.forces
+                           - FORCES_LABEL_H - FORCES_BAR_TOP - FORCES_BAR_H
+    return math.min(gap.forces, strandedBottom - (firstBossTop - plateTop))
 end
 
 local function LayoutForces(data, width, barBottom, firstBossTop)
@@ -1289,9 +1478,15 @@ local function LayoutForces(data, width, barBottom, firstBossTop)
 
     -- Above the first boss row when there is one, so the two always sit the
     -- design's distance apart; otherwise straight under the timer bar.
-    local labelTop = barBottom - FORCES_TOP
+    --
+    -- When both are possible the lower of the two wins, which is what puts the
+    -- block against the boss row rather than leaving it stranded under the
+    -- timer. When only the fallback is left the block does not fit at all, and
+    -- Redraw has already squeezed the gap budget to make it - see
+    -- ForcesClearance.
+    local labelTop = barBottom - gap.forces
     if firstBossTop and plateTop then
-        local wanted = (firstBossTop - plateTop) + FORCES_TOP + FORCES_BAR_H + FORCES_BAR_TOP + FORCES_LABEL_H
+        local wanted = (firstBossTop - plateTop) + gap.forces + FORCES_BAR_H + FORCES_BAR_TOP + FORCES_LABEL_H
         if wanted < labelTop then labelTop = wanted end
     end
 
@@ -1368,9 +1563,20 @@ end
 -- kept, and the rewrite is only recognised as ours if the string on screen is
 -- still the one we wrote.
 local function SetHeadingText(fontString, raw, progress, maximum)
-    local shown = raw
+    -- The verb goes with it.
+    --
+    -- "Defeat Additional Bosses (6/6)" does not fit the row on a six-boss list
+    -- and came out cut to "Defeat Additional Bosses (6...". Of everything in
+    -- that string the verb is the part carrying nothing - every row in the
+    -- block is something to defeat - so it is the part that goes, and the count
+    -- it was crowding out fits.
+    --
+    -- Only what is drawn loses it. `raw` stays the string Ascension set, which
+    -- is what Restore hands back, what RawText recovers and what the encounter
+    -- states are matched by name against.
+    local shown = (string.gsub(raw, "^[Dd]efeat%s+", ""))
     if progress and maximum and maximum > 0 and progress > 0 then
-        shown = string.format("%s (%d/%d)", raw, progress, maximum)
+        shown = string.format("%s (%d/%d)", shown, progress, maximum)
     end
 
     if shown == raw then
@@ -1393,11 +1599,17 @@ local function StyleBossRow(index, boss)
     -- Three sizes, which is what makes the block read as a hierarchy rather
     -- than a list: the required boss is the title, the extra-bosses heading
     -- sits a step under it, and the bosses under that are body text.
+    --
+    -- The heading used to be +0.5, one point under the title, which at the
+    -- sizes anyone actually runs is not a step - the two read as the same size
+    -- and the block read as two titles. At base it is a point and a half under
+    -- the title and half a point over the rows it heads, which is a hierarchy
+    -- in both directions.
     local size = ns.GetFontSize(-0.5, "mplusBody")
     if boss.primary then
         size = ns.GetFontSize(1.5, "mplusBody")
     elseif boss.group then
-        size = ns.GetFontSize(0.5, "mplusBody")
+        size = ns.GetFontSize(0, "mplusBody")
     end
     pcall(boss.label.SetFont, boss.label, font, size)
     ns.ApplyTextShadow(boss.label, "mplus")
@@ -1637,6 +1849,25 @@ local function Redraw()
         ui.keystone:Hide()
     end
 
+    ------------------------------------------------------------------
+    -- The gap budget, before anything is placed against it
+    --
+    -- The affixes are laid out first because their row is part of the header
+    -- block the clearance is measured from, and again afterwards because the
+    -- squeeze can take pixels out of the gap above them. Nothing else needs a
+    -- second pass: the gaps are settled by the time the timer row is drawn.
+    ------------------------------------------------------------------
+
+    SqueezeGaps(0)              -- design values, so the measurement is honest
+    LayoutAffixes(data.affixes)
+
+    local firstBossTop = FirstBossTop(data.bosses)
+    local overrun = SqueezeGaps(FORCES_MIN_CLEAR - ForcesClearance(firstBossTop))
+    if overrun > 0 then
+        ns.Debug("mplus: %.0fpx short of clearing the first boss row with every "
+            .. "gap at its floor; the panel's block does not fit this tracker.", overrun)
+    end
+
     LayoutAffixes(data.affixes)
     LayoutPlate(tracker, nil)   -- affix buttons need the tracker's strata
 
@@ -1647,7 +1878,7 @@ local function Redraw()
     -- extra-bosses heading are few and fixed, so they are restyled where the
     -- tracker drew them. The extra bosses themselves are a variable-length
     -- list that has to be windowed, so heroPanel fades them and draws its own.
-    local contentBottom, firstBossTop
+    local contentBottom
     local styled, subList = 0, {}
 
     for i = 1, #data.bosses do
@@ -1664,9 +1895,7 @@ local function Redraw()
             styled = styled + 1
             StyleBossRow(styled, boss)
 
-            local top    = boss.label:GetTop()
             local bottom = boss.label:GetBottom()
-            if top and (not firstBossTop or top > firstBossTop) then firstBossTop = top end
             if bottom and (not contentBottom or bottom < contentBottom) then contentBottom = bottom end
         end
     end
@@ -1981,6 +2210,80 @@ function mplus.Dump()
     end
     if #data.bosses == 0 then
         ns.Print("    |cFFFFAA00no boss rows|r - the objective block is empty or hidden")
+    end
+
+    ------------------------------------------------------------------
+    -- The gap budget
+    --
+    -- Everything above the first boss row is heroPanel's and that row is
+    -- Ascension's, so the space between them is fixed and the panel's block
+    -- has to fit inside it. When it does not the gaps give, and when they have
+    -- given everything the bar is drawn over the row. This says which of those
+    -- happened, in the only terms that matter: how much clear space is left.
+    ------------------------------------------------------------------
+
+    local clearance = ForcesClearance(FirstBossTop(data.bosses))
+    local squeezed  = {}
+    for i = 1, #GAP_BUDGET do
+        local entry = GAP_BUDGET[i]
+        if gap[entry.key] ~= entry.default then
+            table.insert(squeezed, string.format("%s %d/%d", entry.key, gap[entry.key], entry.default))
+        end
+    end
+
+    ns.Print("  forces bar clears the first boss row by %s",
+        clearance >= 0
+            and string.format("|cFF79C68D%.0fpx|r", clearance)
+            or  string.format("|cFFFFAA00-%.0fpx - it is drawn over the row|r", -clearance))
+    if #squeezed > 0 then
+        ns.Print("    gaps squeezed to fit: |cFFC2C6D8%s|r", table.concat(squeezed, ", "))
+    else
+        ns.Print("    |cFF8B8FA3every gap at its design value|r")
+    end
+
+    ------------------------------------------------------------------
+    -- Ascension art still drawing where the panel is not
+    --
+    -- The enemy-forces glow is the reason this is here: it animates, an
+    -- animation writes alpha, and it drew across the bottom of the panel until
+    -- that row was hidden rather than faded. Guessing at which widget a strip
+    -- of Ascension's art under the panel actually is, from a screenshot, does
+    -- not work. So the tracker is walked for every region still drawing below
+    -- the panel's own bottom edge, which is where a stray shows up.
+    --
+    -- It reports what is on screen when it runs, so a region that is only
+    -- visible for the length of an animation has to be caught by running this
+    -- while it plays. What it is good for is the standing case: art that is
+    -- drawing there all the time because nothing faded or hid it.
+    ------------------------------------------------------------------
+
+    local floor = plate and plate:IsVisible() and plate:GetBottom()
+    if not floor then return end
+
+    local strays = 0
+    ns.WalkFrameTree(tracker, function(object, info)
+        if info.kind ~= "region" then return end
+        if not (object.IsVisible and object:IsVisible()) then return end
+        if (object.GetAlpha and object:GetAlpha() or 0) <= 0 then return end
+
+        local top = object.GetTop and object:GetTop()
+        if not top or top > floor then return end
+
+        strays = strays + 1
+        if strays > 12 then return end
+
+        local parent = info.parent
+        ns.Print("    |cFFFFAA00stray|r %s on %s, alpha %.2f, top %.0f",
+            tostring(info.objectType),
+            tostring((parent and parent.GetName and parent:GetName()) or "unnamed"),
+            object:GetAlpha() or 0, top)
+    end, { maxDepth = 6, includeRegions = true })
+
+    if strays == 0 then
+        ns.Print("  nothing of Ascension's is drawing below the panel")
+    else
+        ns.Print("  |cFFFFAA00%d|r region(s) drawing below the panel's bottom edge (%.0f)%s",
+            strays, floor, strays > 12 and ", first 12 listed" or "")
     end
 end
 

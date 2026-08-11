@@ -453,8 +453,9 @@ however short the dungeon name was made.
       can find
 - [ ] A key with **eight** affixes still fits inside the panel on one row
 - [ ] Hovering each one gives the game's own tooltip, and it goes away on leave
-- [ ] The timer, bars, enemy forces and boss rows all moved down by the row's
-      height and nothing collides with the first boss row
+- [ ] The timer, bars and enemy forces moved down and **nothing collides with
+      the first boss row**. On a compact tracker they move down by less than the
+      row's full height — see 9e, that is the gap budget paying for it
 - [ ] A key with no affixes draws **no row and no extra height** — the panel is
       exactly as tall as it was before
 
@@ -512,6 +513,59 @@ and a wrong alias fails silently, leaving the full name drawn.
       under the affixes again. Known and not fixed by the table — a character
       limit cannot follow a runtime setting, and the fix for that is a width cap
       on the name, which has not been written
+
+### 9d. The enemy-forces animation
+
+The bug: Ascension animates its own enemy-forces bar as trash dies — the fill
+runs up and a glow runs across it. An animation writes the alpha of what it
+animates for as long as it plays, so heroPanel's fade was gone for the length of
+it and Ascension's glow drew across the bottom of the panel on every pull.
+
+That row is now hidden as well as faded, and its `Show` is hooked so the
+animation cannot put it back. The mock can prove the hiding and the restore; it
+cannot prove the glow is on that row at all rather than on some frame
+`Mplus.lua` does not name, which is what this is for.
+
+- [ ] Pull trash and watch the **bottom edge of the panel** while the count
+      climbs. No bar, no glow, no flash — nothing of Ascension's appears there
+- [ ] Do it again on a **big pull**, where the count jumps several percent at
+      once and the animation has furthest to run
+- [ ] If anything does show through, run `/hp mplus` **while it is on screen**
+      and read the stray list at the end of the dump — it names the widget and
+      the frame that owns it. That is the answer to "which one is it", which a
+      screenshot cannot give
+- [ ] `/hp skin off` mid-run: Ascension's own enemy-forces row comes back
+      **visible**, not blank, and animates again on the next pull
+- [ ] `/hp skin on` again: it goes away, and the panel's own forces bar is the
+      only one on screen
+
+### 9e. The gap budget
+
+Everything above the first boss row is heroPanel's; the row itself is
+Ascension's and heroPanel does not move objective rows. So the space between
+them is a fixed budget, and this client's tracker is compact enough that the
+panel's block does not fit inside it once the affix row is in place — which is
+how heroPanel's own enemy-forces bar came to be drawn straight through "Lord
+Vyletongue".
+
+The gaps now give when the block does not fit, in this order and no further:
+forces 14→7, timer row 12→6, bar 9→5, affix row 4→2. A tracker with room keeps
+every gap at its design value.
+
+The mock proves the mechanism on its own compact tracker. What it cannot say is
+whether 19px of budget is enough on *this* client, which is the whole question.
+
+- [ ] Run a key and look at the first boss row. The forces bar **clears it** —
+      no bar, no track, no percentage sitting on the name
+- [ ] `/hp mplus` reports the clearance in pixels and which gaps were squeezed.
+      A green number is the answer; an orange one names how far short it is
+- [ ] Compare the spacing against a key with **no affixes** if you can find one:
+      that one should be at the design values and read slightly looser
+- [ ] `/hp debug` on: if the budget runs out the panel says so once per draw,
+      naming the shortfall. If that line appears, the fix is more budget or a
+      shorter header block, not more squeezing
+- [ ] Raise the **Mythic+ font size**: the rows grow but the budget does not.
+      Check the boss row again at the largest size you would use
 
 ## 10. Collapse and reload
 
