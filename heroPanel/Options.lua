@@ -98,10 +98,12 @@ local BG_SWATCHES = {
     { colour = "#1C1F2E" }, { colour = "#232532" },
 }
 
--- The last one is not a colour. Transparent zeroes border.alpha and leaves the
--- style alone, which is not the same as border style None: None takes the drop
--- contour with it, this keeps it, so the panel still lifts off a bright
--- background with no line drawn around it.
+-- The last one is not a colour. Transparent zeroes border.alpha, which turns
+-- off every edge heroPanel draws - the plate's four lines, the corner run, the
+-- drop contour and the header's divider. It reaches the same place border style
+-- None does, from the colour end rather than the style end, which is why both
+-- are offered: "no border colour" and "no border" are the same thought arrived
+-- at differently.
 local BORDER_SWATCHES = {
     { colour = "#33364A" }, { colour = "#1F2130" },
     { colour = "#9184D9" }, { colour = "#E7C67C" },
@@ -449,8 +451,9 @@ local function NewSwatchRow(parent, y, label, entries, isSelected, onSelect)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:AddLine(entry.transparent and "Transparent" or entry.colour, 1, 1, 1)
             if entry.transparent then
-                GameTooltip:AddLine("No border line. The panel keeps its drop contour, "
-                    .. "which border style None removes as well.", 0.6, 0.6, 0.7, true)
+                GameTooltip:AddLine("No border at all - no line, no contour and no "
+                    .. "divider under the header. The same as border style None.",
+                    0.6, 0.6, 0.7, true)
             end
             GameTooltip:Show()
         end)

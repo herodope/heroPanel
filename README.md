@@ -245,10 +245,18 @@ black shadow**. Colour alone does not do it; a shadow is what makes text hold
 against a background heroPanel does not control.
 
 The border has an `alpha` of its own, separate from its style, and the options
-window's border row offers **Transparent** as a fifth swatch. That is not the
-same as border style **None**: `None` removes the edge *and* the drop contour
-under it, while `alpha = 0` keeps the contour, so the panel still lifts off a
-bright background with no line drawn around it.
+window's border row offers **Transparent** as a fifth swatch. It reaches the
+same place border style **None** does, from the colour end rather than the style
+end.
+
+**"No border" means every edge**, not only the four lines around the plate. The
+header's divider and the Mythic+ footer's rule are edges too, and they were
+fixed hairline tokens: setting the border transparent and the background to
+nothing left those lines ruled across a panel that was otherwise not there,
+which on a collapsed tracker is most of what is left to see. Everything
+heroPanel draws as an edge goes through `ns.BorderPaint` now — including the
+drop contour, which used to survive a transparent border and was a black outline
+around nothing.
 
 ### The two things hanging off a quest line
 

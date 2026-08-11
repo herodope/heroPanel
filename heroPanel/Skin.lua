@@ -43,10 +43,10 @@ local PAD_RIGHT       = 14
 local PAD_BOTTOM      = 13
 local HEADER_PAD_X    = 13
 local DIVIDER_FADE    = 24    -- the divider fades out over this much at each end
-local ICON_SIZE       = 15   -- lock glyph; three points over the design's 12
+local ICON_SIZE       = 17   -- lock glyph, well over the design's 12
 -- The caret is a chevron: wide and shallow, so it needs a little more box than
 -- a lock to carry the same weight on screen - but only a little.
-local CARET_SIZE      = 16   -- collapse chevron, kept a point over the lock
+local CARET_SIZE      = 15   -- collapse chevron, a point under the lock
 local BADGE_HEIGHT    = 14
 local BADGE_PAD_X     = 6
 local HOVER_INTERVAL  = 0.1
@@ -413,26 +413,36 @@ local function StylePlate()
     -- Header row
     ------------------------------------------------------------------
 
-    local hr, hg, hb = ns.HexToRGB(ns.PALETTE.hairline)
+    -- The divider is an edge, so it takes the border's colour, alpha and style
+    -- rather than a hairline token of its own. Turning the border off used to
+    -- leave this line ruled across a panel that was otherwise not there, which
+    -- on a collapsed tracker is most of what is left to see.
+    -- Seven tenths of the border's weight: the divider is a suggestion of a
+    -- line under the header rather than a second border across the panel.
+    local hr, hg, hb, ha, hasEdge = ns.BorderPaint(0.7)
     local divider = plate.divider
 
     divider.left:ClearAllPoints()
     divider.left:SetPoint("TOPLEFT", plate, "TOPLEFT", 1, -HEADER_HEIGHT)
     divider.left:SetWidth(DIVIDER_FADE)
     divider.left:SetHeight(1)
-    divider.left:SetGradientAlpha("HORIZONTAL", hr, hg, hb, 0, hr, hg, hb, ns.ALPHA.divider)
+    divider.left:SetGradientAlpha("HORIZONTAL", hr, hg, hb, 0, hr, hg, hb, ha)
 
     divider.right:ClearAllPoints()
     divider.right:SetPoint("TOPRIGHT", plate, "TOPRIGHT", -1, -HEADER_HEIGHT)
     divider.right:SetWidth(DIVIDER_FADE)
     divider.right:SetHeight(1)
-    divider.right:SetGradientAlpha("HORIZONTAL", hr, hg, hb, ns.ALPHA.divider, hr, hg, hb, 0)
+    divider.right:SetGradientAlpha("HORIZONTAL", hr, hg, hb, ha, hr, hg, hb, 0)
 
     divider.mid:ClearAllPoints()
     divider.mid:SetPoint("TOPLEFT", divider.left, "TOPRIGHT", 0, 0)
     divider.mid:SetPoint("TOPRIGHT", divider.right, "TOPLEFT", 0, 0)
     divider.mid:SetHeight(1)
-    divider.mid:SetVertexColor(hr, hg, hb, ns.ALPHA.divider)
+    divider.mid:SetVertexColor(hr, hg, hb, ha)
+
+    -- Kept for the header's own show/hide logic, so a border turned off does
+    -- not come back the next time the header is redrawn.
+    plate.dividerVisible = hasEdge
 
     header.hit:ClearAllPoints()
     header.hit:SetPoint("TOPLEFT", plate, "TOPLEFT", 0, 0)
@@ -597,7 +607,11 @@ local function UpdateHeader(watch)
         header.badgeFill:Show()
         header.badgeText:Show()
         header.caret:Show()
-        for _, texture in pairs(plate.divider) do texture:Show() end
+        -- The divider is an edge, so a border turned off keeps it off rather
+        -- than having it come back on the next redraw.
+        for _, texture in pairs(plate.divider) do
+            if plate.dividerVisible then texture:Show() else texture:Hide() end
+        end
     else
         header.hit:Hide()
         header.lock:Hide()

@@ -97,6 +97,37 @@ function ns.BuildPlateChrome(plate)
 end
 
 --------------------------------------------------------------------------------
+-- What an edge is painted with
+--
+-- The panel's border is not only the four lines around the plate. The header's
+-- divider is an edge too, and it was a fixed hairline token - so setting the
+-- border transparent and the background to nothing left a line ruled across a
+-- panel that was otherwise not there, which on a collapsed tracker is most of
+-- what is left to see.
+--
+-- Everything heroPanel draws as an edge goes through here, so "no border" means
+-- no border. alphaScale is the weight that edge carries relative to the border
+-- proper: the divider is a suggestion of a line rather than a line.
+--
+-- This also settles what "transparent" means. It was worth keeping apart from
+-- style "none" while the contour survived it; it is not worth keeping apart
+-- from it now that neither draws anything, so the two agree and there is one
+-- fewer thing on screen that has to be explained.
+--------------------------------------------------------------------------------
+
+function ns.BorderPaint(alphaScale)
+    local db = ns.db
+    if not db then return 0, 0, 0, 0, false end
+
+    local style = db.border.style or "hairline"
+    local alpha = db.border.alpha or 1
+    if style == "none" or alpha <= 0 then return 0, 0, 0, 0, false end
+
+    local r, g, b = ns.HexToRGB(db.border.color)
+    return r, g, b, alpha * (alphaScale or 1), true
+end
+
+--------------------------------------------------------------------------------
 -- Painting
 --
 -- Reads the config and paints. Split from layout so a colour change from the
@@ -177,7 +208,12 @@ function ns.StylePlateChrome(plate, style)
         ns.Debug("border style '%s' drawn as hairline.", tostring(borderStyle))
         borderStyle = "hairline"
     end
-    local showBorder = (borderStyle ~= "none")
+    -- An edge at zero alpha is not an edge. The contour used to survive it, on
+    -- the reasoning that it is elevation rather than border - but the player who
+    -- turns the border off and the background to nothing is asking for the panel
+    -- to stop being drawn, and a black outline around nothing is the one thing
+    -- still visible when the tracker is collapsed.
+    local showBorder = (borderStyle ~= "none") and borderAlpha > 0
     local inset      = (borderStyle == "inset") and 1 or 0
 
     local edge = plate.edge

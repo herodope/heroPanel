@@ -2826,41 +2826,58 @@ do
 end
 
 --------------------------------------------------------------------------------
--- Transparent border
+-- Turning the border off turns off every edge
 --
--- Not the same as border style None: None takes the drop contour with it, this
--- keeps it, so the panel still lifts off a bright background with no line drawn
--- around it.
+-- The panel's border is not only the four lines around the plate: the header's
+-- divider and the Mythic+ footer's rule are edges too, and they were fixed
+-- hairline tokens. Setting the border transparent and the background to nothing
+-- left those lines ruled across a panel that was otherwise not there - which on
+-- a collapsed tracker is most of what is left to see.
+--
+-- Transparent and style None therefore agree. They did not while the contour
+-- survived transparent; keeping them apart is not worth a black outline around
+-- a panel the player has asked to stop drawing.
 --------------------------------------------------------------------------------
 
 do
+    local function EdgeAlpha() return (HeroPanelWatchPlate.edge.top.__color or {})[4] end
+    local function ContourAlpha() return (HeroPanelWatchPlate.shadow.top.__color or {})[4] end
+    local function DividerAlpha() return (HeroPanelWatchPlate.divider.mid.__color or {})[4] end
+
+    ns.db.border.style = "hairline"
     ns.db.border.alpha = 1
     ns.Skin.Restyle()
-    local opaque = HeroPanelWatchPlate.edge.top.__color
-    check(opaque and opaque[4] == 1, "a normal border draws at full alpha")
+    check(EdgeAlpha() == 1, "a normal border draws at full alpha")
+    check(ContourAlpha() > 0, "...with its contour under it")
+    check(DividerAlpha() > 0, "...and the header divider drawn")
 
-    ns.db.border.alpha = 0
-    ns.Skin.Restyle()
-    local clear = HeroPanelWatchPlate.edge.top.__color
-    check(clear and clear[4] == 0,
-        "a transparent border should draw at zero alpha, got " .. tostring(clear and clear[4]))
-    check(HeroPanelWatchPlate.edge.top:IsShown(),
-        "...by alpha, not by hiding it - that is what border style None is for")
+    -- The divider takes the border's colour now, not a hairline token.
+    local dr, dg, db_ = ns.HexToRGB(ns.db.border.color)
+    local painted = HeroPanelWatchPlate.divider.mid.__color
+    check(painted and math.abs(painted[1] - dr) < 0.01 and math.abs(painted[2] - dg) < 0.01
+        and math.abs(painted[3] - db_) < 0.01,
+        "the divider should take the border's colour, got "
+        .. ns.RGBToHex(painted[1], painted[2], painted[3]))
 
-    local contour = HeroPanelWatchPlate.shadow.top.__color
-    check(contour and contour[4] > 0,
-        "the drop contour should survive a transparent border, got " .. tostring(contour and contour[4]))
+    for _, case in ipairs({ { style = "hairline", alpha = 0 }, { style = "none", alpha = 1 } }) do
+        ns.db.border.style = case.style
+        ns.db.border.alpha = case.alpha
+        ns.Skin.Restyle()
 
-    ns.db.border.style = "none"
-    ns.db.border.alpha = 1
-    ns.Skin.Restyle()
-    local noneContour = HeroPanelWatchPlate.shadow.top.__color
-    check(noneContour and noneContour[4] == 0,
-        "border style None should take the contour with it - that is the difference")
+        local what = case.style .. " at alpha " .. tostring(case.alpha)
+        check(EdgeAlpha() == 0 or not HeroPanelWatchPlate.edge.top:IsShown(),
+            "no edge with " .. what .. ", got alpha " .. tostring(EdgeAlpha()))
+        check(ContourAlpha() == 0,
+            "no contour with " .. what .. " - a black outline around nothing is the one "
+            .. "thing still visible on a collapsed tracker; got " .. tostring(ContourAlpha()))
+        check(DividerAlpha() == 0 or not HeroPanelWatchPlate.divider.mid:IsShown(),
+            "no header divider with " .. what .. ", got alpha " .. tostring(DividerAlpha()))
+    end
 
     ns.db.border.style = ns.defaults.border.style
     ns.db.border.alpha = ns.defaults.border.alpha
     ns.Skin.Restyle()
+    check(EdgeAlpha() == 1, "and it all comes back")
 end
 
 --------------------------------------------------------------------------------

@@ -99,11 +99,11 @@ ns.defaults = {
 
     border = {
         color = "#33364A",
-        -- Separate from the style. "none" removes the edge *and* the contour
-        -- under it, because a style of none means no edge at all; alpha 0 keeps
-        -- the contour, so the panel still lifts off a bright background while
-        -- the coloured line itself is invisible. They read differently on
-        -- screen and the options window offers both.
+        -- Separate from the style, and reaching the same place from the other
+        -- end: alpha 0 and style "none" both turn off every edge heroPanel
+        -- draws. The options window offers both because "no border colour" and
+        -- "no border" are the same thought arrived at differently, and a player
+        -- who has set one does not expect the other to still be drawing.
         alpha = 1.0,
         style = "hairline",
     },

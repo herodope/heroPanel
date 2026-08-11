@@ -886,7 +886,11 @@ local function StyleStatic()
     ui.forcesPercent:SetFont(font, ns.GetFontSize(-1, "mplus"))
     ui.forcesPercent:SetTextColor(br, bg, bb, 1)
 
-    ui.rule:SetVertexColor(hr, hg, hb, 0.06)
+    -- The footer rule is an edge, so it follows the border's colour, alpha and
+    -- style rather than a hairline token of its own - a border turned off must
+    -- not leave a line ruled across the panel.
+    local rr, rg, rb, ra = ns.BorderPaint(0.5)
+    ui.rule:SetVertexColor(rr, rg, rb, ra)
 
     local ar, ag, ab = ns.HexToRGB(ns.PALETTE.accentDeep)
     ui.mark:SetFont(font, ns.GetFontSize(-3.5, "mplus"))

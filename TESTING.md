@@ -77,9 +77,12 @@ with no reload:
 
 - [ ] Background colour swatches
 - [ ] Background opacity slider
-- [ ] Border colour swatches, including **Transparent** — the line disappears
-      but the panel keeps its drop contour, which is what separates it from
-      border style None
+- [ ] Border colour swatches, including **Transparent**
+- [ ] With **Transparent** and background opacity at **0**, and the tracker
+      **collapsed**, nothing is drawn at all — no line, no dark contour, and no
+      divider under the header. This is the case the header outline survived
+      before, and a collapsed tracker is where it showed up
+- [ ] Border style **None** looks identical to Transparent, on purpose
 - [ ] Border style — Hairline, then **Inset** (the line should move a pixel in
       with a dark row outside it), then None (no edge and no contour)
 - [ ] Corner radius slider — the chamfer steps at 4, 8 and 12
@@ -144,7 +147,7 @@ store when the window opens.
 - [ ] The header reads **QUESTS**, not OBJECTIVES
 - [ ] The label and the count are legible with background opacity turned down
       over a bright zone — both are brightened and carry a shadow
-- [ ] The lock glyph and the collapse caret are visibly larger (3px each)
+- [ ] The lock glyph is larger again (17px) and the caret a point smaller (15px)
 - [ ] The turn-in question mark still sits in the left margin beside its title
 - [ ] The **POI arrow** sits to the *right* of its quest's name, on that quest's
       row, and does not stack with the question mark
