@@ -572,6 +572,18 @@ tools/
   error — the library reads itself as the event name. heroPanel passes its addon
   name, which is a supported `self` and avoids the question.
 
+## Testing
+
+`tools/mockclient` boots heroPanel outside the game and checks the skin; all
+four of its runs should pass. It covers structure — what gets built, what gets
+written, what gets re-skinned, and which paths run while combat refuses the
+protected calls — and it cannot cover taint, real draw order, real text metrics
+or anything that depends on the server.
+
+`TESTING.md` is the pass for those: fresh install, fonts, the options window,
+live application, combat, a Mythic+ run, reloads, and another tracker addon in
+the same UI. It also lists what is knowingly unverified.
+
 ## Diagnosing the skin
 
 Five commands, in the order they are usually worth reaching for. Each exists
