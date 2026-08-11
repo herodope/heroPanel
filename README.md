@@ -6,10 +6,6 @@ A World of Warcraft addon for the **Ascension WoW · Conquest of Azeroth** realm
 * the default quest tracker (`WatchFrame`)
 * the Mythic+ tracker (`MythicPlusObjectiveTracker`, from `Ascension_MythicPlus`)
 
-heroPanel is standalone. It reads and writes only its own SavedVariables
-(`HEROPANEL_DB`), never hooks game logic with raw overwrites, and never touches
-protected frames while the player is in combat.
-
 ## Status
 
 **Feature complete for 0.1.** Move, lock and rescale work; `WatchFrame` gets
