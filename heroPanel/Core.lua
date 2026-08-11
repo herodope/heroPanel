@@ -144,8 +144,15 @@ ns.PALETTE = {
     muted       = "#8B8FA3",   -- count badge, leading dash
     count       = "#E9E9ED",   -- objective counters
     accent      = "#9184D9",   -- hover tint, left strip
-    accentLight = "#B5ABFC",   -- hovered caret
+    accentLight = "#B5ABFC",   -- hovered caret, keystone level
     hairline    = "#E9E9ED",   -- divider / badge fill, used at low alpha
+
+    -- Mythic+ panel.
+    accentDeep  = "#5D5294",   -- gradient start, heroPanel mark
+    bright      = "#F3F5FE",   -- dungeon name, timer, threshold ticks
+    chest       = "#ECCE82",   -- highest eligible chest tier
+    chestTime   = "#C9A95F",   -- the tier's remaining window
+    forces      = "#CFD3E5",   -- "Enemy Forces" label
 }
 
 -- Alphas that go with the tokens above.
@@ -273,6 +280,7 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp skin [on|off]|r - skin the trackers, or hand them back to Blizzard")
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
     ns.Print("  |cFFC2C6D8/hp dump|r - report the geometry the skin measured")
+    ns.Print("  |cFFC2C6D8/hp mplus|r - report what the Mythic+ panel resolved, and from where")
     ns.Print("  |cFFC2C6D8/hp probe [all]|r - report what else draws inside the panel; |cFF8B8FA3all|r adds heroPanel's own")
     ns.Print("  |cFFC2C6D8/hp frame <name>|r - everything about one named frame (use the name /framestack gives)")
     ns.Print("  |cFFC2C6D8/hp texture <path>|r - put any texture in the caret's slot, untinted (no path resets)")
@@ -338,6 +346,10 @@ SlashCmdList["HEROPANEL"] = function(input)
                 pcall(ns.Skin.Restyle)
                 pcall(ns.Skin.Refresh, "glyph mode changed")
             end
+            if ns.Mplus then
+                pcall(ns.Mplus.Restyle)
+                pcall(ns.Mplus.Refresh, "glyph mode changed")
+            end
         else
             ns.Print("usage: /hp glyphs <auto|art|tga|blocks>  (currently |cFFC2C6D8%s|r)",
                 (ns.db and ns.db.glyph and ns.db.glyph.mode) or "auto")
@@ -356,6 +368,10 @@ SlashCmdList["HEROPANEL"] = function(input)
             if ns.Skin then
                 ns.Skin.Restyle()
                 ns.Skin.Refresh("font size changed")
+            end
+            if ns.Mplus then
+                pcall(ns.Mplus.Restyle)
+                pcall(ns.Mplus.Refresh, "font size changed")
             end
             ns.Print("font size set to |cFFC2C6D8%.1f|r.", size)
         else
@@ -391,6 +407,12 @@ SlashCmdList["HEROPANEL"] = function(input)
             ns.Skin.TestTexture(rawRest)
         else
             ns.Print("the skin module is not loaded.")
+        end
+    elseif cmd == "mplus" then
+        if ns.Mplus and ns.Mplus.Dump then
+            ns.Mplus.Dump()
+        else
+            ns.Print("the Mythic+ module is not loaded.")
         end
     elseif cmd == "probe" then
         if ns.Skin and ns.Skin.Probe then

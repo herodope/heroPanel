@@ -41,6 +41,14 @@ by heroPanel's chat and debug output for the run.
 | `line.text` / `line.dash` parent keys | present | absent, resolved by width |
 | `WatchFrame_Update` / `_Collapse` / `_Expand` | present, hooked | absent, events used instead |
 | `GetNumQuestWatches` | present | absent, block count used instead |
+| `C_MythicPlus` | present, the keystone read from the API | absent, read off the tracker's own widgets |
+
+The Mythic+ tracker is built *after* heroPanel has booted, because the real one
+does not exist at `ADDON_LOADED` — so the run also exercises Phase 1's poll and
+the skin hanging off that discovery point rather than a timer of its own. Its
+enemy-forces row is anchored below the boss rows, as Ascension anchors it, and
+its frame is far taller than its contents: both are what the panel's own layout
+has to work around rather than follow.
 
 `MouseIsOver` is left undefined in both, so the cursor maths in `ns.MouseIsOver`
 is always the path under test.

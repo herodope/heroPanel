@@ -43,7 +43,6 @@ local PAD_RIGHT       = 14
 local PAD_BOTTOM      = 13
 local HEADER_PAD_X    = 13
 local DIVIDER_FADE    = 24    -- the divider fades out over this much at each end
-local MAX_NOTCH       = 3     -- corner steps at the largest supported radius
 local ICON_SIZE       = 12
 -- The caret is a chevron: wide and shallow, so it needs a little more box than
 -- a lock to carry the same weight on screen - but only a little.
@@ -99,24 +98,11 @@ function skin.GetPlate() return plate end
 function skin.GetOverlay() return plate and plate.overlay or nil end
 
 --------------------------------------------------------------------------------
--- Corner radius
---
--- 3.3.5a has no rounded corners and heroPanel ships no corner art, so the
--- radius is approximated by stepping the plate in at each corner: the
--- background is drawn as three rectangles (a full-width middle band plus two
--- bands inset horizontally) and the border as four 1px edges with a stepped
--- pixel run across each corner. At the default 8px radius that is a 2px
--- chamfer - not an arc, but it takes the hard point off the corner and reads
--- as "soft" at gameplay distance.
---------------------------------------------------------------------------------
-
-local function NotchFor(radius)
-    radius = tonumber(radius) or 0
-    return math.max(0, math.min(MAX_NOTCH, math.floor(radius / 4 + 0.5)))
-end
-
---------------------------------------------------------------------------------
 -- Construction
+--
+-- The panel chrome - background, border, corner chamfer, contour - lives in
+-- Plate.lua, because the Mythic+ panel has to be the same plate and copying it
+-- would leave two that are identical only until one of them is edited.
 --------------------------------------------------------------------------------
 
 local function NewTexture(parent, layer)
@@ -137,42 +123,7 @@ local function BuildPlate(watch)
     plate:SetWidth(PANEL_MIN_WIDTH)
     plate:SetHeight(HEADER_HEIGHT)
 
-    -- Background: middle band plus the two inset bands that make the chamfer.
-    plate.bg = {
-        main   = NewTexture(plate, "BACKGROUND"),
-        top    = NewTexture(plate, "BACKGROUND"),
-        bottom = NewTexture(plate, "BACKGROUND"),
-    }
-
-    -- A single dark contour just outside the border. The design asks for an
-    -- ambient drop shadow; a soft one needs art heroPanel does not ship, so
-    -- this is the cheap read of the same idea - it lifts the plate off a bright
-    -- background without stacking layers.
-    plate.shadow = {
-        top    = NewTexture(plate, "BACKGROUND"),
-        bottom = NewTexture(plate, "BACKGROUND"),
-        left   = NewTexture(plate, "BACKGROUND"),
-        right  = NewTexture(plate, "BACKGROUND"),
-    }
-
-    plate.edge = {
-        top    = NewTexture(plate, "BORDER"),
-        bottom = NewTexture(plate, "BORDER"),
-        left   = NewTexture(plate, "BORDER"),
-        right  = NewTexture(plate, "BORDER"),
-    }
-
-    plate.corner = {}
-    for _, corner in ipairs({ "TOPLEFT", "TOPRIGHT", "BOTTOMLEFT", "BOTTOMRIGHT" }) do
-        plate.corner[corner] = {}
-        for step = 1, MAX_NOTCH do
-            local pixel = NewTexture(plate, "BORDER")
-            pixel:SetWidth(1)
-            pixel:SetHeight(1)
-            pixel:Hide()
-            plate.corner[corner][step] = pixel
-        end
-    end
+    ns.BuildPlateChrome(plate)
 
     -- Divider under the header, fading out at both ends.
     plate.divider = {
@@ -453,121 +404,7 @@ end
 local function StylePlate()
     if not plate then return end
 
-    local db     = ns.db
-    local notch  = NotchFor(db.radius)
-    local br, bg, bb = ns.HexToRGB(db.bg.color)
-    local opacity    = ns.Clamp(db.bg.opacity, 0, 1)
-    local er, eg, eb = ns.HexToRGB(db.border.color)
-
-    if db.bg.texture and db.bg.texture ~= "flat" then
-        ns.Debug("backdrop texture '%s' is not implemented; drawing flat.", tostring(db.bg.texture))
-    end
-
-    -- Background bands.
-    local main = plate.bg.main
-    main:ClearAllPoints()
-    main:SetPoint("TOPLEFT", plate, "TOPLEFT", 0, -notch)
-    main:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", 0, notch)
-
-    local top = plate.bg.top
-    top:ClearAllPoints()
-    top:SetPoint("TOPLEFT", plate, "TOPLEFT", notch, 0)
-    top:SetPoint("BOTTOMRIGHT", plate, "TOPRIGHT", -notch, -notch)
-
-    local bottom = plate.bg.bottom
-    bottom:ClearAllPoints()
-    bottom:SetPoint("TOPLEFT", plate, "BOTTOMLEFT", notch, notch)
-    bottom:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", -notch, 0)
-
-    for _, texture in pairs(plate.bg) do
-        texture:SetVertexColor(br, bg, bb, opacity)
-        texture:Show()
-    end
-
-    -- Border. "inset" is accepted but drawn as a hairline until Phase 4 gives
-    -- the options panel something to switch between.
-    local style = db.border.style or "hairline"
-    if style ~= "hairline" and style ~= "none" then
-        ns.Debug("border style '%s' drawn as hairline.", tostring(style))
-    end
-    local showBorder = (style ~= "none")
-
-    local edge = plate.edge
-    edge.top:ClearAllPoints()
-    edge.top:SetPoint("TOPLEFT", plate, "TOPLEFT", notch, 0)
-    edge.top:SetPoint("TOPRIGHT", plate, "TOPRIGHT", -notch, 0)
-    edge.top:SetHeight(1)
-
-    edge.bottom:ClearAllPoints()
-    edge.bottom:SetPoint("BOTTOMLEFT", plate, "BOTTOMLEFT", notch, 0)
-    edge.bottom:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", -notch, 0)
-    edge.bottom:SetHeight(1)
-
-    edge.left:ClearAllPoints()
-    edge.left:SetPoint("TOPLEFT", plate, "TOPLEFT", 0, -notch)
-    edge.left:SetPoint("BOTTOMLEFT", plate, "BOTTOMLEFT", 0, notch)
-    edge.left:SetWidth(1)
-
-    edge.right:ClearAllPoints()
-    edge.right:SetPoint("TOPRIGHT", plate, "TOPRIGHT", 0, -notch)
-    edge.right:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", 0, notch)
-    edge.right:SetWidth(1)
-
-    for _, texture in pairs(edge) do
-        texture:SetVertexColor(er, eg, eb, 1)
-        if showBorder then texture:Show() else texture:Hide() end
-    end
-
-    -- The stepped corner run, one pixel per step along the diagonal.
-    for corner, pixels in pairs(plate.corner) do
-        for step = 1, MAX_NOTCH do
-            local pixel = pixels[step]
-            pixel:ClearAllPoints()
-            if showBorder and step <= notch then
-                local along = step - 1
-                local away  = notch - step
-                if corner == "TOPLEFT" then
-                    pixel:SetPoint("TOPLEFT", plate, "TOPLEFT", along, -away)
-                elseif corner == "TOPRIGHT" then
-                    pixel:SetPoint("TOPRIGHT", plate, "TOPRIGHT", -along, -away)
-                elseif corner == "BOTTOMLEFT" then
-                    pixel:SetPoint("BOTTOMLEFT", plate, "BOTTOMLEFT", along, away)
-                else
-                    pixel:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", -along, away)
-                end
-                pixel:SetVertexColor(er, eg, eb, 1)
-                pixel:Show()
-            else
-                pixel:Hide()
-            end
-        end
-    end
-
-    -- Contour, one pixel outside the border.
-    local shadow = plate.shadow
-    shadow.top:ClearAllPoints()
-    shadow.top:SetPoint("BOTTOMLEFT", plate, "TOPLEFT", notch, 0)
-    shadow.top:SetPoint("BOTTOMRIGHT", plate, "TOPRIGHT", -notch, 0)
-    shadow.top:SetHeight(1)
-
-    shadow.bottom:ClearAllPoints()
-    shadow.bottom:SetPoint("TOPLEFT", plate, "BOTTOMLEFT", notch, 0)
-    shadow.bottom:SetPoint("TOPRIGHT", plate, "BOTTOMRIGHT", -notch, 0)
-    shadow.bottom:SetHeight(1)
-
-    shadow.left:ClearAllPoints()
-    shadow.left:SetPoint("TOPRIGHT", plate, "TOPLEFT", 0, -notch)
-    shadow.left:SetPoint("BOTTOMRIGHT", plate, "BOTTOMLEFT", 0, notch)
-    shadow.left:SetWidth(1)
-
-    shadow.right:ClearAllPoints()
-    shadow.right:SetPoint("TOPLEFT", plate, "TOPRIGHT", 0, -notch)
-    shadow.right:SetPoint("BOTTOMLEFT", plate, "BOTTOMRIGHT", 0, notch)
-    shadow.right:SetWidth(1)
-
-    for _, texture in pairs(shadow) do
-        texture:SetVertexColor(0, 0, 0, showBorder and 0.45 or 0)
-    end
+    ns.StylePlateChrome(plate)
 
     ------------------------------------------------------------------
     -- Header row
@@ -1002,6 +839,12 @@ function skin.SetEnabled(enabled)
     else
         skin.Disable()
     end
+
+    -- The flag covers both panels. The Mythic+ half is a separate module but
+    -- not a separate setting, so it is driven from here rather than leaving
+    -- "/hp skin off" with a skinned Mythic+ tracker still on screen.
+    if ns.Mplus then pcall(ns.Mplus.SetEnabled, ns.db.enabled) end
+
     return ns.db.enabled
 end
 

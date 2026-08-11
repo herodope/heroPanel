@@ -399,11 +399,6 @@ end
 -- toggling movability and drag registration, not by rewiring scripts.
 --------------------------------------------------------------------------------
 
--- A drag cannot be deferred and replayed once combat ends, so an attempt made
--- in combat is refused. Warned once per combat so repeated attempts do not
--- spam chat.
-local combatMoveWarned = false
-
 local function OnDragStart(frame)
     local record = ns.ResolveTracker(frame)
     if not record or ns.IsLocked() then return end
@@ -414,17 +409,16 @@ local function OnDragStart(frame)
         return
     end
 
-    -- Only the game's own tracker is protected. Addon-owned frames such as the
-    -- Mythic+ tracker stay draggable in combat, which is when you are most
+    -- Both trackers stay draggable in combat, which is when you are most
     -- likely to want to move one.
-    if record.protected and InCombatLockdown() then
-        if not combatMoveWarned then
-            combatMoveWarned = true
-            ns.Warn("can't move the %s in combat - the game protects it. Try again out of combat.",
-                string.lower(record.label))
-        end
-        return
-    end
+    --
+    -- WatchFrame is protected, and this used to refuse a drag in combat on
+    -- that basis. It turns out not to be needed: StartMoving / StopMovingOrSizing
+    -- on the tracker are not among the calls the 3.3.5a client refuses under
+    -- lockdown, and dragging an unlocked tracker through a Mythic+ boss fight
+    -- produced no taint. The refusal cost the one case the feature is for, so
+    -- it is gone. The deferral in ns.RunWhenSafe still guards the calls that
+    -- genuinely are protected - SetPoint, Show, Hide, SetScale, EnableMouse.
 
     -- In holder mode the frame under the cursor is the tracker, but the frame
     -- that actually moves is the holder it is docked into.
@@ -458,8 +452,6 @@ local function OnDragStop(frame)
     ns.Debug("drag stop %s, frame now at %.0f, %.0f", record.key, x or -1, y or -1)
     ns.SavePosition(record.key)
 end
-
-ns:On("PLAYER_REGEN_ENABLED", function() combatMoveWarned = false end)
 
 -- Apply the current lock state to one tracker. Everything here touches
 -- protected methods, so it all goes through RunWhenSafe.

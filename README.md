@@ -12,19 +12,21 @@ protected frames while the player is in combat.
 
 ## Status
 
-**Phases 1–3 — the quest tracker is skinned.** Move, lock and rescale work;
-`WatchFrame` gets the panel, the header row, the text treatment, right-aligned
-counts and heroPanel's own glyph art, and the tracker's own header chrome and
-stray icons are dealt with. The Mythic+ tracker is discovered and movable but
-not yet skinned; the options panel is still to come, so colours and sizes are
-read from `HEROPANEL_DB` or set with `/hp font` rather than edited in a UI.
+**Both trackers are skinned.** Move, lock and rescale work; `WatchFrame` gets
+the panel, the header row, the text treatment, right-aligned counts and
+heroPanel's own glyph art, and the tracker's own header chrome and stray icons
+are dealt with. `MythicPlusObjectiveTracker` gets the same plate with its own
+header, keystone timer, threshold bar, enemy-forces meter and boss rows. The
+options panel is still to come, so colours and sizes are read from
+`HEROPANEL_DB` or set with `/hp font` rather than edited in a UI.
 
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Addon skeleton, frame discovery, conflict detection, move/lock/scale, shared helpers | done |
 | 2 | Panel skin — background, border, radius, backdrop texture | done (quest tracker) |
 | 3 | Text — fonts, per-state colours, header chrome, collapse caret, right-aligned counts, glyph art | done (quest tracker) |
-| 4 | Options panel, LibSharedMedia fonts, M+ chest tiers and timer chrome | planned |
+| 4 | Mythic+ panel — header, keystone timer, chest tiers, threshold bar, enemy forces, boss rows | done |
+| 5 | Options panel, LibSharedMedia fonts | planned |
 
 Known-good on the Ascension client this was built against. The notes below
 record what that client does differently from a stock 3.3.5a one — several of
@@ -47,6 +49,7 @@ exists. Restart the client or `/reload`.
 | `/hp font <8-20>` | Set the base text size |
 | `/hp glyphs <auto\|art\|tga\|blocks>` | Where the lock and caret come from |
 | `/hp texture <path>` | Put any texture in the caret's slot, untinted; no path resets it |
+| `/hp mplus` | Report what the Mythic+ panel resolved, and which source each number came from |
 | `/hp mode <auto\|own\|holder\|yield>` | Who positions the trackers — see Compatibility |
 | `/hp skin [on\|off]` | Skin the trackers, or hand them back to Blizzard |
 | `/hp status` | Report which frames were found and hooked |
@@ -176,11 +179,15 @@ heroPanel/
   heroPanel.toc   addon manifest, declares SavedVariables HEROPANEL_DB
   Core.lua        namespace, defaults, design tokens, event dispatch, slash commands
   Util.lua        timers, tickers, combat-safe deferral, colours, fonts,
-                  cursor hit testing, throttled tree scanner
+                  glyphs, cursor hit testing, throttled tree scanner
+  Plate.lua       the panel chrome both trackers share — background, border,
+                  corner chamfer, contour, gradient bars
   Trackers.lua    frame discovery and the collapse-aware height helper
   Move.lua        drag, lock and scale, with saved geometry
-  Skin.lua        the panel plate, the header row and the refresh triggers
+  Skin.lua        the quest panel — header row and the refresh triggers
   Lines.lua       line styling, quest blocks, right-aligned counts, hover
+  Mplus.lua       the Mythic+ panel — keystone timer, chest tiers, threshold
+                  bar, enemy forces and boss rows
   Compat.lua      conflict detection
   media/          glyph art — generated, see tools/glyphgen
 ```
@@ -203,6 +210,126 @@ tools/
   functions, to avoid taint.
 * **`MythicPlusObjectiveTracker` may not exist at `ADDON_LOADED`.** It is polled
   by `ns.PollForTracker`, which backs off and gives up rather than spinning.
+  The Mythic+ skin hangs off that same discovery point — the
+  `HEROPANEL_TRACKER_FOUND` event — rather than polling a second time.
+* **The Mythic+ tracker is not a 3.3.5a-shaped addon.** It ships inside
+  `patch-B.MPQ` as `Interface\AddOns\Ascension_MythicPlus`, and it is written
+  against a backported modern API: mixins (`CreateFromMixins`,
+  `ObjectiveTrackerBaseMixin`), atlases, `RegisterCallback`, `RunNextFrame` and
+  a `C_MythicPlus` namespace. Its layout is fixed in XML, so unlike `WatchFrame`
+  the widget names are knowable and heroPanel fades chrome by name rather than
+  by geometry.
+* **Where the Mythic+ numbers come from.** `C_MythicPlus.IsKeystoneActive`,
+  `GetActiveKeystoneInfo` (`keystoneLevel`, `dungeonID`), `GetActiveKeystoneTime`
+  (`timeLeft, totalTime`) and `GetActiveKeystoneTrash`
+  (`trashDead, trashRequired`); the dungeon name is
+  `GetLFGDungeonInfo(dungeonID)`. Boss state is read off the tracker's own
+  objective rows, which carry `.Text` and `.progress` / `.progressMax` — the
+  same pair the tracker itself tests to decide whether to draw a check. If
+  `C_MythicPlus` is absent the panel falls back to reading the tracker's own
+  widgets, which `/hp mplus` reports on.
+* **Ascension's own chest-tier clocks are wrong, so heroPanel does not read
+  them.** `MYTHIC_PLUS_BONUS_LEVEL_PERCENT` is `{ 0.55, 0.4 }` — the fraction of
+  the timer that must be *left* for +3 and +2 — and that is how
+  `MythicPlusUtil.GetCompletionInfo` and the completion banner both read it. The
+  tracker's `TimeLeft2` / `TimeLeft3` fields instead compute their countdowns
+  from `(1 - PERCENT[n])`, and are swapped against the notches they are coloured
+  to match: on a 30 minute key its "+3" field counts down to 18:00 remaining
+  where the real threshold is 16:30. heroPanel computes the tier itself from
+  the timer and the client's own constant, so a retune still follows.
+* **Two things the design asks for have no data on this client.** There is no
+  death counter and no time penalty anywhere in Ascension's Mythic+ code or in
+  `C_MythicPlus`, so the death line is not drawn — the footer keeps only the
+  rule and the heroPanel mark. And there is no per-boss "engaged" flag, nor
+  `ENCOUNTER_START` or `IsEncounterInProgress`, so the boss rows are drawn as
+  slain or still-up; the "in combat" state is implemented but nothing sets it,
+  because deciding it from "the player is fighting and this is the next boss in
+  the list" would be heroPanel inventing state and getting it wrong on any pull
+  that is out of order.
+* **Ascension restyles an objective row every time its progress changes.**
+  `ScenarioObjectiveMixin:SetProgress` calls `SetFontObject` on the row's text
+  and counter, which throws away whatever font and colour anyone else put
+  there. Because the panel only redrew on an event, killing a boss left that
+  row wearing Ascension's disabled font — dark grey on a dark panel, so the
+  name looked like it had vanished, and it never came back for the rest of the
+  run. Every row the panel styles is now hooked with `hooksecurefunc`
+  (`SetObjective` / `SetProgress` / `SetLabel` / `UpdateSubObjectives` /
+  `Expand` / `Collapse`) so any change Ascension makes queues a redraw.
+* **Chrome is faded as a subtree, not widget by widget.** The affix buttons
+  keep their icon on a child frame, so a pass over the button's own regions and
+  its four button textures missed it.
+* **The live tracker has a lock button the extracted XML does not.**
+  `MythicPlusObjectiveTrackerLockButton` — named by `/framestack`, not by
+  reading the source, because the build in `patch-B.MPQ` has no
+  `$parentLockButton`. heroPanel draws its own lock in the header's top-left
+  corner, so Ascension's is faded *and* has its mouse turned off; leaving it
+  live would let it swallow hovers meant for the affix icons beside it. It is
+  resolved by parent key and by global name, and is simply absent on a client
+  that does not have it.
+* **A boss's state is re-read at draw time, not taken from its row.** The two
+  numbers on the panel come from different places: the heading's count from
+  `GetActiveKeystoneEncounters().encountersCompleted`, each boss's state from
+  `GetEncounterInfo(encounterID).isDead`. `UpdateEncounters` reads the second
+  the instant `MYTHIC_PLUS_ENCOUNTER_UPDATE` fires, and the server has not
+  committed `isDead` for the boss that just died — so that row stays grey until
+  the *next* encounter update refreshes everything, which is why a live run
+  showed the count one ahead of the green ticks every time. heroPanel calls
+  `GetEncounterInfo` itself when it draws, matching rows by name (with the kill
+  time Ascension appends stripped off first), so it is right on the first pass.
+  A name the API does not know keeps the row's own state, so the override can
+  never invent a kill.
+* **Affixes are spell IDs.** `GetActiveKeystoneInfo().activeAffixes` is a list
+  of them; `GetSpellInfo(affixID)` gives the name and icon, and this client
+  ships a `GameTooltip:SetAffix(affixID)` extension that builds the full
+  tooltip. heroPanel draws its own affix icons in the header's top-right corner
+  rather than keeping Ascension's, so they take the panel's size and spacing
+  while still showing the game's tooltip on hover. They and the lock are the
+  only things the panel puts above the tracker, because both need the mouse.
+* **Dragging a tracker in combat is allowed.** `StartMoving` /
+  `StopMovingOrSizing` are not among the calls the client refuses under
+  lockdown. The calls that genuinely are protected — `SetPoint`, `Show`,
+  `Hide`, `SetScale`, `EnableMouse` — still go through `ns.RunWhenSafe`.
+* **The expanded "Defeat additional bosses" row is a heading, not a boss.**
+  While it is expanded its sub-rows are the bosses and it is a label over them,
+  so it gets no indicator; collapsed, the sub-rows are not drawn and it stands
+  in for them. Its count moves out of the right-aligned counter and into the
+  sentence — "Defeat Additional Bosses (1/6)" — and is left off entirely until
+  the first extra boss dies. Rewriting a tracker string is the one thing here
+  that changes what the game drew, so it follows Lines.lua's rule: the original
+  is kept and the rewrite is only treated as ours while the string on screen is
+  still the one heroPanel wrote, which is what stops a second pass stacking a
+  second count. It turns green once its requirement is met, expanded or
+  collapsed — collapsed it is an ordinary completed objective and was already
+  green, so the same finished run used to read as unfinished depending on which
+  way the chevron pointed.
+* **The extra-bosses list is drawn by heroPanel, not restyled in place.** This
+  is the one place that departs from "recolour and refont only", and the reason
+  is length: a dungeon can offer far more minibosses than the key requires —
+  fifteen for a requirement of five in Lower Blackrock Spire — which made a
+  panel taller than the screen. Windowing the tracker's own rows would mean
+  hiding the ones outside the window and re-anchoring the rest as it scrolls,
+  and showing, hiding and moving pooled objective rows is exactly what must not
+  happen, because the tracker owns their layout and reasserts it on every
+  update. So Ascension's sub-rows are faded whole — alpha only, as reversible
+  as everything else here — and the list is drawn again on heroPanel's plate,
+  six rows tall with the wheel scrolling it. The required boss and the
+  extra-bosses heading are still restyled where the tracker drew them; only the
+  variable-length list is taken over.
+* **The scroll catcher takes the wheel but not the mouse.** `EnableMouseWheel`
+  without `EnableMouse`, so a scroll reaches the list while a click or a drag
+  still falls through to the tracker underneath, which is mouse-enabled for
+  dragging.
+* **The boss block is three sizes, not one.** The required boss is title-sized,
+  the extra-bosses heading sits a step under it and the bosses under that, all
+  as offsets from the configured base so `/hp font` still moves them together.
+  A defeated boss is marked by a check mark alone: it was a tick knocked out of
+  a filled disc, which at 14 pixels read as a green blob with a notch in it.
+* **Ascension anchors enemy forces below the boss rows; the design puts it
+  above.** heroPanel draws its own enemy-forces row where the design wants it
+  and fades the tracker's, rather than re-anchoring an objective row. The panel
+  is therefore sized from the boss rows it drew rather than from the tracker's
+  frame, which is both far taller than its contents and still reserving space
+  for the row that is now invisible.
 * **Timers go through `ns.After`.** `C_Timer` is not present on every 3.3.5a
   client, so `ns.After` falls back to an `OnUpdate` queue.
 * **Holding a position on `WatchFrame` needs three measures**, because the

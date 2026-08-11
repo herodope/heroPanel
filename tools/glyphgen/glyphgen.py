@@ -133,11 +133,64 @@ def lock_open(px, py):
     return min(_lock_body(px, py), shackle, leg)
 
 
+def _ring(px, py, cx, cy, radius, stroke):
+    return abs(math.hypot(px - cx, py - cy) - radius) - stroke / 2.0
+
+
+def _disc(px, py, cx, cy, radius):
+    return math.hypot(px - cx, py - cy) - radius
+
+
+RING_STROKE = 2.8
+
+
+def timer(px, py):
+    """Stopwatch: a stem, a hollow body and a hand.
+
+    The stem is what stops it reading as a plain ring beside the crosshair.
+    Drawn as a stroked path like the rest, so it downsamples cleanly instead
+    of staircasing the way the block version did at 14 pixels.
+    """
+    body = _ring(px, py, 16.0, 18.5, 9.0, RING_STROKE)
+    stem = dist_to_segment(px, py, 16.0, 5.5, 16.0, 9.8) - RING_STROKE / 2.0
+    # A short hand up from the centre, stopping well inside the body so the
+    # two strokes do not merge into a blob at this size.
+    hand = dist_to_segment(px, py, 16.0, 18.5, 16.0, 13.5) - 2.2 / 2.0
+    return min(body, stem, hand)
+
+
+def crosshair(px, py):
+    """A ring with four arms and a centre pip."""
+    ring = _ring(px, py, 16.0, 16.0, 8.2, RING_STROKE)
+    arms = min(
+        dist_to_segment(px, py, 16.0, 3.6, 16.0, 9.5),
+        dist_to_segment(px, py, 16.0, 22.5, 16.0, 28.4),
+        dist_to_segment(px, py, 3.6, 16.0, 9.5, 16.0),
+        dist_to_segment(px, py, 22.5, 16.0, 28.4, 16.0),
+    ) - RING_STROKE / 2.0
+    pip = _disc(px, py, 16.0, 16.0, 2.0)
+    return min(ring, arms, pip)
+
+
+def ring(px, py):
+    """The boss-row indicator: an empty circle."""
+    return _ring(px, py, 16.0, 16.0, 11.0, 3.2)
+
+
+def ring_dot(px, py):
+    """The active boss indicator: a ring with a filled centre."""
+    return min(_ring(px, py, 16.0, 16.0, 11.0, 3.2), _disc(px, py, 16.0, 16.0, 4.0))
+
+
 SHAPES = {
     "caret": caret,
     "check": check,
     "lock-closed": lock_closed,
     "lock-open": lock_open,
+    "timer": timer,
+    "crosshair": crosshair,
+    "ring": ring,
+    "ring-dot": ring_dot,
 }
 
 

@@ -301,6 +301,8 @@ function ns.PrintStatus()
         (ns.db and ns.db.frame.ownership) or "auto",
         ns.DEBUG and "|cFF79C68DON|r" or "|cFF8B8FA3OFF|r")
 
+    if ns.Mplus and ns.Mplus.PrintStatus then ns.Mplus.PrintStatus() end
+
     if ns.Skin and ns.Skin.PrintStatus then
         ns.Skin.PrintStatus()
     else

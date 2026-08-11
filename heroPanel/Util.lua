@@ -291,6 +291,15 @@ ns.GLYPH_ART = {
     check     = { file = "check" },
     locked    = { file = "lock-closed" },
     unlocked  = { file = "lock-open" },
+
+    -- The Mythic+ shapes. These were block glyphs first and read as exactly
+    -- what the block note above warns about: a stopwatch and a crosshair are
+    -- mostly circle, and a circle made of 2px blocks at 12 device pixels is a
+    -- staircase. Rasterised as anti-aliased strokes they carry at that size.
+    timer     = { file = "timer" },
+    crosshair = { file = "crosshair" },
+    ring      = { file = "ring" },
+    ringDot   = { file = "ring-dot" },
 }
 
 -- Each shape is a list of cells: { column, row, columnSpan, rowSpan }, spans
@@ -319,6 +328,58 @@ ns.GLYPHS = {
     -- the same object.
     locked    = { {1,0,4,1}, {1,1}, {4,1}, {1,2}, {4,2}, {0,3,6,4} },
     unlocked  = { {1,0,4,1},         {4,1},        {4,2}, {0,3,6,4} },
+
+    -- The Mythic+ panel's shapes. All circles, all on an 8x8 or 10x10 grid:
+    -- a circle made of blocks needs its widest rows to be several cells long
+    -- or it reads as a diamond, which is why the rows step 4-6-8 rather than
+    -- 2-4-6-8.
+
+    -- A hollow circle, one cell thick, which lands on about 1.5px at the 14px
+    -- the boss rows use.
+    ring      = { {2,0,4,1},
+                  {1,1}, {6,1},
+                  {0,2}, {7,2},
+                  {0,3}, {7,3},
+                  {0,4}, {7,4},
+                  {0,5}, {7,5},
+                  {1,6}, {6,6},
+                  {2,7,4,1} },
+
+    -- The ring with its centre filled: the boss currently being fought.
+    ringDot   = { {2,0,4,1},
+                  {1,1}, {6,1},
+                  {0,2}, {7,2},
+                  {0,3}, {3,3,2,2}, {7,3},
+                  {0,4}, {7,4},
+                  {0,5}, {7,5},
+                  {1,6}, {6,6},
+                  {2,7,4,1} },
+
+    -- Stopwatch: a stem, a hollow body and a hand. The stem is what stops it
+    -- reading as a plain ring next to the crosshair below.
+    timer     = { {4,0,2,1},
+                  {3,2,4,1},
+                  {2,3}, {7,3},
+                  {1,4}, {8,4},
+                  {1,5}, {8,5},
+                  {1,6}, {8,6},
+                  {1,7}, {8,7},
+                  {2,8}, {7,8},
+                  {3,9,4,1},
+                  {4,5,1,2} },
+
+    -- Crosshair: a ring with four arms and a centre pip.
+    crosshair = { {4,0,2,1},
+                  {3,1,4,1},
+                  {2,2}, {7,2},
+                  {1,3}, {8,3},
+                  {0,4,1,2}, {1,4}, {8,4}, {9,4,1,2},
+                  {1,5}, {8,5},
+                  {4,4,2,2},
+                  {1,6}, {8,6},
+                  {2,7}, {7,7},
+                  {3,8,4,1},
+                  {4,9,2,1} },
 }
 
 -- Glyph modes that pin one file rather than letting the chain choose. Two

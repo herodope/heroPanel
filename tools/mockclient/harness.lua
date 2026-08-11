@@ -59,6 +59,10 @@ function methods:SetFrameLevel(l) self.__level = l end
 function methods:GetFrameLevel() return self.__level or 1 end
 function methods:EnableMouse(v) self.__mouse = v end
 function methods:IsMouseEnabled() return self.__mouse end
+-- Separate from the mouse on purpose: the panel's scroll catcher takes the
+-- wheel without taking clicks, so a drag still reaches the tracker under it.
+function methods:EnableMouseWheel(v) self.__wheel = v end
+function methods:IsMouseWheelEnabled() return self.__wheel end
 function methods:SetMovable(v) self.__movable = v end
 function methods:StartMoving() end
 function methods:StopMovingOrSizing() end
@@ -496,6 +500,279 @@ if not MINIMAL then
 end
 
 --------------------------------------------------------------------------------
+-- The Mythic+ tracker
+--
+-- Shaped after Ascension_MythicPlus's own XML: a MainBlock carrying the level,
+-- the clocks and the timer status bar, and an ObjectiveBlock carrying the boss
+-- rows. Two things about it are deliberate and are the point of the test:
+--
+--   * it does not exist at ADDON_LOADED. The real one is created on demand by
+--     an addon that may load after heroPanel, so it is built here only once
+--     the addon has already booted, and heroPanel has to find it by polling.
+--   * EnemyForces is the *last* row in the objective block, below the bosses,
+--     which is where Ascension anchors it. The design puts enemy forces above
+--     the boss rows, so heroPanel draws its own there and this is what proves
+--     it does not simply follow the tracker's order.
+--
+-- Under HP_MINIMAL there is no C_MythicPlus, so the panel has to read the
+-- numbers off the tracker's own widgets instead.
+--------------------------------------------------------------------------------
+
+MYTHIC_PLUS_BONUS_LEVEL_PERCENT = { 0.55, 0.4 }
+
+function GetLFGDungeonInfo(id) return "Halls of Reflection" end
+
+local AFFIX_NAMES = { [1001] = "Tyrannical", [1002] = "Bolstering", [1003] = "Volcanic" }
+
+-- Encounter state, which is the authority on whether a boss is down. The
+-- tracker's rows are told about a kill before the server has committed it, so
+-- what a row holds and what this returns can disagree - that lag is the bug
+-- the panel has to see past, and it is modelled here rather than assumed away.
+local ENCOUNTERS = {
+    [201] = { name = "Falric",        dead = true  },
+    [202] = { name = "Marwyn",        dead = false },
+    [203] = { name = "The Lich King", dead = false },
+}
+
+function GetEncounterInfo(encounterID)
+    local e = ENCOUNTERS[encounterID]
+    if not e then return nil end
+    return e.name, nil, nil, nil, nil, nil, e.dead
+end
+
+function GetSpellInfo(spellID)
+    local name = AFFIX_NAMES[spellID]
+    if not name then return nil end
+    return name, "Level 2", "Interface\\Icons\\affix_" .. spellID
+end
+
+function GetSpellDescription(spellID)
+    return AFFIX_NAMES[spellID] and (AFFIX_NAMES[spellID] .. " description") or nil
+end
+
+local KEY_TIME_LEFT, KEY_TOTAL_TIME = 1661, 1800   -- 27:41 of 30:00
+local TRASH_DEAD, TRASH_REQUIRED    = 84, 100
+
+if not MINIMAL then
+    C_MythicPlus = {
+        IsKeystoneActive = function() return true end,
+        GetActiveKeystoneInfo = function()
+            -- activeAffixes are spell IDs; GetSpellInfo turns one into a name
+            -- and an icon, which is how the tracker's own affix buttons do it.
+            return { keystoneLevel = 12, dungeonID = 668, rewardMultiplier = 1,
+                     activeAffixes = { 1001, 1002, 1003 } }
+        end,
+        GetActiveKeystoneTime  = function() return KEY_TIME_LEFT, KEY_TOTAL_TIME end,
+        GetActiveKeystoneTrash = function()
+            return { trashDead = TRASH_DEAD, trashRequired = TRASH_REQUIRED }
+        end,
+    }
+end
+
+MythicPlusObjectiveTracker = nil
+
+local mplusRows = {}
+
+local function BuildObjectiveRow(parent, name, label, progress, progressMax, top)
+    local row = new("Frame", name, parent)
+    row.__rect = { left = 1320, right = 1540, top = top, bottom = top - 12 }
+
+    row.Icon = row:CreateTexture(nil, "ARTWORK")
+    row.Icon:SetTexture("Interface\\Scenarios\\scenarioicon-combat")
+    row.Icon.__rect = { left = 1320, right = 1336, top = top, bottom = top - 12 }
+
+    row.Text = row:CreateFontString(nil, "ARTWORK")
+    row.Text:SetText(label)
+    row.Text.__rect = { left = 1340, right = 1480, top = top, bottom = top - 12 }
+    row.Text.__font = { "Fonts\\FRIZQT__.TTF", 12, "" }
+
+    row.Counter = row:CreateFontString(nil, "ARTWORK")
+    row.Counter:SetText(string.format("%d/%d", progress, progressMax))
+    row.Counter.__rect = { left = 1500, right = 1540, top = top, bottom = top - 12 }
+
+    row.progress, row.progressMax = progress, progressMax
+
+    -- What ScenarioObjectiveMixin does to a row every time its progress
+    -- changes: it reassigns the font object on the text and the counter, which
+    -- throws away whatever font and colour anyone else had put there. This is
+    -- the behaviour that made heroPanel's boss labels vanish after a kill and
+    -- never come back, so the mock has to do it or the fix is untested.
+    local function ascensionRestyle(self)
+        local done = self.progressMax and self.progress and self.progress >= self.progressMax
+        self.Text.__font = { "Fonts\\FRIZQT__.TTF", 12, "" }
+        -- PTFontDisable / PTFontHighlight: dark grey on a dark panel is what
+        -- "the text disappeared" actually looked like.
+        local grey = done and 0.35 or 0.75
+        self.Text:SetTextColor(grey, grey, grey, 1)
+        self.Counter:SetTextColor(grey, grey, grey, 1)
+    end
+
+    function row:SetProgress(progress)
+        self.progress = progress
+        ascensionRestyle(self)
+    end
+
+    function row:SetObjective(label, progress, progressMax)
+        self.Text:SetText(label)
+        self.progress, self.progressMax = progress, progressMax
+        ascensionRestyle(self)
+    end
+
+    function row:SetLabel(label) self.Text:SetText(label) end
+
+    table.insert(mplusRows, row)
+    return row
+end
+
+function CreateMplusTracker()
+    local t = new("Frame", "MythicPlusObjectiveTracker", UIParent)
+    -- Deliberately far taller than its contents, like WatchFrame above: the
+    -- real frame is given a region to draw in rather than shrunk to what it
+    -- drew, so a panel sized from the frame instead of from the rows would
+    -- reach hundreds of pixels past the last boss line. Ascension's template
+    -- sets no strata, so it lands on the default.
+    t.__rect  = { left = 1300, right = 1560, top = 600, bottom = 200 }
+    t.__level = 1
+    MythicPlusObjectiveTracker = t
+
+    t.Header = t:CreateTexture(nil, "ARTWORK")
+    t.Header.__rect = { left = 1300, right = 1560, top = 600, bottom = 570 }
+
+    t.HeaderText = t:CreateFontString(nil, "ARTWORK")
+    t.HeaderText:SetText("Halls of Reflection")
+    t.HeaderText.__rect = { left = 1326, right = 1460, top = 592, bottom = 578 }
+
+    -- The live build's own lock button, top right. It is not in the tracker XML
+    -- this was written against, and /framestack on the running client named it,
+    -- so it is resolved by parent key and by global name both.
+    local lockButton = new("Button", "MythicPlusObjectiveTrackerLockButton", t)
+    lockButton.__normal = lockButton:CreateTexture()
+    lockButton.GetNormalTexture = function(self) return self.__normal end
+    lockButton.__rect = { left = 1526, right = 1546, top = 596, bottom = 576 }
+    lockButton:EnableMouse(true)
+    t.LockButton = lockButton
+    MythicPlusObjectiveTrackerLockButton = lockButton
+
+    t.CollapseExpandButton = new("Button", nil, t)
+    t.CollapseExpandButton.__normal = t.CollapseExpandButton:CreateTexture()
+    t.CollapseExpandButton.__rect = { left = 1530, right = 1552, top = 594, bottom = 574 }
+    t.CollapseExpandButton.GetNormalTexture = function(self) return self.__normal end
+
+    ------------------------------------------------------------------
+    -- Main block
+    ------------------------------------------------------------------
+
+    local main = new("Frame", "MythicPlusObjectiveTrackerMainBlock", t)
+    main.__rect = { left = 1300, right = 1560, top = 560, bottom = 473 }
+    t.MainBlock = main
+
+    main.Background = main:CreateTexture(nil, "ARTWORK")
+    main.Background.__rect = main.__rect
+    main.TimerBarBackground = main:CreateTexture(nil, "BACKGROUND")
+    main.TimerBarBackground.__rect = { left = 1310, right = 1550, top = 500, bottom = 486 }
+
+    main.Level = main:CreateFontString(nil, "ARTWORK")
+    main.Level:SetText("Level 12")
+    main.Level.__rect = { left = 1328, right = 1390, top = 542, bottom = 528 }
+
+    main.TimeLeft = main:CreateFontString(nil, "ARTWORK")
+    main.TimeLeft:SetText("27:41")
+    main.TimeLeft.__rect = { left = 1328, right = 1390, top = 522, bottom = 502 }
+
+    -- Ascension computes these two from (1 - PERCENT[n]), which is wrong, and
+    -- colours them against the notches they do not match. heroPanel does not
+    -- read them; they are here so the panel is proven to fade them rather than
+    -- leave two stale clocks showing through it.
+    main.TimeLeft2 = main:CreateFontString(nil, "ARTWORK")
+    main.TimeLeft2:SetText("18:41")
+    main.TimeLeft2.__rect = { left = 1400, right = 1440, top = 520, bottom = 506 }
+
+    main.TimeLeft3 = main:CreateFontString(nil, "ARTWORK")
+    main.TimeLeft3:SetText("07:41")
+    main.TimeLeft3.__rect = { left = 1450, right = 1490, top = 520, bottom = 506 }
+
+    main.BottomRightText = main:CreateFontString(nil, "ARTWORK")
+    main.BottomRightText:SetText("100% loot")
+    main.BottomRightText.__rect = { left = 1480, right = 1546, top = 500, bottom = 488 }
+
+    local timer = new("Frame", "MythicPlusObjectiveTrackerMainBlockTimer", main)
+    timer.__rect = { left = 1318, right = 1542, top = 496, bottom = 483 }
+    timer.__min, timer.__max, timer.__value = 0, KEY_TOTAL_TIME, KEY_TIME_LEFT
+    timer.GetMinMaxValues = function(self) return self.__min, self.__max end
+    timer.GetValue        = function(self) return self.__value end
+    timer.__fill          = timer:CreateTexture(nil, "ARTWORK")
+    timer.GetStatusBarTexture = function(self) return self.__fill end
+    timer.PlusTwoNotch    = timer:CreateTexture(nil, "OVERLAY")
+    timer.PlusThreeNotch  = timer:CreateTexture(nil, "OVERLAY")
+    main.Timer = timer
+
+    for i = 1, 5 do
+        local affix = new("Button", nil, main)
+        affix.__normal = affix:CreateTexture()
+        affix.GetNormalTexture = function(self) return self.__normal end
+        affix.__rect = { left = 1500 - i * 20, right = 1516 - i * 20, top = 542, bottom = 526 }
+        -- The affix template keeps its icon on a child frame, not on the
+        -- button's own regions. Fading the four button textures missed it, and
+        -- it sat in the panel's top-right corner - which the design has nothing
+        -- in - reading as a second control.
+        affix.IconFrame = new("Frame", nil, affix)
+        affix.IconFrame.__rect = affix.__rect
+        affix.__icon = affix.IconFrame:CreateTexture(nil, "ARTWORK")
+        affix.__icon:SetTexture("Interface\\Icons\\spell_shadow_shadowbolt")
+        main["Affix" .. i] = affix
+    end
+
+    ------------------------------------------------------------------
+    -- Objective block
+    ------------------------------------------------------------------
+
+    local block = new("Frame", "MythicPlusObjectiveTrackerObjectiveBlock", t)
+    block.__rect = { left = 1310, right = 1550, top = 471, bottom = 386 }
+    t.ObjectiveBlock = block
+
+    -- The encounter IDs the tracker keeps, which is what the panel re-reads
+    -- the live state from.
+    t.encounters     = { 201, 202, 203 }
+    t.finalEncounter = 203
+
+    block.FinalEncounter = BuildObjectiveRow(block, "MplusFinalEncounter",
+        "The Lich King", 0, 1, 470)
+
+    block.Encounters = BuildObjectiveRow(block, "MplusEncounters",
+        "Defeat additional bosses", 1, 2, 454)
+    block.Encounters.isExpanded = true
+
+    -- Ascension's own expand control on the extra-bosses row. heroPanel fades
+    -- its art and draws the quest header's chevron over it, so the panel has
+    -- one collapse affordance rather than two unrelated ones.
+    local expand = new("Button", nil, block.Encounters)
+    expand.__normal = expand:CreateTexture()
+    expand.GetNormalTexture = function(self) return self.__normal end
+    expand.__rect = { left = 1524, right = 1540, top = 454, bottom = 440 }
+    block.Encounters.CollapseExpandButton = expand
+    function block.Encounters:UpdateSubObjectives() end
+
+    block.Encounters.buttons = {
+        BuildObjectiveRow(block.Encounters, "MplusEncounters1", "Falric", 1, 1, 438),
+        BuildObjectiveRow(block.Encounters, "MplusEncounters2", "Marwyn", 0, 1, 422),
+    }
+
+    -- Level 12, so the champions row is hidden - exactly as the real tracker
+    -- leaves it below 14.
+    block.Champions = BuildObjectiveRow(block, "MplusChampions", "Champions", 0, 3, 410)
+    block.Champions:Hide()
+
+    -- Last, below the bosses, which is where Ascension anchors it.
+    block.EnemyForces = BuildObjectiveRow(block, "MplusEnemyForces",
+        "Enemy Forces", TRASH_DEAD, TRASH_REQUIRED, 400)
+    block.EnemyForces.StatusBar = new("Frame", nil, block.EnemyForces)
+    block.EnemyForces.StatusBar.__rect = { left = 1320, right = 1540, top = 396, bottom = 388 }
+    block.EnemyForces.StatusBar.__border = block.EnemyForces.StatusBar:CreateTexture()
+
+    return t
+end
+
+--------------------------------------------------------------------------------
 -- Event / OnUpdate driving
 --------------------------------------------------------------------------------
 
@@ -521,7 +798,7 @@ end
 --------------------------------------------------------------------------------
 
 local ns = {}
-local files = { "Core.lua", "Util.lua", "Trackers.lua", "Move.lua", "Skin.lua", "Lines.lua", "Compat.lua" }
+local files = { "Core.lua", "Util.lua", "Plate.lua", "Trackers.lua", "Move.lua", "Skin.lua", "Lines.lua", "Mplus.lua", "Compat.lua" }
 for _, file in ipairs(files) do
     local chunk, err = loadfile(ADDON .. file)
     if not chunk then error("load " .. file .. ": " .. tostring(err)) end
@@ -536,6 +813,12 @@ fire("PLAYER_LOGIN")
 tick(); tick()
 fire("PLAYER_ENTERING_WORLD")
 tick(); tick(); tick()
+
+-- The Mythic+ tracker turns up late, which is the case Phase 1's poll exists
+-- for. Nothing fires an event to announce it: heroPanel has to notice on its
+-- own, and the skin has to go on from the same discovery point.
+local mplusTracker = CreateMplusTracker()
+tick(0.6); tick(0.6); tick(); tick()
 
 --------------------------------------------------------------------------------
 -- Assertions
@@ -1288,6 +1571,556 @@ check(exploded, "the test handler should have run")
 local loud = table.concat(log, "\n", before + 1)
 check(string.find(loud, "boom", 1, true) ~= nil, "a handler error must be reported with debug off")
 ns.DEBUG = true
+
+--------------------------------------------------------------------------------
+-- The Mythic+ panel
+--------------------------------------------------------------------------------
+
+-- Discovery first. The tracker did not exist at ADDON_LOADED, so a panel at
+-- all is the proof that the poll found it and that the skin hung off the same
+-- discovery point rather than a timer of its own.
+check(ns.trackers.mplus.found, "the Mythic+ tracker should have been found by polling")
+local mplate = HeroPanelMplusPlate
+check(mplate ~= nil, "the Mythic+ panel was never created")
+
+if mplate then
+    check(mplate:IsShown(), "the Mythic+ panel is not shown")
+
+    -- Same plate as the quest tracker, which is the requirement: both are
+    -- built by Plate.lua, so a background here proves the shared chrome ran.
+    check(mplate.bg ~= nil and mplate.edge ~= nil,
+        "the Mythic+ panel should carry the shared plate chrome")
+    check(mplate:GetFrameStrata() == "LOW",
+        "the panel should sit a strata below the tracker's MEDIUM, got " .. tostring(mplate:GetFrameStrata()))
+
+    -- Sized from the rows it drew, not from the frame it is drawn over. The
+    -- tracker's rect runs down to 200 while its lowest boss row is at 410, so
+    -- a panel that followed the frame would be around 200 pixels too tall.
+    local bottom = mplate:GetBottom()
+    check(bottom ~= nil and bottom > 340,
+        "the panel should be sized from its rows, not the tracker's frame; bottom " .. tostring(bottom))
+    check(bottom ~= nil and bottom < 410,
+        "the panel has to reach below the last boss row to fit the footer; bottom " .. tostring(bottom))
+end
+
+-- Ascension's chrome is faded, never hidden, and its own clocks go with it -
+-- leaving those on screen is what "two headers stacked" looked like in Phase 2.
+check(mplusTracker.HeaderText:GetAlpha() == 0, "the tracker's header text should be faded")
+check(mplusTracker.HeaderText:IsShown(), "the tracker's header text should be faded, not hidden")
+check(mplusTracker.MainBlock.Level:GetAlpha() == 0, "the tracker's level text should be faded")
+check(mplusTracker.MainBlock.TimeLeft:GetAlpha() == 0, "the tracker's clock should be faded")
+check(mplusTracker.MainBlock.TimeLeft2:GetAlpha() == 0,
+    "Ascension's miscomputed +2 clock should be faded")
+check(mplusTracker.MainBlock.TimeLeft3:GetAlpha() == 0,
+    "Ascension's miscomputed +3 clock should be faded")
+check(mplusTracker.MainBlock.Timer.PlusTwoNotch:GetAlpha() == 0,
+    "the tracker's own threshold notches should be faded")
+check(mplusTracker.MainBlock.Affix1.__normal:GetAlpha() == 0, "affix button art should be faded")
+
+-- Boss text survives: the rows are recoloured and refonted, never hidden.
+local finalRow = mplusTracker.ObjectiveBlock.FinalEncounter
+local falric   = mplusTracker.ObjectiveBlock.Encounters.buttons[1]
+local marwyn   = mplusTracker.ObjectiveBlock.Encounters.buttons[2]
+
+check(finalRow.Text:GetAlpha() == 1, "boss text must not be faded")
+check(finalRow.Text:GetText() == "The Lich King", "boss text must not be rewritten")
+check(falric.Text:GetText() == "Falric", "sub-objective text must not be rewritten")
+
+-- ...and nothing moved. This is the rule the design calls out twice.
+check(finalRow.Text:GetLeft() == 1340, "boss text must not be re-anchored")
+check(finalRow:GetTop() == 470, "boss rows must not be moved")
+check(falric:GetTop() == 438, "sub-objective rows must not be moved")
+
+local function mcolour(fontString)
+    local c = fontString.__textColor
+    if not c then return "none" end
+    return string.format("%02X%02X%02X", math.floor(c[1] * 255 + 0.5),
+        math.floor(c[2] * 255 + 0.5), math.floor(c[3] * 255 + 0.5))
+end
+
+-- The extra bosses are drawn by heroPanel on its own plate, so their colour is
+-- read off the panel's rows rather than off the tracker's, which are faded.
+local function subRow(name)
+    for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+        local text = region.GetText and region:GetText()
+        if text and region:IsShown() and string.sub(text, 1, #name) == name then
+            return region
+        end
+    end
+end
+
+local function subColour(name)
+    local region = subRow(name)
+    return region and mcolour(region) or "missing"
+end
+
+check(falric.Text:GetAlpha() == 0,
+    "the tracker's own extra-boss row should be faded; heroPanel redraws it")
+check(subColour("Falric") == "79C68D",
+    "a slain boss should be green on the panel, got " .. subColour("Falric"))
+check(subColour("Marwyn") == "8B8FA3",
+    "a boss still up should be muted, got " .. subColour("Marwyn"))
+check(mcolour(finalRow.Text) == "8B8FA3",
+    "the final boss still up should be muted, got " .. mcolour(finalRow.Text))
+
+-- The row's own icon and counter are replaced by heroPanel's indicator and
+-- status word, so both have to be faded rather than left underneath.
+check(falric.Icon:GetAlpha() == 0, "the tracker's boss icon should be faded")
+check(falric.Counter:GetAlpha() == 0, "the tracker's boss counter should be faded")
+
+--------------------------------------------------------------------------------
+-- Chest tiers
+--
+-- The arithmetic the design specifies, checked against the thresholds the
+-- client actually ships: +3 needs 55% of the timer left, +2 needs 40%. This is
+-- computed rather than read off Ascension's own fields, which are wrong.
+--------------------------------------------------------------------------------
+
+local tier, window = ns.Mplus.ChestTier(1661, 1800)     -- 27:41 of 30:00
+check(tier == 3, "at 27:41 of 30:00 the top tier should still be +3, got " .. tostring(tier))
+check(window ~= nil and math.abs(window - (1661 - 0.55 * 1800)) < 0.01,
+    "the +3 window should be measured against 55% of the timer, got " .. tostring(window))
+
+tier, window = ns.Mplus.ChestTier(900, 1800)            -- 50% left: +3 gone
+check(tier == 2, "at half time the top tier should be +2, got " .. tostring(tier))
+check(window ~= nil and math.abs(window - (900 - 0.4 * 1800)) < 0.01,
+    "the +2 window should be measured against 40% of the timer")
+
+tier = ns.Mplus.ChestTier(600, 1800)                    -- 33% left: +2 gone too
+check(tier == nil, "below the +2 threshold the tier display should be hidden, not show +1")
+
+tier = ns.Mplus.ChestTier(nil, nil)
+check(tier == nil, "no timer means no tier")
+
+-- The thresholds are read from the client, so retuning them moves the display.
+MYTHIC_PLUS_BONUS_LEVEL_PERCENT = { 0.5, 0.25 }
+tier = ns.Mplus.ChestTier(1000, 1800)                   -- 55% left
+check(tier == 3, "the tier should follow the client's own thresholds, got " .. tostring(tier))
+MYTHIC_PLUS_BONUS_LEVEL_PERCENT = { 0.55, 0.4 }
+
+--------------------------------------------------------------------------------
+-- What the panel read
+--------------------------------------------------------------------------------
+
+local read = ns.Mplus.Read()
+check(read ~= nil, "the panel should be able to read the run")
+
+if read then
+    -- In full mode these come from C_MythicPlus; under HP_MINIMAL there is no
+    -- such API and the same fields have to come off the tracker's widgets.
+    check(read.dungeon == "Halls of Reflection",
+        "the dungeon name should be resolved, got " .. tostring(read.dungeon))
+    check(read.level == 12, "the keystone level should be resolved, got " .. tostring(read.level))
+    check(read.totalTime == 1800, "the total time should be resolved, got " .. tostring(read.totalTime))
+    check(read.timeLeft ~= nil and math.abs(read.timeLeft - 1661) < 1,
+        "the remaining time should be resolved, got " .. tostring(read.timeLeft))
+    check(read.trashRequired == 100, "enemy forces should be resolved, got " .. tostring(read.trashRequired))
+
+    -- Three bosses and one heading. The champions row is hidden below key
+    -- level 14, and enemy forces is not a boss at all.
+    local byName, bossCount = {}, 0
+    for _, b in ipairs(read.bosses) do
+        byName[b.text] = b
+        if not b.group then bossCount = bossCount + 1 end
+    end
+    check(bossCount == 3, "expected 3 boss rows, got " .. tostring(bossCount))
+    check(byName["Defeat additional bosses"] ~= nil
+          and byName["Defeat additional bosses"].group,
+        "the expanded extra-bosses row is a heading, not a boss")
+    check(byName["Falric"] ~= nil and byName["Falric"].done, "Falric should read as slain")
+    check(byName["Marwyn"] ~= nil and not byName["Marwyn"].done, "Marwyn should read as still up")
+    check(byName["Champions"] == nil, "a hidden objective row must not be collected")
+    check(byName["Enemy Forces"] == nil, "the enemy-forces row is not a boss row")
+
+    -- Top down, so the indicators line up with the rows on screen.
+    check(read.bosses[1].text == "The Lich King",
+        "boss rows should be ordered top down, got " .. tostring(read.bosses[1].text))
+end
+
+--------------------------------------------------------------------------------
+-- Enemy forces is drawn where the design puts it, not where the tracker does
+--------------------------------------------------------------------------------
+
+-- Ascension anchors its enemy-forces row at the bottom, below the bosses.
+-- heroPanel draws its own above them, so the label has to sit above the
+-- topmost boss row rather than following the tracker's order.
+check(mplusTracker.ObjectiveBlock.EnemyForces:GetTop() == 400,
+    "the tracker's own enemy-forces row must not be moved")
+
+local forcesLabel, percentLabel
+for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+    local text = region.GetText and region:GetText()
+    if text == "Enemy Forces" then forcesLabel = region end
+    if text == "84%" then percentLabel = region end
+end
+
+check(forcesLabel ~= nil, "heroPanel should draw its own Enemy Forces label")
+check(percentLabel ~= nil, "the enemy-forces percentage should be drawn from live data")
+
+if forcesLabel then
+    check(forcesLabel:GetTop() > 470,
+        "heroPanel's enemy-forces row belongs above the topmost boss row at 470, got "
+        .. tostring(forcesLabel:GetTop()))
+end
+
+-- The dungeon name and keystone level are heroPanel's, drawn over the faded
+-- header rather than by rewriting Ascension's string.
+local nameLabel, keyLabel
+for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+    local text = region.GetText and region:GetText()
+    if text == "Halls of Reflection" then nameLabel = region end
+    if text == "(12)" then keyLabel = region end
+end
+check(nameLabel ~= nil, "the dungeon name should be drawn on the panel")
+check(keyLabel ~= nil, "the keystone level should be drawn inline as (12)")
+check(mplusTracker.HeaderText:GetText() == "Halls of Reflection",
+    "Ascension's own header string must not be rewritten")
+
+-- The timer row reads remaining time, and the total beside it.
+local clock, total
+for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+    local text = region.GetText and region:GetText()
+    if text == "27:41" then clock = region end
+    if text == "/ 30:00" then total = region end
+end
+check(clock ~= nil, "the panel should show 27:41 remaining")
+check(total ~= nil, "the panel should show the total time as / 30:00")
+
+-- ...and the chest tier, computed rather than taken from Ascension's fields.
+-- 1661 - 0.55*1800 = 671s = 11:11, where Ascension's own TimeLeft3 says 07:41.
+--
+-- Checked as a number with a little slack rather than as an exact string:
+-- without C_MythicPlus to re-read, the clock counts down locally between
+-- refreshes, so by the time the assertions run it is a second or two along.
+-- That drift is the fallback working, not a fault.
+local tierText, tierWindow
+for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+    local text = region.GetText and region:GetText()
+    if text == "+3" then tierText = region end
+    if text and string.match(text, "^%(%d+:%d%d%)$") then tierWindow = text end
+end
+check(tierText ~= nil, "the panel should show +3 as the highest eligible tier")
+check(tierWindow ~= nil, "the +3 window should be drawn beside the tier")
+
+if tierWindow then
+    local minutes, secs = string.match(tierWindow, "(%d+):(%d+)")
+    local seconds = tonumber(minutes) * 60 + tonumber(secs)
+    check(math.abs(seconds - 671) <= 5,
+        "the +3 window should be ~11:11 (1661 - 55% of 1800), not Ascension's "
+        .. "miscomputed 07:41; got " .. tierWindow)
+end
+
+--------------------------------------------------------------------------------
+-- Nothing of Ascension's is left in the header
+--
+-- The affix icon hangs off a child frame rather than the button's own regions,
+-- so a pass over the button's four textures missed it and left an icon in the
+-- panel's top-right corner - which the design deliberately has nothing in.
+--------------------------------------------------------------------------------
+
+check(mplusTracker.MainBlock.Affix1.__icon:GetAlpha() == 0,
+    "the affix icon on a child frame should be faded, not just the button's own art")
+check(mplusTracker.CollapseExpandButton.__normal:GetAlpha() == 0,
+    "the tracker's own collapse button art should be faded")
+
+-- Ascension's own lock button, which /framestack named on the live client as
+-- MythicPlusObjectiveTrackerLockButton. heroPanel has its own lock in the
+-- header's top-left corner, and two locks on one panel is one too many.
+local ascensionLock = mplusTracker.LockButton
+check(ascensionLock.__normal:GetAlpha() == 0,
+    "Ascension's lock button art should be faded")
+check(not ascensionLock:IsMouseEnabled(),
+    "the faded lock button should stop taking the mouse, or it swallows affix hovers")
+
+--------------------------------------------------------------------------------
+-- The expandable row wears heroPanel's chevron
+--------------------------------------------------------------------------------
+
+local expandButton = mplusTracker.ObjectiveBlock.Encounters.CollapseExpandButton
+check(expandButton.__normal:GetAlpha() == 0,
+    "Ascension's expand control art should be faded")
+
+local caret
+for _, child in ipairs(HeroPanelMplusPlate.overlay.__children) do
+    if child.shape == "caretUp" or child.shape == "caretDown" then caret = child end
+end
+check(caret ~= nil, "heroPanel should draw its own chevron on the expandable row")
+check(caret == nil or caret.shape == "caretUp",
+    "an expanded row's chevron should point up, got " .. tostring(caret and caret.shape))
+
+--------------------------------------------------------------------------------
+-- Killing a boss must not strip heroPanel's styling for the rest of the run
+--
+-- Ascension reassigns the font object on a row every time its progress changes,
+-- which threw away heroPanel's font and colour. The panel only redrew on an
+-- event, so a row restyled out from under it stayed Ascension's dark grey on a
+-- dark panel - the text was still there and simply could not be seen, and it
+-- never came back. Every styled row is hooked now, so the change queues a
+-- redraw of its own.
+--------------------------------------------------------------------------------
+
+check(subColour("Marwyn") == "8B8FA3", "Marwyn should start muted")
+
+ENCOUNTERS[202].dead = true                 -- the server commits the kill
+marwyn:SetProgress(1)                       -- the tracker restyles the row
+
+tick(); tick()                              -- heroPanel's hook queues a redraw
+
+check(subColour("Marwyn") == "79C68D",
+    "the panel should follow the kill after Ascension changed the row, got " .. subColour("Marwyn"))
+check(marwyn.Text:GetText() == "Marwyn", "the boss name must survive the kill")
+
+--------------------------------------------------------------------------------
+-- The encounter API outranks the row's stored progress
+--
+-- The tracker is told about a kill before the server has committed it, so its
+-- row reads "not dead" for one more update - which on a live run showed as the
+-- heading counting 3/3 while only two bosses had gone green. The panel re-reads
+-- GetEncounterInfo at draw time, so it is right on the first pass instead of
+-- the second.
+--------------------------------------------------------------------------------
+
+-- The row still says 0/1 and the API says the boss is down: the API wins.
+ENCOUNTERS[201].dead = true
+falric:SetObjective("Falric", 0, 1)         -- the stale value the tracker holds
+tick(); tick()
+check(falric.progress == 0, "the row should still be holding the stale progress")
+check(subColour("Falric") == "79C68D",
+    "a boss the encounter API calls dead should read as slain even while the row lags, got "
+    .. subColour("Falric"))
+
+-- ...and the reverse, so the override cannot invent a kill.
+ENCOUNTERS[201].dead = false
+falric:SetObjective("Falric", 1, 1)
+tick(); tick()
+check(subColour("Falric") ~= "79C68D",
+    "a boss the encounter API says is up must not read as slain, got " .. subColour("Falric"))
+ENCOUNTERS[201].dead = true
+falric:SetObjective("Falric", 1, 1)
+tick(); tick()
+
+-- A completed row wears its kill time, which must not break the name match.
+falric.Text:SetText("Falric (14:46)")
+tick(); tick()
+check(subColour("Falric") == "79C68D",
+    "the kill time Ascension appends must not stop the name matching, got " .. subColour("Falric"))
+falric:SetObjective("Falric", 1, 1)
+tick(); tick()
+
+-- The heading is the row that actually went missing in the run, so it gets its
+-- own check rather than riding on the sub-row's.
+local heading = mplusTracker.ObjectiveBlock.Encounters
+heading:SetObjective("Defeat additional bosses", 2, 2)
+tick(); tick()
+-- Complete, so it is green whether it is expanded or collapsed. Expanded it
+-- used to stay muted, so the same finished run read as unfinished depending on
+-- which way the chevron pointed.
+check(mcolour(heading.Text) == "79C68D",
+    "a completed heading should be green while expanded, got " .. mcolour(heading.Text))
+check(heading.isExpanded, "this check is only meaningful while the row is expanded")
+
+-- The count moves out of the right-aligned counter and into the sentence,
+-- where it reads as part of the heading rather than as a stray number against
+-- the panel's far edge.
+check(heading.Text:GetText() == "Defeat additional bosses (2/2)",
+    "the heading should carry its count inline, got " .. tostring(heading.Text:GetText()))
+check(heading.Counter:GetAlpha() == 0,
+    "the heading's right-aligned counter should be faded once the count is inline")
+
+-- ...and only once there is something to count.
+heading:SetObjective("Defeat additional bosses", 0, 6)
+tick(); tick()
+check(heading.Text:GetText() == "Defeat additional bosses",
+    "no count should be shown before the first extra boss dies, got "
+    .. tostring(heading.Text:GetText()))
+
+heading:SetObjective("Defeat additional bosses", 1, 6)
+tick(); tick()
+check(heading.Text:GetText() == "Defeat additional bosses (1/6)",
+    "the count should appear on the first kill, got " .. tostring(heading.Text:GetText()))
+
+-- The rewrite must not compound: reading the row back gives the raw string.
+tick(); tick()
+check(heading.Text:GetText() == "Defeat additional bosses (1/6)",
+    "a second pass must not stack a second count, got " .. tostring(heading.Text:GetText()))
+
+--------------------------------------------------------------------------------
+-- Sizes make a hierarchy, and a completed boss is a check mark
+--------------------------------------------------------------------------------
+
+local function msize(fontString) return fontString.__font and fontString.__font[2] end
+
+-- Against the configured base rather than fixed numbers, because /hp font
+-- moves all three together and an earlier test in this run changes it.
+check(msize(finalRow.Text) == ns.GetFontSize(1.5),
+    "the required boss should be title-sized, got " .. tostring(msize(finalRow.Text)))
+check(msize(heading.Text) == ns.GetFontSize(0.5),
+    "the extra-bosses heading should sit a step under it, got " .. tostring(msize(heading.Text)))
+check(msize(subRow("Falric")) == ns.GetFontSize(-1),
+    "a boss row should be body text, got " .. tostring(msize(subRow("Falric"))))
+check(msize(finalRow.Text) > msize(heading.Text)
+      and msize(heading.Text) > msize(subRow("Falric")),
+    "the three sizes have to descend for the block to read as a hierarchy")
+
+-- No "slain" text any more: the check mark says it.
+local slain
+for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+    if region.GetText and region:GetText() == "slain" then slain = region end
+end
+check(slain == nil or not slain:IsShown(),
+    "a completed boss should be marked by the check alone, with no status text")
+
+--------------------------------------------------------------------------------
+-- A long miniboss list is windowed and scrolls
+--
+-- Lower Blackrock Spire offers fifteen candidates for a requirement of five,
+-- which made a panel taller than the screen.
+--------------------------------------------------------------------------------
+
+local LONG = { "Mor Grayhoof", "Burning Felguard", "Ghok Bashguud", "Crystal Fang",
+               "Bannok Grimaxe", "Spirestone Lord Magus", "Spirestone Battle Lord",
+               "Spirestone Butcher", "Highlord Omokk", "Shadow Hunter Voshgajin",
+               "War Master Voone", "Mother Smolderweb", "Urok Doomhowl",
+               "Quartermaster Zigris", "Halycon" }
+
+local heightBefore = HeroPanelMplusPlate:GetHeight()
+
+local longRows = {}
+for i, name in ipairs(LONG) do
+    longRows[i] = BuildObjectiveRow(mplusTracker.ObjectiveBlock.Encounters,
+        "MplusLong" .. i, name, 0, 1, 438 - (i - 1) * 16)
+end
+mplusTracker.ObjectiveBlock.Encounters.buttons = longRows
+ns.Mplus.Refresh("test: long list")
+tick(); tick()
+
+local function visibleSubRows()
+    local n = 0
+    for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+        local text = region.GetText and region:GetText()
+        if text and region:IsShown() then
+            for _, name in ipairs(LONG) do
+                if text == name then n = n + 1 break end
+            end
+        end
+    end
+    return n
+end
+
+check(visibleSubRows() == 6,
+    "a fifteen-boss list should be windowed to six rows, got " .. visibleSubRows())
+
+local heightWindowed = HeroPanelMplusPlate:GetHeight()
+check(heightWindowed < heightBefore + 15 * 15,
+    "the panel must not grow a row per candidate; height " .. tostring(heightWindowed))
+
+-- The window starts at the top of the list.
+check(subRow("Mor Grayhoof") ~= nil, "the first boss should be visible before scrolling")
+check(subRow("Halycon") == nil, "the last boss should be out of the window before scrolling")
+
+-- Scrolling moves the window, and the panel does not change size doing it.
+local wheel
+for _, child in ipairs(HeroPanelMplusPlate.__children) do
+    if child.IsMouseWheelEnabled and child:IsMouseWheelEnabled() then wheel = child end
+end
+check(wheel ~= nil, "there should be a wheel catcher over the list")
+check(wheel ~= nil and not wheel:IsMouseEnabled(),
+    "the wheel catcher must not take the mouse, or it swallows drags on the tracker")
+
+if wheel then
+    local onWheel = wheel:GetScript("OnMouseWheel")
+    check(onWheel ~= nil, "the wheel catcher needs a handler")
+
+    onWheel(wheel, -1)                      -- one row down
+    tick(); tick()
+    check(subRow("Mor Grayhoof") == nil, "scrolling down should move the first boss out of view")
+    check(visibleSubRows() == 6, "the window stays six rows while scrolling")
+    check(HeroPanelMplusPlate:GetHeight() == heightWindowed,
+        "scrolling must not resize the panel")
+
+    for _ = 1, 40 do onWheel(wheel, -1) end  -- far past the end
+    tick(); tick()
+    check(subRow("Halycon") ~= nil, "scrolling to the end should reach the last boss")
+    check(visibleSubRows() == 6, "the window must not run off the end of the list")
+
+    for _ = 1, 40 do onWheel(wheel, 1) end   -- and back past the start
+    tick(); tick()
+    check(subRow("Mor Grayhoof") ~= nil, "scrolling back should return to the first boss")
+    check(visibleSubRows() == 6, "the window must not run off the start of the list")
+end
+
+-- Back to the short list for the checks that follow.
+mplusTracker.ObjectiveBlock.Encounters.buttons = { falric, marwyn }
+for _, row in ipairs(longRows) do row:Hide() end
+ns.Mplus.Refresh("test: short list")
+tick(); tick()
+check(visibleSubRows() == 0, "the long list should be gone once its rows are")
+
+--------------------------------------------------------------------------------
+-- Affixes
+--
+-- Drawn as heroPanel's own buttons from the keystone's affix spell IDs, in the
+-- header's top-right corner, each with the game's tooltip on hover.
+--------------------------------------------------------------------------------
+
+local affixButtons = {}
+for _, child in ipairs(HeroPanelMplusPlate.__children) do
+    if child.affixID then table.insert(affixButtons, child) end
+end
+
+if MINIMAL then
+    -- No C_MythicPlus, so no affix list to read; the row is simply absent
+    -- rather than the panel failing.
+    check(#affixButtons == 0, "with no keystone API there is nothing to draw affixes from")
+else
+    check(#affixButtons == 3,
+        "the keystone's three affixes should be drawn, got " .. #affixButtons)
+
+    table.sort(affixButtons, function(a, b) return a:GetRight() > b:GetRight() end)
+
+    check(affixButtons[1]:GetRight() <= HeroPanelMplusPlate:GetRight(),
+        "affixes belong inside the panel's right edge")
+    check(affixButtons[1]:GetTop() > HeroPanelMplusPlate:GetTop() - 30,
+        "affixes belong in the header row")
+    check(affixButtons[1]:GetRight() > affixButtons[2]:GetRight(),
+        "affixes should lay out right to left, first one outermost")
+    check(affixButtons[1].icon:GetTexture() == "Interface\\Icons\\affix_1001",
+        "the affix icon should come from GetSpellInfo, got "
+        .. tostring(affixButtons[1].icon:GetTexture()))
+    check(affixButtons[1]:IsMouseEnabled(), "an affix needs the mouse for its tooltip")
+
+    -- The tooltip is the whole reason these take the mouse, so it has to run.
+    local enter = affixButtons[1]:GetScript("OnEnter")
+    check(enter ~= nil, "an affix should have a tooltip handler")
+    if enter then
+        local ok = pcall(enter, affixButtons[1])
+        check(ok, "hovering an affix must not error")
+    end
+end
+
+--------------------------------------------------------------------------------
+-- Disable puts Ascension's tracker back
+--------------------------------------------------------------------------------
+
+ns.Mplus.Disable()
+check(mplusTracker.HeaderText:GetAlpha() == 1, "disabling should restore the header text")
+check(mplusTracker.MainBlock.TimeLeft:GetAlpha() == 1, "disabling should restore the clock")
+check(mplusTracker.MainBlock.Affix1.__normal:GetAlpha() == 1, "disabling should restore affix art")
+check(mplusTracker.LockButton.__normal:GetAlpha() == 1, "disabling should restore Ascension's lock art")
+check(mplusTracker.LockButton:IsMouseEnabled(),
+    "disabling should give Ascension's lock button its mouse back")
+check(falric.Icon:GetAlpha() == 1, "disabling should restore the boss icon")
+check(falric.Counter:GetAlpha() == 1, "disabling should restore the boss counter")
+check(HeroPanelMplusPlate:IsShown() == false, "disabling should hide the panel")
+
+ns.Mplus.Enable()
+tick(); tick()
+check(HeroPanelMplusPlate:IsShown(), "re-enabling should bring the panel back")
+check(mplusTracker.HeaderText:GetAlpha() == 0, "re-enabling should fade the header text again")
+
+-- The reports have to work whether or not a keystone is running.
+ns.Mplus.Dump()
+ns.Mplus.PrintStatus()
 
 --------------------------------------------------------------------------------
 -- Report
