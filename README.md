@@ -8,7 +8,7 @@ readable header, better fonts and colours, and lets you drag them anywhere on
 screen and lock them there. Everything is configured in an in-game options
 window, and changes apply immediately — no reloading to see what a setting did.
 
-> **Pre-release (0.1.0).** Feature complete and playable, but still being
+> **Pre-release (0.2.0).** Feature complete and playable, but still being
 > tested. See [Updating](#updating) for what happens to your settings between
 > pre-release builds.
 
