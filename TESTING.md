@@ -159,7 +159,7 @@ of the current face. Known, and not worth fixing: the command is being removed.
 - [x] The lock button's gradient runs light at the top to dark at the bottom
 - [x] The toggle knobs are visible and sit at the right end when on, left when
       off
-- [x] Every label is legible against the accent-tinted "Enable skin" row
+- [x] Every label is legible against the accent-tinted enable row
 
 New, because the body scrolls now:
 
@@ -167,7 +167,7 @@ New, because the body scrolls now:
       a couple of notches up — UIParent is 768 units tall at the default scale
       and *shorter* than that above it, which is the case the old fixed-height
       window did not survive
-- [ ] The header, the **Enable skin** row and the footer stay put while the body
+- [ ] The header, the **enable** rows and the footer stay put while the body
       scrolls under them. The enable row is deliberately outside the scroll: it
       is the escape hatch and must never need scrolling to
 - [ ] Mouse wheel scrolls the body, and stops at both ends rather than running
@@ -183,6 +183,24 @@ New, because the body scrolls now:
       labels as each other
 - [ ] The header reads **heroPanel** over **M+ and Objective tracker skin ·
       v0.1.0**
+
+New, because the one enable switch became two:
+
+- [ ] The fixed block under the header carries **Objective panel skin** and
+      **M+ panel skin**, each with its own toggle, and both are fully inside the
+      accent-tinted row rather than running off its bottom edge
+- [ ] Turning **M+ panel skin** off gives Ascension's own Mythic+ tracker back and
+      **leaves the quest tracker skinned**, and the other way round. That is the
+      whole reason the flag was split: comparing one panel against the addon it
+      is drawn over used to mean losing the other one too
+- [ ] The status pill reads **ENABLED** with both on, **PARTIAL** with one, and
+      **DISABLED** with neither
+- [ ] `/hp skin off` still turns **both** off, and `/hp skin on` both on — it is
+      the escape hatch, and the pill and both toggles follow it live
+- [ ] Under **QUEST TRACKER**, **Hide when empty** takes the whole quest panel
+      off screen once nothing is being tracked — header, plate and all, with
+      Blizzard's own header staying hidden rather than reappearing in its place —
+      and brings it straight back the moment a quest is tracked again
 - [ ] The padlock in the top-left corner is noticeably bigger, and the accent
       tile behind it is the same size it was
 

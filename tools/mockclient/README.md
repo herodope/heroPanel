@@ -89,7 +89,8 @@ The window is built, opened, measured, clicked through and reset:
 * the font dropdown lists a face registered after boot, and picking it changes
   the file the trackers draw with
 * escape-to-close registers exactly once however many times the window opens
-* the enable toggle restores and re-applies the skin in both directions
+* each enable toggle restores and re-applies its own panel in both directions,
+  and leaves the other panel alone
 * Reset restores the defaults *and* re-applies them
 
 Alongside it: a combat cycle with both panels up and the window open, a second

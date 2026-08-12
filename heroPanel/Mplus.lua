@@ -106,6 +106,25 @@ local SUB_INDENT      = 12    -- the list sits in from the heading above it
 local FOOTER_TOP      = 9     -- gap between the last boss row and the rule
 local FOOTER_HEIGHT   = 18
 
+-- Font steps inside the Mythic+ body role, as deltas rather than sizes: the
+-- role's size is the player's, and these are the proportions the design puts on
+-- one string relative to the rest of it.
+--
+-- The total is four points over what it was. "/ 30:00" is the run's whole
+-- budget, which is the number the clock beside it is read *against*, and at a
+-- point under the body text it read as a footnote to the clock rather than as
+-- the other half of the same fact. Its slash goes up with it, because the
+-- separator is part of that string rather than a piece of punctuation between
+-- two of them.
+--
+-- The threshold pair is at the body size exactly. It was a point under, which
+-- is the step the enemy-forces row takes, but that row is a label over a bar
+-- and this one is the panel's second-most-read number - and the options
+-- window's own sublabel promises the body size governs the chest tiers, so it
+-- may as well govern them literally.
+local TOTAL_DELTA     = 3
+local TIER_DELTA      = 0
+
 local PULSE_PERIOD    = 1.6
 local PULSE_MIN       = 0.35
 local TICK_INTERVAL   = 0.25  -- how often the clock, bar and tier are redrawn
@@ -233,6 +252,10 @@ local SHORT_NAMES = {
     { "Deadmines",      "Deadmines", "The Deadmines" },
     { "Stockades",      "Stormwind Stockades", "The Stockade", "The Stockades" },
 
+    { "WC",         "Wailing Caverns", "The Wailing Caverns" },
+    { "WC - Crag",  "Wailing Caverns - Crag of the Everliving",
+                    "WC Crag of the Everliving", "Wailing Caverns Crag" },
+
     { "SM - Graveyard", "Scarlet Monastery - Graveyard", "SM Graveyard" },
     { "SM - Library",   "Scarlet Monastery - Library",   "SM Library" },
     { "SM - Armory",    "Scarlet Monastery - Armory",    "SM Armory" },
@@ -316,6 +339,9 @@ local Refresh
 local ticker
 local pulse    = 0
 local lastRead                  -- what the last refresh resolved, for /hp mplus
+-- The size the threshold pair was last drawn at. See ApplyTierFont, which is
+-- the only thing that writes it; StyleStatic clears it.
+local tierSize
 
 function mplus.GetPlate() return plate end
 
@@ -1203,6 +1229,11 @@ local function StyleStatic()
 
     ns.StylePlateChrome(plate, ns.PanelStyle("mplus"))
 
+    -- The threshold pair is sized by the row that draws it rather than here.
+    -- Dropping the cache is how a face or shadow change reaches it, since
+    -- neither of those moves the size the cache is keyed on.
+    tierSize = nil
+
     local font = ns.GetFontFile()
 
     local ir, ig, ib = ns.HexToRGB(ns.PALETTE.icon)
@@ -1224,15 +1255,13 @@ local function StyleStatic()
     ui.time:SetTextColor(br, bg, bb, 1)
 
     local dr, dg, db = ns.HexToRGB(ns.PALETTE.icon)
-    ui.total:SetFont(font, ns.GetFontSize(-1, "mplusBody"))
+    ui.total:SetFont(font, ns.GetFontSize(TOTAL_DELTA, "mplusBody"))
     ui.total:SetTextColor(dr, dg, db, 1)
 
     local cr, cg, cb = ns.HexToRGB(ns.PALETTE.chest)
-    ui.tier:SetFont(font, ns.GetFontSize(-1, "mplusBody"))
     ui.tier:SetTextColor(cr, cg, cb, 1)
 
     local tr, tg, tb = ns.HexToRGB(ns.PALETTE.chestTime)
-    ui.tierTime:SetFont(font, ns.GetFontSize(-1, "mplusBody"))
     ui.tierTime:SetTextColor(tr, tg, tb, 1)
 
     local hr, hg, hb = ns.HexToRGB(ns.PALETTE.hairline)
@@ -1359,9 +1388,38 @@ local function TimerBarBottom()
              + TIMER_ROW_H + gap.bar + BAR_HEIGHT)
 end
 
+-- The threshold pair's size, applied where the row is drawn rather than in
+-- StyleStatic with the rest of the panel's fonts.
+--
+-- Everything else on the panel is styled once per restyle and laid out once per
+-- refresh, and for those two the split is right. This row is the exception: it
+-- is redrawn four times a second off the clock ticker, and it is the one part of
+-- the panel that can be on screen through a whole run without a restyle ever
+-- reaching it. Sizing it here means the configured size cannot be left behind by
+-- a Restyle that ran while the plate did not yet exist, which is the ordinary
+-- state of things when the options window is opened outside a dungeon.
+--
+-- The cache is what makes that affordable: SetFont is only called when the
+-- answer has actually changed, so the ticker's cost is one comparison. It is
+-- dropped by StyleStatic, because a restyle can change the face or the shadow
+-- without changing the size.
+local function ApplyTierFont()
+    local wanted = ns.GetFontSize(TIER_DELTA, "mplusBody")
+    if wanted == tierSize then return end
+    tierSize = wanted
+
+    local font = ns.GetFontFile()
+    ui.tier:SetFont(font, wanted)
+    ui.tierTime:SetFont(font, wanted)
+    ns.ApplyTextShadow(ui.tier, "mplus")
+    ns.ApplyTextShadow(ui.tierTime, "mplus")
+end
+
 -- The timer row, the bar and its ticks. Split out because it is the only part
 -- of the panel that is redrawn on the clock ticker rather than on a refresh.
 local function LayoutTimer(data, width)
+    ApplyTierFont()
+
     -- Below the affix row when there is one, so the timer keeps the design's
     -- distance from whatever the header block ended up being.
     local rowTop = -(HEADER_HEIGHT + affixRowHeight + gap.timerRow)
@@ -1372,8 +1430,21 @@ local function LayoutTimer(data, width)
     ui.time:ClearAllPoints()
     ui.time:SetPoint("BOTTOMLEFT", ui.timerGlyph, "BOTTOMRIGHT", 6, -2)
 
+    -- Baselines, not boxes.
+    --
+    -- A FontString's bottom edge is the bottom of its descender, which is
+    -- proportional to its size, so bottom-aligning two strings of different
+    -- sizes leaves the smaller one sitting low by about a fifth of the
+    -- difference. This was a flat 3px, which was right for the 24/11 pair the
+    -- row used to be and wrong for every other one - and at the defaults the
+    -- gap between the two has gone from thirteen points to three. Working it out
+    -- from the sizes themselves keeps the two clocks reading off one line
+    -- whatever they are set to.
+    local lift = math.max(0, (ns.GetFontSize(0, "mplusTimer")
+                              - ns.GetFontSize(TOTAL_DELTA, "mplusBody")) * 0.2)
+
     ui.total:ClearAllPoints()
-    ui.total:SetPoint("BOTTOMLEFT", ui.time, "BOTTOMRIGHT", 6, 3)
+    ui.total:SetPoint("BOTTOMLEFT", ui.time, "BOTTOMRIGHT", 6, lift)
 
     ui.time:SetText(Clock(data.timeLeft))
     ui.total:SetText("/ " .. Clock(data.totalTime))
@@ -1556,7 +1627,14 @@ end
 --
 -- The tracker draws "Defeat Additional Bosses" with a right-aligned "1/6"
 -- against the panel's far edge, which reads as an unrelated number. The design
--- wants it in the sentence, and only once there is something to count.
+-- wants it in the sentence.
+--
+-- It used to be held back until the first extra boss died, on the reasoning
+-- that "(0/4)" is a count of nothing. That was wrong, and wrong about the more
+-- useful half: the denominator is how many of these the key needs, and needing
+-- to know that is at its most acute *before* any of them are dead - it is what
+-- decides whether the group detours for them at all. Withholding it until the
+-- first kill meant the number arrived after the decision it informs.
 --
 -- Rewriting a tracker string is the one thing in here that changes what the
 -- game drew, so it follows Lines.lua's rule for the same move: the original is
@@ -1575,7 +1653,7 @@ local function SetHeadingText(fontString, raw, progress, maximum)
     -- is what Restore hands back, what RawText recovers and what the encounter
     -- states are matched by name against.
     local shown = (string.gsub(raw, "^[Dd]efeat%s+", ""))
-    if progress and maximum and maximum > 0 and progress > 0 then
+    if progress and maximum and maximum > 0 then
         shown = string.format("%s (%d/%d)", shown, progress, maximum)
     end
 
@@ -2298,7 +2376,7 @@ end
 ns:On("HEROPANEL_TRACKER_FOUND", function(key)
     if key ~= "mplus" then return end
     if not ns.db then ns.InitDB() end
-    if ns.db.enabled then mplus.Enable() end
+    if ns.SkinEnabled("mplus") then mplus.Enable() end
 end)
 
 ns:On("HEROPANEL_LOCK_CHANGED", function()

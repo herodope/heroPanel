@@ -1649,7 +1649,8 @@ combat = false
 ns.Skin.SetEnabled(false)
 tick(); tick()
 
-check(HEROPANEL_DB.enabled == false, "the flag should be stored")
+check(HEROPANEL_DB.skin.watch == false, "the flag should be stored")
+check(HEROPANEL_DB.skin.mplus == false, "...for both panels, which is what /hp skin means")
 check(plate:IsShown() == false, "plate should be hidden when the skin is off")
 check(titleFS:GetAlpha() == 1, "Blizzard title should be back")
 check(collapseBtn.__normal:GetAlpha() == 1, "collapse button art should be back")
@@ -2151,6 +2152,8 @@ local EXPECTED = {
     { "Ragefire Chasm",                "Ragefire Chasm" },
     { "Deadmines",                     "Deadmines" },
     { "Stormwind Stockades",           "Stockades" },
+    { "Wailing Caverns",               "WC" },
+    { "Wailing Caverns - Crag of the Everliving", "WC - Crag" },
     { "Scarlet Monastery - Graveyard", "SM - Graveyard" },
     { "Scarlet Monastery - Library",   "SM - Library" },
     { "Scarlet Monastery - Armory",    "SM - Armory" },
@@ -2400,17 +2403,20 @@ check(heading.Text:GetText() == "additional bosses (2/2)",
 check(heading.Counter:GetAlpha() == 0,
     "the heading's right-aligned counter should be faded once the count is inline")
 
--- ...and only once there is something to count.
+-- ...including before the first one dies. The count was held back until then
+-- and that hid the half that matters most early: the denominator is how many
+-- the key needs, which is what decides whether the group detours for them at
+-- all, and it arrived after that decision rather than before it.
 heading:SetObjective("Defeat additional bosses", 0, 6)
 tick(); tick()
-check(heading.Text:GetText() == "additional bosses",
-    "no count should be shown before the first extra boss dies, got "
+check(heading.Text:GetText() == "additional bosses (0/6)",
+    "the requirement should be shown before any extra boss dies, got "
     .. tostring(heading.Text:GetText()))
 
 heading:SetObjective("Defeat additional bosses", 1, 6)
 tick(); tick()
 check(heading.Text:GetText() == "additional bosses (1/6)",
-    "the count should appear on the first kill, got " .. tostring(heading.Text:GetText()))
+    "...and count up from there, got " .. tostring(heading.Text:GetText()))
 
 -- The rewrite must not compound: reading the row back gives the raw string.
 tick(); tick()
@@ -2425,11 +2431,11 @@ local function msize(fontString) return fontString.__font and fontString.__font[
 
 -- Against the configured base rather than fixed numbers, because /hp font
 -- moves all three together and an earlier test in this run changes it.
-check(msize(finalRow.Text) == ns.GetFontSize(1.5, "mplus"),
+check(msize(finalRow.Text) == ns.GetFontSize(1.5, "mplusBody"),
     "the required boss should be title-sized, got " .. tostring(msize(finalRow.Text)))
-check(msize(heading.Text) == ns.GetFontSize(0, "mplus"),
+check(msize(heading.Text) == ns.GetFontSize(0, "mplusBody"),
     "the extra-bosses heading should sit a step under it, got " .. tostring(msize(heading.Text)))
-check(msize(subRow("Falric")) == ns.GetFontSize(-1, "mplus"),
+check(msize(subRow("Falric")) == ns.GetFontSize(-1, "mplusBody"),
     "a boss row should be body text, got " .. tostring(msize(subRow("Falric"))))
 check(msize(finalRow.Text) > msize(heading.Text)
       and msize(heading.Text) > msize(subRow("Falric")),
@@ -3189,7 +3195,8 @@ do
 
     ns.Skin.SetEnabled(false)
     tick(); tick()
-    check(not ns.db.enabled, "disabling should write the store")
+    check(not ns.SkinEnabled("watch"), "disabling should write the store")
+    check(not ns.SkinEnabled("mplus"), "...for both panels")
     check(not HeroPanelWatchPlate:IsShown(), "disabling should hide the quest panel")
     check(not HeroPanelMplusPlate:IsShown(), "disabling should hide the Mythic+ panel too")
     check(colourOf(watchTitle) ~= skinnedColour,
@@ -3198,10 +3205,70 @@ do
     ns.Options.Sync()
     ns.Skin.SetEnabled(true)
     tick(); tick()
-    check(ns.db.enabled, "re-enabling should write the store")
+    check(ns.SkinEnabled("watch"), "re-enabling should write the store")
     check(HeroPanelWatchPlate:IsShown(), "re-enabling should bring the quest panel back")
     check(colourOf(watchTitle) == skinnedColour,
         "re-enabling should put the skin's colour back, got " .. tostring(colourOf(watchTitle)))
+end
+
+-- ...and the two panels are independent, which is the whole point of splitting
+-- the one flag in two. Turning the Mythic+ panel off to compare it against
+-- Ascension's own tracker must leave the quest tracker alone.
+do
+    ns.SetSkinEnabled("mplus", false)
+    tick(); tick()
+    check(not ns.SkinEnabled("mplus"), "the Mythic+ flag should be written on its own")
+    check(ns.SkinEnabled("watch"), "...without touching the objective tracker's")
+    check(not HeroPanelMplusPlate:IsShown(), "the Mythic+ panel should be gone")
+    check(HeroPanelWatchPlate:IsShown(), "...and the quest panel still there")
+
+    ns.SetSkinEnabled("mplus", true)
+    tick(); tick(); tick()
+    check(HeroPanelMplusPlate:IsShown(), "the Mythic+ panel should come back on its own")
+
+    ns.SetSkinEnabled("watch", false)
+    tick(); tick()
+    check(not HeroPanelWatchPlate:IsShown(), "the quest panel should go on its own")
+    check(HeroPanelMplusPlate:IsShown(), "...leaving the Mythic+ panel up")
+
+    ns.SetSkinEnabled("watch", true)
+    tick(); tick(); tick()
+    check(HeroPanelWatchPlate:IsShown(), "...and come back")
+    ns.Options.Sync()
+end
+
+-- Nothing tracked, nothing drawn. Off by default, so the panel is up over an
+-- empty tracker until the setting says otherwise.
+--
+-- Full client only: with no GetNumQuestWatches the count falls back to the
+-- blocks the line walk found, and the mock's tracker always has three of them.
+-- That fallback is a real path and it is exercised by the badge test; there is
+-- just no way to drive it to zero from here without dismantling the tracker.
+if not MINIMAL then
+    local watched = questWatches
+    questWatches = 0
+    ns.Skin.Refresh("harness: nothing tracked")
+    tick(); tick()
+    check(HeroPanelWatchPlate:IsShown(),
+        "an empty tracker keeps its panel while hide-when-empty is off")
+
+    ns.db.header.hideEmpty = true
+    ns.Skin.Refresh("harness: hide when empty")
+    tick(); tick()
+    check(not HeroPanelWatchPlate:IsShown(),
+        "hide-when-empty should take the whole panel off, not just the header")
+    check(titleFS:GetAlpha() == 0,
+        "...and leave Blizzard's own header faded rather than swapping one for the other")
+
+    questWatches = watched
+    ns.Skin.Refresh("harness: tracking again")
+    tick(); tick()
+    check(HeroPanelWatchPlate:IsShown(),
+        "tracking a quest again should bring the panel straight back")
+
+    ns.db.header.hideEmpty = false
+    ns.Skin.Refresh("harness: hide-when-empty off")
+    tick(); tick()
 end
 
 -- Reset puts the defaults back and re-applies them, rather than only writing
@@ -3228,7 +3295,8 @@ do
     check(ns.db.font.size.mplus == ns.defaults.font.size.mplus,
         "...and the Mythic+ size, got " .. tostring(ns.db.font.size.mplus))
     check(ns.db.header.show == true, "reset should restore the header")
-    check(ns.db.enabled == true, "reset should leave the skin enabled")
+    check(ns.SkinEnabled("watch") and ns.SkinEnabled("mplus"),
+        "reset should leave both skins enabled")
 
     local _, titleAfterReset = trackerLines[1].__text:GetFont()
     check(titleAfterReset == ns.GetFontSize(0, "watchTitle"),
@@ -4073,16 +4141,16 @@ do
     ns.InitDB()
     local said = table.concat(log, "\n", before + 1)
 
-    check(ns.db.enabled == true,
-        "a store from an older shape should be discarded, not merged; enabled came back "
-        .. tostring(ns.db.enabled))
+    check(ns.SkinEnabled("watch") and ns.SkinEnabled("mplus"),
+        "a store from an older shape should be discarded, not merged; the skin flags came back "
+        .. tostring(ns.db.skin and ns.db.skin.watch))
     check(ns.db.font.face == ns.DEFAULT_FONT_FACE,
         "...so its font face is gone too, got " .. tostring(ns.db.font.face))
     check(ns.db.bg.color == nil and ns.db.border == nil and ns.db.radius == nil,
         "...and none of the old keys survive to confuse the next reader")
     check(ns.db.panel.watch.bgColor == ns.defaults.panel.watch.bgColor,
         "...and the new shape is filled in from the defaults")
-    check(ns.db.dbVersion == 4, "...and stamped, so it is not discarded twice")
+    check(ns.db.dbVersion == ns.DB_VERSION, "...and stamped, so it is not discarded twice")
     check(string.find(said, "older build", 1, true) ~= nil,
         "throwing settings away is not something to do silently, got:\n" .. said)
 
@@ -4118,15 +4186,16 @@ do
     before = #log
     ns.InitDB()
     said = table.concat(log, "\n", before + 1)
-    check(ns.db.dbVersion == 4, "a fresh store is stamped")
+    check(ns.db.dbVersion == ns.DB_VERSION, "a fresh store is stamped")
     check(string.find(said, "older build", 1, true) == nil,
         "...and says nothing about being reset, got:\n" .. said)
 
     -- A current store is left exactly alone, which is the case that runs every
     -- login and the one a too-eager rule would quietly destroy.
-    HEROPANEL_DB = { dbVersion = 4, enabled = false, font = { face = "Kept Face" } }
+    HEROPANEL_DB = { dbVersion = ns.DB_VERSION, skin = { watch = false },
+                     font = { face = "Kept Face" } }
     ns.InitDB()
-    check(ns.db.enabled == false and ns.db.font.face == "Kept Face",
+    check(ns.db.skin.watch == false and ns.db.font.face == "Kept Face",
         "a store stamped for this build must survive untouched")
 
     HEROPANEL_DB = saved
@@ -4302,12 +4371,17 @@ do
     local ok, err = pcall(ns.InitDB)
     check(ok, "a fresh install must initialise without error: " .. tostring(err))
     check(type(HEROPANEL_DB) == "table", "InitDB should create the store")
-    check(HEROPANEL_DB.enabled == true, "a fresh store is enabled")
+    check(HEROPANEL_DB.skin.watch == true and HEROPANEL_DB.skin.mplus == true,
+        "a fresh store skins both panels")
+    check(HEROPANEL_DB.header.hideEmpty == false,
+        "...and keeps the quest panel up over an empty tracker")
     check(HEROPANEL_DB.font.face == ns.DEFAULT_FONT_FACE, "a fresh store gets the default face")
     check(HEROPANEL_DB.font.size.watchBody == 12, "a fresh store gets the design's 12px body")
     check(HEROPANEL_DB.font.size.watchTitle == 14, "...with the quest names two points over it")
     check(HEROPANEL_DB.font.size.watchHeader == 16, "...and the header row over both")
-    check(HEROPANEL_DB.font.size.mplusTimer == 24, "...and the Mythic+ clock at its own size")
+    check(HEROPANEL_DB.font.size.mplusTimer == 20, "...and the Mythic+ clock at its own size")
+    check(HEROPANEL_DB.font.size.mplusHeader == 14 and HEROPANEL_DB.font.size.mplusBody == 14,
+        "...with the Mythic+ header and body matched to each other")
     check(HEROPANEL_DB.panel.watch.bgColor == ns.defaults.panel.watch.bgColor,
         "a fresh store gets a chrome block for each panel")
     check(HEROPANEL_DB.panel.watch.radius == 0 and HEROPANEL_DB.panel.mplus.radius == 0,
@@ -4323,13 +4397,15 @@ do
     -- after a small change looks like. A missing sub-table and a sub-table with
     -- a missing key are different shapes and it has to survive both.
     HEROPANEL_DB = {
-        dbVersion = 4,
-        enabled   = false,
+        dbVersion = ns.DB_VERSION,
+        skin      = { watch = false },
         font      = { size = { watchBody = 15 } },
     }
     local ok2, err2 = pcall(ns.InitDB)
     check(ok2, "a partial store must be filled in without error: " .. tostring(err2))
-    check(HEROPANEL_DB.enabled == false, "an existing value must not be clobbered")
+    check(HEROPANEL_DB.skin.watch == false, "an existing value must not be clobbered")
+    check(HEROPANEL_DB.skin.mplus == true,
+        "...and a missing key beside it is filled in, got " .. tostring(HEROPANEL_DB.skin.mplus))
     check(HEROPANEL_DB.font.size.watchBody == 15,
         "...nor an existing font size, got " .. tostring(HEROPANEL_DB.font.size.watchBody))
     check(HEROPANEL_DB.font.size.watchTitle == ns.defaults.font.size.watchTitle,

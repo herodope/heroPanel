@@ -73,7 +73,8 @@ local GROUP_LABEL_H = 26   -- and the label itself, which is set over body size
 local ROW_HEIGHT    = 28
 local SLIDER_HEIGHT = 34
 local FOOTER_HEIGHT = 44
-local ENABLE_HEIGHT = 48
+-- Two rows now, one switch per panel. See the note on the enable block below.
+local ENABLE_HEIGHT = 92
 
 -- The scrollbar sits in the right margin, clear of the controls: they anchor
 -- PAD_X in and it is inset less than half that.
@@ -1170,6 +1171,19 @@ local function Build()
     -- escape hatch - the control whose whole purpose is being reachable when
     -- something else has gone wrong - and one you have to go looking for is not
     -- that.
+    --
+    -- One switch per panel. It was a single "Enable skin" covering both, and
+    -- that made the commonest thing anybody wants to do with a skin - see what
+    -- the panel looks like without it - impossible to do to one panel at a
+    -- time: turning the Mythic+ panel off to compare it against Ascension's own
+    -- tracker also handed the quest tracker back to Blizzard. They are two
+    -- panels over two different addons' frames and the rest of this window has
+    -- already split along that line, so the escape hatch splits too.
+    --
+    -- Both stay in the fixed block rather than moving down into each panel's
+    -- own group. A switch that turns a panel off is not a setting of that panel
+    -- in the way its background colour is, and burying either one behind a
+    -- scroll is exactly what the block exists to avoid.
     ------------------------------------------------------------------
 
     local y = HEADER_HEIGHT + 12
@@ -1187,19 +1201,27 @@ local function Build()
     enableRow:SetHeight(ENABLE_HEIGHT)
     Chrome(enableRow, BoxStyle(ACCENT, 0.07, ACCENT, 0.25, 8))
 
-    NewToggle(enableRow, 16, "Enable skin", "Off = default Blizzard look (debug)",
-        function() return ns.db.enabled end,
-        function(value)
-            if ns.Skin and ns.Skin.SetEnabled then
-                -- SetEnabled is the single entry point for the flag: it writes
-                -- the store, restores or re-applies the quest skin, and drives
-                -- the Mythic+ half from the same call. No reload either way.
-                ns.Skin.SetEnabled(value)
-            else
-                ns.db.enabled = value and true or false
-            end
-            options.Sync()
-        end, 8)
+    -- ns.SetSkinEnabled is the single entry point for either flag: it writes the
+    -- store and restores or re-applies that panel on the spot. No reload either
+    -- way, and no way for one of the two to be written without the other being
+    -- consulted.
+    -- rowY, not y: the enable rows are placed inside their own frame and must
+    -- not disturb the running y this function builds the rest of the window on.
+    local function EnableToggle(rowY, key, label, sublabel)
+        NewToggle(enableRow, rowY, label, sublabel,
+            function() return ns.SkinEnabled(key) end,
+            function(value)
+                if ns.SetSkinEnabled then
+                    ns.SetSkinEnabled(key, value)
+                elseif type(ns.db.skin) == "table" then
+                    ns.db.skin[key] = value and true or false
+                end
+                options.Sync()
+            end, 8)
+    end
+
+    EnableToggle(12, "watch", "Objective panel skin", "Off = Blizzard's own quest tracker")
+    EnableToggle(50, "mplus", "M+ panel skin",        "Off = Ascension's own Mythic+ tracker")
 
     local bodyTop = y - 8 + ENABLE_HEIGHT + GROUP_GAP
 
@@ -1278,6 +1300,19 @@ local function Build()
         "objectives, descriptions and their counts")
 
     y = ShadowGroup(body, y, "watch")
+
+    -- Nothing tracked, nothing drawn.
+    --
+    -- With no quests being followed the skin is a header reading "QUESTS 0" and
+    -- a plate around an empty column. This takes the whole thing off screen
+    -- rather than just the header row, because a bare plate with no header on it
+    -- reads as the skin having half failed rather than as a setting.
+    y = NewToggle(body, y, "Hide when empty", "no header or panel while nothing is tracked",
+        function() return ns.db.header.hideEmpty end,
+        function(value)
+            ns.db.header.hideEmpty = value and true or false
+            if ns.Skin then pcall(ns.Skin.Refresh, "hide-when-empty toggled") end
+        end)
 
     -- Getting the tracker out of the way on its own.
     --
@@ -1622,9 +1657,20 @@ function options.Sync()
     end
     syncing = false
 
-    local enabled = ns.db.enabled and true or false
-    panel.pillText:SetText(enabled and "ENABLED" or "DISABLED")
-    local colour = enabled and GREEN or "#C98A8A"
+    -- Three states, because there are two switches. "Enabled" over a window
+    -- where one of the two panels is off would be the pill telling a half-truth
+    -- about the very thing it exists to report at a glance.
+    local watchOn, mplusOn = ns.SkinEnabled("watch"), ns.SkinEnabled("mplus")
+    local label, colour
+    if watchOn and mplusOn then
+        label, colour = "ENABLED", GREEN
+    elseif watchOn or mplusOn then
+        label, colour = "PARTIAL", "#E7C67C"
+    else
+        label, colour = "DISABLED", "#C98A8A"
+    end
+
+    panel.pillText:SetText(label)
     panel.pillText:SetTextColor(ns.HexToRGB(colour))
     ns.StylePlateChrome(panel.pill, BoxStyle(colour, 0.12, nil, nil, 8))
 
@@ -1712,8 +1758,11 @@ function options.Reset()
     -- the kind of half-reset that makes people reload to check.
     if panel then panel:SetScale(SavedPlacement().scale or 1) end
 
-    if ns.Skin and ns.Skin.SetEnabled then
-        ns.Skin.SetEnabled(ns.db.enabled)
+    -- Both panels, each from its own restored default, rather than one call
+    -- that would have to pick one of the two flags to speak for both.
+    if ns.SetSkinEnabled then
+        ns.SetSkinEnabled("watch", ns.SkinEnabled("watch"))
+        ns.SetSkinEnabled("mplus", ns.SkinEnabled("mplus"))
     end
     Apply("options reset")
 

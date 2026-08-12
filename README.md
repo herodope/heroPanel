@@ -63,10 +63,11 @@ Scale is 0.5–1.5 in 0.1 steps, from the slash command or the options window �
 both go through the same `ns.SetScale`, so they cannot disagree. There is
 deliberately no mousewheel binding on the tracker frames.
 
-`/hp skin off` sets `HEROPANEL_DB.enabled = false` and puts the tracker back the
-way Blizzard had it — fonts, colours, header art and all — rather than hiding
-heroPanel's own chrome over the top of a still-skinned frame. It is the escape
-hatch when something looks wrong.
+`/hp skin off` clears both `HEROPANEL_DB.skin` flags and puts each tracker back
+the way its own addon had it — fonts, colours, header art and all — rather than
+hiding heroPanel's own chrome over the top of a still-skinned frame. It is the
+escape hatch when something looks wrong, so it covers both panels; the options
+window switches them one at a time.
 
 ## The skin
 
@@ -292,7 +293,7 @@ back somewhere else. The trackers already had this problem and already had the
 answer, so `ns.GetUIOffsets` / `ns.ApplyUIOffsets` are exported from `Move.lua`
 rather than the arithmetic existing twice.
 
-**The body scrolls.** The header, the Enable skin row and the footer are fixed
+**The body scrolls.** The header, the enable rows and the footer are fixed
 and everything between them lives in a `ScrollFrame`, which is the only thing on
 this client that clips its children. The window used to be a fixed 684px and the
 note here used to explain how its rows had been shaved twice to keep it under
@@ -522,7 +523,7 @@ tools/
 ## The store
 
 `HEROPANEL_DB`, stamped with `dbVersion`. A store carrying any other version is
-**discarded**, not migrated: heroPanel is pre-release, the shape has changed four
+**discarded**, not migrated: heroPanel is pre-release, the shape has changed five
 times already and will change again, and nobody is running a build old enough
 for an old store to be worth carrying forward.
 
@@ -552,7 +553,7 @@ exception to "settings are cheap to set again", twice over: dragging three
 panels into place and sizing them is the only part of configuring this addon
 that costs real effort, and it is the part least likely to be what a discard is
 *for* — those keys have not changed shape once, while the colour and font blocks
-have changed four times between them. That covers each tracker's point, offsets
+have changed five times between them. That covers each tracker's point, offsets
 and scale, the lock state and ownership mode, and where the options window was
 left and at what size.
 
@@ -569,7 +570,8 @@ only that one value. Bumping `DB_VERSION` is the deliberate, all-or-nothing
 lever, and even then it costs colours and fonts rather than layout.
 
 ```
-enabled  debug  dbVersion
+skin     watch, mplus -- one flag per panel
+debug    dbVersion
 frame    locked, ownership, and per tracker: point, x, y, scale
 collapsed
 panel    watch / mplus: bgColor, bgOpacity, borderColor, borderAlpha,
@@ -580,7 +582,7 @@ bg       texture             -- global; one piece of art for both panels
 font     face, and size = { watchHeader, watchTitle, watchBody,
                             mplusHeader, mplusTimer, mplusBody, options }
 text     title, normal, done
-header   show
+header   show, hideEmpty -- the quest tracker only
 options  where the window was left, and its scale; x and y are in UIParent's
          space, because the window is scalable and an offset in its own units
          means a different place on screen at a different scale
@@ -685,8 +687,11 @@ above.
   While it is expanded its sub-rows are the bosses and it is a label over them,
   so it gets no indicator; collapsed, the sub-rows are not drawn and it stands
   in for them. Its count moves out of the right-aligned counter and into the
-  sentence — "Defeat Additional Bosses (1/6)" — and is left off entirely until
-  the first extra boss dies. Rewriting a tracker string is the one thing here
+  sentence — "Additional Bosses (1/6)" — from the first draw, including at 0/6.
+  It was held back until the first extra boss died, and that hid the useful
+  half: the denominator is how many the key needs, which is what decides whether
+  the group detours for them at all, so it arrived after the decision it informs
+  rather than before it. Rewriting a tracker string is the one thing here
   that changes what the game drew, so it follows Lines.lua's rule: the original
   is kept and the rewrite is only treated as ours while the string on screen is
   still the one heroPanel wrote, which is what stops a second pass stacking a
@@ -887,7 +892,7 @@ above.
   opposite corners, which needs art heroPanel does not ship, so this is the cheap
   read of the same idea, the way the chamfer stands in for a radius.
 * **Frame level beats draw layer between two frames.** The options window's
-  accent-tinted "Enable skin" row is a child frame laid over the window, and
+  accent-tinted enable row is a child frame laid over the window, and
   with the row's labels drawn on the *window* they were simply not there — the
   tint covered them however high their layer. Anything drawn inside a tinted row
   has to be a child of that row. Sibling frames on the same level have no defined

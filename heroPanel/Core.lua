@@ -75,8 +75,23 @@ end
 --------------------------------------------------------------------------------
 
 ns.defaults = {
-    enabled = true,
     debug   = false,
+
+    -- Which panels heroPanel skins. One flag each.
+    --
+    -- This used to be a single `enabled`, and one flag for two panels was a
+    -- compromise rather than a setting: turning the Mythic+ panel off to see
+    -- Ascension's own tracker also handed the quest tracker back to Blizzard,
+    -- and there was no way to keep one and not the other. They are separate
+    -- modules skinning separate addons' frames, so they get separate switches.
+    --
+    -- Neither is a master. "/hp skin on|off" still sets both, because that
+    -- command is the escape hatch and an escape hatch that only frees half of
+    -- the UI is not one.
+    skin = {
+        watch = true,
+        mplus = true,
+    },
 
     frame = {
         locked = true,
@@ -215,9 +230,9 @@ ns.defaults = {
             -- making the boss rows readable also made the timer take a third
             -- of the panel. The timer gets its own control because it is the
             -- one element that is deliberately several times everything else.
-            mplusHeader = 13,   -- dungeon name and keystone level
-            mplusTimer  = 24,   -- the clock
-            mplusBody   = 12,   -- chest tiers, enemy forces, boss rows
+            mplusHeader = 14,   -- dungeon name and keystone level
+            mplusTimer  = 20,   -- the clock
+            mplusBody   = 14,   -- chest tiers, enemy forces, boss rows
 
             options     = 16,   -- this options window
         },
@@ -237,6 +252,19 @@ ns.defaults = {
         -- a setting. The options panel labels it "Show quest header" for the
         -- same reason.
         show = true,
+
+        -- Nothing tracked, nothing drawn.
+        --
+        -- With no quests being followed the tracker is an empty column, and the
+        -- skin over it is a header reading "QUESTS 0" and a plate around
+        -- nothing - chrome that exists only to say there is nothing to say. Off
+        -- by default, because a panel that vanishes is a panel a player has to
+        -- learn is coming back, and that is a choice rather than a default.
+        --
+        -- It takes the whole skin with it, not just the header row: hiding the
+        -- header alone would leave a bare plate, which reads as the skin having
+        -- half failed.
+        hideEmpty = false,
     },
 
     -- Where the options window was left, and how big it was left. point = nil
@@ -295,6 +323,18 @@ ns.ALPHA = {
     hoverButton = 0.16,
 }
 
+-- Whether one panel's skin is switched on. key is "watch" or "mplus".
+--
+-- Defended rather than indexed straight, because it is read from boot paths
+-- that run before the store has been filled in - a tracker can be discovered
+-- before ADDON_LOADED has been seen - and an unfilled store must read as "off"
+-- rather than throw.
+function ns.SkinEnabled(key)
+    local flags = ns.db and ns.db.skin
+    if type(flags) ~= "table" then return false end
+    return flags[key] and true or false
+end
+
 -- Recursively fill missing keys from the defaults tree without clobbering
 -- anything the user has already changed.
 local function ApplyDefaults(target, defaults)
@@ -313,7 +353,7 @@ ns.ApplyDefaults = ApplyDefaults
 --------------------------------------------------------------------------------
 -- Schema version
 --
--- heroPanel has never been released. The store's shape has changed four times
+-- heroPanel has never been released. The store's shape has changed five times
 -- already and will change again, and there is nobody running a build old enough
 -- for a stale store to be worth carrying forward - so a store that does not
 -- match this build is discarded rather than migrated.
@@ -336,7 +376,11 @@ ns.ApplyDefaults = ApplyDefaults
 -- that point stores start being worth keeping and a migration path is owed.
 --------------------------------------------------------------------------------
 
-local DB_VERSION = 4
+local DB_VERSION = 5
+
+-- Published so the harness can assert against the stamp rather than against a
+-- copy of the number, which went stale every time this moved.
+ns.DB_VERSION = DB_VERSION
 
 -- Carried across a discard rather than thrown away with the rest.
 --
@@ -345,7 +389,7 @@ local DB_VERSION = 4
 -- only part of configuring this addon that takes real effort, and it is the
 -- part least likely to be what a discard is *for*: these keys have not changed
 -- shape once in the addon's history, while the colour and font blocks have
--- changed four times between them.
+-- changed five times between them.
 --
 -- Exempting them is not trusting them blindly. Tracker geometry carries its own
 -- stamp - GEOMETRY_VERSION in Move.lua - and ns.GetSaved drops a position
@@ -485,7 +529,8 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp font <8-30>|r - set every text size at once")
     ns.Print("  |cFFC2C6D8/hp fontface <name>|r - set the LibSharedMedia face by name")
     ns.Print("  |cFFC2C6D8/hp glyphs <auto|art|blocks>|r - where the lock and caret come from")
-    ns.Print("  |cFFC2C6D8/hp skin [on|off]|r - skin the trackers, or hand them back to Blizzard")
+    ns.Print("  |cFFC2C6D8/hp skin [on|off]|r - skin both trackers, or hand them both back "
+        .. "(|cFF8B8FA3one at a time in the options window|r)")
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
     ns.Print("  |cFFC2C6D8/hp dump|r - report the geometry the skin measured")
     ns.Print("  |cFFC2C6D8/hp mplus|r - report what the Mythic+ panel resolved, and from where")
@@ -622,17 +667,22 @@ SlashCmdList["HEROPANEL"] = function(input)
             ns.Print("  %d face(s) registered with LibSharedMedia.", #faces)
         end
     elseif cmd == "skin" then
+        -- Both panels, always. The two are separate settings in the options
+        -- window; this command is the escape hatch, and one that frees half the
+        -- UI is not one. A bare /hp skin toggles on "is anything skinned",
+        -- so a half-on state turns fully off first rather than fully on.
         local wanted
         if rest == "on" then wanted = true
         elseif rest == "off" then wanted = false
-        else wanted = not (ns.db and ns.db.enabled) end
+        else wanted = not (ns.SkinEnabled("watch") or ns.SkinEnabled("mplus")) end
 
-        if ns.Skin and ns.Skin.SetEnabled then
-            ns.Skin.SetEnabled(wanted)
-            -- The options window shows this as a pill and a toggle, so it has
-            -- to follow the command as well as the other way round.
+        if ns.SetSkinEnabled then
+            ns.SetSkinEnabled(nil, wanted)
+            -- The options window shows this as a pill and two toggles, so it
+            -- has to follow the command as well as the other way round.
             if ns.Options then pcall(ns.Options.Sync) end
-            ns.Print("skin %s.", wanted and "|cFF79C68Don|r" or "|cFF8B8FA3off - Blizzard's tracker restored|r")
+            ns.Print("skin %s.", wanted and "|cFF79C68Don|r"
+                or "|cFF8B8FA3off - Blizzard's and Ascension's trackers restored|r")
         end
     elseif cmd == "status" then
         ns.PrintStatus()

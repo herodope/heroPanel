@@ -112,9 +112,10 @@ ns:On("PLAYER_LOGIN", function()
 
     if not ns.DEBUG then return end
 
-    ns.Debug("%s v%s ready. Skin %s, frames %s.",
+    ns.Debug("%s v%s ready. Objective skin %s, Mythic+ skin %s, frames %s.",
         ADDON_NAME, ns.version,
-        (ns.db and ns.db.enabled) and "enabled" or "disabled",
+        ns.SkinEnabled("watch") and "enabled" or "disabled",
+        ns.SkinEnabled("mplus") and "enabled" or "disabled",
         ns.IsLocked() and "locked" or "unlocked")
 
     -- The M+ tracker may still be polling at this point, so report once more

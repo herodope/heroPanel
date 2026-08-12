@@ -747,6 +747,22 @@ local function Refresh(reason)
             LayoutPlate(watch, contentBottom)
         end
 
+        -- Nothing tracked, nothing drawn.
+        --
+        -- After the line walk rather than before it, because that walk is what
+        -- fills lastBlockCount and so is what TrackedQuestCount falls back to on
+        -- a client with no quest-watch API. Blizzard's own header band stays
+        -- faded on the way out: the point of the setting is an empty corner of
+        -- the screen, and restoring the tracker's header instead would swap
+        -- heroPanel's "QUESTS 0" for Blizzard's version of the same thing.
+        if ns.db.header.hideEmpty and TrackedQuestCount() == 0 then
+            FadeHeaderBand(watch)
+            plate:Hide()
+            if ns.Lines then ns.Lines.ClearHover() end
+            ns.Debug("skin hidden - nothing is being tracked (%s).", tostring(reason))
+            return
+        end
+
         -- After the lines, so a client with no quest-watch API can still put
         -- the number of blocks it just drew in the badge.
         UpdateHeader(watch)
@@ -977,7 +993,7 @@ end
 --------------------------------------------------------------------------------
 -- Enable / disable
 --
--- HEROPANEL_DB.enabled = false must give the player Blizzard's tracker back,
+-- HEROPANEL_DB.skin.watch = false must give the player Blizzard's tracker back,
 -- not just hide heroPanel's own chrome, so Disable undoes everything the skin
 -- changed: fonts, colours, faded regions and rewritten counters.
 --------------------------------------------------------------------------------
@@ -1035,26 +1051,42 @@ function skin.Disable()
     return true
 end
 
--- The single entry point for the config flag, so nothing else has to remember
--- to write HEROPANEL_DB.enabled and call the right half.
-function skin.SetEnabled(enabled)
+-- The single entry point for either skin flag, so nothing else has to remember
+-- to write HEROPANEL_DB.skin and call the right half.
+--
+-- key is "watch", "mplus", or nil for both. The two panels used to share one
+-- flag, which meant turning the Mythic+ panel off to compare it against
+-- Ascension's own tracker also handed the quest tracker back to Blizzard. They
+-- are separate modules over separate addons' frames and they are separate
+-- settings now; this is the one place that knows both halves.
+function ns.SetSkinEnabled(key, enabled)
     if not ns.db then return false end
-    ns.db.enabled = enabled and true or false
+    enabled = enabled and true or false
+    if type(ns.db.skin) ~= "table" then ns.db.skin = {} end
 
-    if ns.db.enabled then
-        if not skin.Enable() then
-            ns.Debug("skin enabled but the objective tracker is not available yet.")
+    if key == nil or key == "watch" then
+        ns.db.skin.watch = enabled
+        if enabled then
+            if not skin.Enable() then
+                ns.Debug("skin enabled but the objective tracker is not available yet.")
+            end
+        else
+            skin.Disable()
         end
-    else
-        skin.Disable()
     end
 
-    -- The flag covers both panels. The Mythic+ half is a separate module but
-    -- not a separate setting, so it is driven from here rather than leaving
-    -- "/hp skin off" with a skinned Mythic+ tracker still on screen.
-    if ns.Mplus then pcall(ns.Mplus.SetEnabled, ns.db.enabled) end
+    if key == nil or key == "mplus" then
+        ns.db.skin.mplus = enabled
+        if ns.Mplus then pcall(ns.Mplus.SetEnabled, enabled) end
+    end
 
-    return ns.db.enabled
+    return enabled
+end
+
+-- Kept as the "both panels" call, which is what this name has always meant to
+-- everything that uses it - /hp skin, the harness, Reset.
+function skin.SetEnabled(enabled)
+    return ns.SetSkinEnabled(nil, enabled)
 end
 
 --------------------------------------------------------------------------------
@@ -1068,7 +1100,7 @@ end
 function skin.PrintStatus()
     if not ns.db then return end
 
-    ns.Print("  skin is |cFFC2C6D8%s|r", ns.db.enabled and "on" or "off")
+    ns.Print("  objective tracker skin is |cFFC2C6D8%s|r", ns.SkinEnabled("watch") and "on" or "off")
 
     if not plate then
         ns.Print("    |cFFFFAA00panel not built|r - the tracker was not available when the skin ran")
@@ -1637,7 +1669,7 @@ end
 ns:On("HEROPANEL_TRACKER_FOUND", function(key)
     if key ~= "watch" then return end
     if not ns.db then ns.InitDB() end
-    if ns.db.enabled then skin.Enable() end
+    if ns.SkinEnabled("watch") then skin.Enable() end
 end)
 
 ns:On("HEROPANEL_LOCK_CHANGED", function()
@@ -1645,7 +1677,7 @@ ns:On("HEROPANEL_LOCK_CHANGED", function()
 end)
 
 ns:On("PLAYER_LOGIN", function()
-    if ns.db and ns.db.enabled and not skin.enabled then
+    if ns.SkinEnabled("watch") and not skin.enabled then
         local ok, reason = skin.Enable()
         -- By login the tracker exists on any client heroPanel can skin, so a
         -- failure here is worth saying out loud rather than logging quietly.
