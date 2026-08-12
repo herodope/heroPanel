@@ -620,6 +620,81 @@ whether 19px of budget is enough on *this* client, which is the whole question.
 - [ ] Raise the **Mythic+ font size**: the rows grow but the budget does not.
       Check the boss row again at the largest size you would use
 
+### 9f. The champions row
+
+First seen on a +15 Stratholme, and it behaved in a way nothing predicted: the
+tracker drew **Defeat Champions** for the whole run, the key completed *timed*
+without ever finishing it, and `GetActiveKeystoneChampions()` reported
+`championsRequired = 0` throughout. Every recorded run on this account says the
+same, at every key level from 1 to 15.
+
+So on this client **a drawn champions row is not a requirement**, and only the
+API can tell the two apart. heroPanel now draws it as a heading off the API's
+counts rather than as a boss row off the widget's.
+
+- [ ] On a key that draws the row with nothing required: it reads **Champions**
+      with no count and no pending ring. It must not look like an outstanding
+      objective — that is the thing that sent a party hunting for champions it
+      did not need
+- [ ] The extra-boss list sits **directly under its own heading**, not below the
+      champions row. Before the fix there was a tall gap between the heading and
+      champions with the list stranded underneath it — the reserved space, with
+      Ascension's faded rows still standing in it
+- [ ] Collapse and expand the extra bosses with the champions row present. The
+      gap must not come back in either state
+- [ ] **The state nobody has seen yet:** a key where champions is genuinely
+      required. It should read `Champions (1/3)` and go green at `(3/3)`. If it
+      ever shows a count that disagrees with what Ascension's own row says, the
+      API and the widget have diverged and the API is the one heroPanel believes
+- [ ] `/hp mplus` reports the champions numbers and which source they came from
+
+### 9g. Party key checks
+
+The first version of this sent an addon message to `Ascension_MythicPlus` and
+**did nothing on the live client** — not even run by hand as a `/run`, with a
+key in the bag and a party to send it to. It now reads the player's own bags and
+links the keystone into chat, which is what the WeakAura it replaces did.
+
+This one puts a line in chat under your own name, so test it with somebody who
+will not mind. Two accounts is enough; one of them does not need heroPanel.
+
+- [ ] Solo first: `/hp status` prints the keystone it can see in your bags.
+      Check it against the key you are actually carrying — that one line is the
+      bag scan, tested without saying anything to anyone
+- [ ] In a party, type `!keys`. Your keystone is **linked** into party chat, and
+      the link is clickable and shows the right dungeon and level
+- [ ] Each of the other seven — `?keys`, `#keys`, `$keys`, `!key`, `?key`,
+      `#key`, `$key` — does the same. Wait out the throttle between them, or
+      they will look like they did nothing
+- [ ] Inside a sentence: `anyone !keys?` fires. `monkeys` and a bare `keys` do
+      **not**
+- [ ] With **no** key in your bags: it says "No keystone in bags." rather than
+      staying silent
+- [ ] With more than one key in your bags: the first one found wins, scanning
+      bags 0→4. Worth seeing which one that is, because there is no rule about
+      *which* key it should pick and the answer is currently "whichever is in
+      the lowest bag slot"
+- [ ] Two people type it a second apart: **one** line per client, not two.
+      `/hp debug` shows the second as `not answered (throttled...)`
+- [ ] In **raid chat**, in a raid: the answer goes to raid, not party
+- [ ] In **instance chat** (an LFG or dungeon-finder group): the command is
+      heard, and the answer comes back in party. This is the one event that may
+      not exist on this client — `/hp status` reports how many of the six
+      registered, and five rather than six means `CHAT_MSG_INSTANCE_CHAT` is
+      absent, which is not a fault
+- [ ] Say `!keys` in **guild and say**: nothing happens. Group channels only,
+      and a whisper is not one either
+- [ ] `/hp keys` links it by hand and says so, ignoring the throttle
+- [ ] `/hp keys off`, then `!keys`: nothing. `/hp keys on` brings it back, and
+      the toggle in the options window follows the command both ways
+- [ ] Solo, out of a group: `/hp keys` replies that you are not in a group
+      rather than erroring or talking to nobody
+- [ ] **The item-name assumption.** The scan matches the literal string
+      `Keystone` in the item link. If Ascension ever renames the item, or a
+      localised client calls it something else, every check above still passes
+      except the one that matters. Worth confirming the link text really does
+      contain that word
+
 ## 10. Collapse and reload
 
 - [ ] Collapse and expand the quest tracker: the skin survives both, and the
@@ -645,6 +720,14 @@ ElvUI is installed in this client. DeModal, if you have it.
 
 ## Known unverified
 
+* **What actually makes the champions row appear, and what would make it
+  required.** It is not one of this week's affixes — the keystone item never
+  showed a champion affix, and the recorded `weekly_pool` is the same four IDs
+  across every run including the +15 that drew the row. Dungeon-specific,
+  level-gated or drawn unconditionally are all still open. What *is* settled is
+  that visibility and requirement are independent on this client, so neither can
+  be inferred from the other. Section 9f.
+
 * **Whether Ascension's `LibStub:NewAscensionLibrary` keeps a separate
   registry.** Answered in practice by the last pass — the font dropdown listed
   the full shared-media library, so heroPanel and the font packs are on the same
@@ -669,8 +752,20 @@ ElvUI is installed in this client. DeModal, if you have it.
 * **The scrollbar thumb's drag.** The harness drives the wheel, which goes
   through the same slider, but a thumb that draws in the wrong place or cannot
   be grabbed is geometry the mock does not model. Section 3.
+* **That an item link containing `Keystone` is how a keystone is recognised.**
+  The mock supplies its own item links, so it can only check that a link it
+  already wrote is matched. The real question is what Ascension's keystone item
+  is actually called, and the whole feature rests on that one word. Section 9g,
+  last item.
 
 ## Resolved since the last pass
+
+* **`SendAddonMessage("ASC_MYTHIC_PLUS", "RequestKeystones", ...)` does not
+  work on this client.** Answered the hard way: nothing happens, including when
+  typed by hand as a `/run` with a key in the bag and a party to send it to. The
+  key-check feature now reads the bags and links the item instead, which asks
+  nobody's permission. The call is left commented in `Keys.lua` so the idea is
+  not had a second time.
 
 * **The lock button's gradient direction.** Runs light at the top, as written.
   `PaintLockGradient` is correct and the note about swapping its colour triples

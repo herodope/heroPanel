@@ -302,6 +302,7 @@ function ns.PrintStatus()
         ns.DEBUG and "|cFF79C68DON|r" or "|cFF8B8FA3OFF|r")
 
     if ns.Mplus and ns.Mplus.PrintStatus then ns.Mplus.PrintStatus() end
+    if ns.Keys and ns.Keys.PrintStatus then ns.Keys.PrintStatus() end
 
     if ns.Skin and ns.Skin.PrintStatus then
         ns.Skin.PrintStatus()

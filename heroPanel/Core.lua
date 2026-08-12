@@ -200,6 +200,15 @@ ns.defaults = {
         texture = "flat",
     },
 
+    -- Party key checks. See Keys.lua.
+    --
+    -- On by default. It is the whole of what that module does, it costs
+    -- nothing until somebody types one of eight short words in party chat, and
+    -- a feature that ships switched off is a feature nobody knows is there.
+    keys = {
+        respond = true,
+    },
+
     font = {
         -- Resolved through LibSharedMedia by Media.lua. This value is the one
         -- face 3.3.5a always has, and it is answered without asking the library
@@ -531,6 +540,8 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp glyphs <auto|art|blocks>|r - where the lock and caret come from")
     ns.Print("  |cFFC2C6D8/hp skin [on|off]|r - skin both trackers, or hand them both back "
         .. "(|cFF8B8FA3one at a time in the options window|r)")
+    ns.Print("  |cFFC2C6D8/hp keys [on|off]|r - answer !keys / ?keys in group chat by "
+        .. "linking your keystone (|cFF8B8FA3no argument links it now|r)")
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
     ns.Print("  |cFFC2C6D8/hp dump|r - report the geometry the skin measured")
     ns.Print("  |cFFC2C6D8/hp mplus|r - report what the Mythic+ panel resolved, and from where")
@@ -683,6 +694,31 @@ SlashCmdList["HEROPANEL"] = function(input)
             if ns.Options then pcall(ns.Options.Sync) end
             ns.Print("skin %s.", wanted and "|cFF79C68Don|r"
                 or "|cFF8B8FA3off - Blizzard's and Ascension's trackers restored|r")
+        end
+    elseif cmd == "keys" then
+        -- A bare /hp keys links your key now. That is what somebody typing the
+        -- command wants: the reason to reach for it is that the group is asking
+        -- and nothing has appeared, and toggling a setting does not answer them.
+        -- It bypasses the throttle, since posting by hand is a decision that the
+        -- last answer was not good enough.
+        if not ns.Keys then
+            ns.Print("the key-check module is not loaded.")
+        elseif rest == "on" or rest == "off" then
+            ns.Keys.SetEnabled(rest == "on")
+            if ns.Options then pcall(ns.Options.Sync) end
+            ns.Print("party key checks %s.", rest == "on"
+                and "|cFF79C68Don|r" or "|cFF8B8FA3off|r")
+        elseif rest ~= "" then
+            ns.Print("usage: /hp keys [on|off]  (no argument links your keystone now)")
+        else
+            local sent, detail = ns.Keys.Announce(true)
+            if sent and detail then
+                ns.Print("linked %s.", tostring(detail))
+            elseif sent then
+                ns.Print("no keystone in your bags - said so.")
+            else
+                ns.Print("could not answer: %s.", tostring(detail))
+            end
         end
     elseif cmd == "status" then
         ns.PrintStatus()

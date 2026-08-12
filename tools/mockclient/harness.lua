@@ -748,6 +748,12 @@ end
 local KEY_TIME_LEFT, KEY_TOTAL_TIME = 1661, 1800   -- 27:41 of 30:00
 local TRASH_DEAD, TRASH_REQUIRED    = 84, 100
 
+-- Champions. Zero required is the live client's normal answer - every recorded
+-- run on the real account reports it, at every key level from 1 to 15, including
+-- one where the tracker drew the row for the whole run. The section below moves
+-- these to prove both halves.
+local CHAMP_DEAD, CHAMP_REQUIRED    = 0, 0
+
 if not MINIMAL then
     C_MythicPlus = {
         IsKeystoneActive = function() return true end,
@@ -760,6 +766,9 @@ if not MINIMAL then
         GetActiveKeystoneTime  = function() return KEY_TIME_LEFT, KEY_TOTAL_TIME end,
         GetActiveKeystoneTrash = function()
             return { trashDead = TRASH_DEAD, trashRequired = TRASH_REQUIRED }
+        end,
+        GetActiveKeystoneChampions = function()
+            return { championsDead = CHAMP_DEAD, championsRequired = CHAMP_REQUIRED }
         end,
     }
 end
@@ -2583,6 +2592,125 @@ TRASH_DEAD = 84
 mplusTracker.ObjectiveBlock.EnemyForces.progress = 84
 ns.Mplus.Refresh("test: back to normal")
 tick(); tick()
+
+--------------------------------------------------------------------------------
+-- The champions row
+--
+-- Two separate things, both first seen on a real +15 Stratholme.
+--
+-- One: the row is drawn whether or not the objective is required. That run
+-- carried "Defeat Champions" from start to finish and completed timed without
+-- it, while GetActiveKeystoneChampions reported championsRequired = 0
+-- throughout. So the row cannot be read as a requirement and the API is the
+-- only thing that separates the two states.
+--
+-- Two: Ascension anchors that row *below* the space it reserves for the
+-- expanded extra bosses. The sub-list used to hang off the lowest row on the
+-- panel, which was the champions row the moment it appeared, so heroPanel's own
+-- list was pushed underneath the reserved space and what showed on screen was a
+-- tall gap with the list stranded below it.
+--------------------------------------------------------------------------------
+
+do
+    local block   = mplusTracker.ObjectiveBlock
+    local heading = block.Encounters
+
+    block.Champions:Show()
+    ns.Mplus.Refresh("test: champions row shown")
+    tick(); tick()
+
+    -- Collected, and marked as its own objective rather than as an extra boss.
+    local read = ns.Mplus.Read()
+    local champRow
+    for _, b in ipairs(read.bosses) do
+        if b.champions then champRow = b end
+    end
+    check(champRow ~= nil, "a shown champions row should be collected")
+    if champRow then
+        check(not champRow.sub, "champions is not one of the extra bosses")
+    end
+
+    -- Required 0: the verb is stripped and no count is stated, because there is
+    -- nothing to count towards. Crucially it must NOT read as an outstanding
+    -- objective - that is what sent a party looking for champions it did not
+    -- need.
+    if not MINIMAL then
+        check(block.Champions.Text:GetText() == "Champions",
+            "a champions row with nothing required states no count, got "
+            .. tostring(block.Champions.Text:GetText()))
+    else
+        -- No C_MythicPlus, so the widget's own numbers are all there is and
+        -- the row states them. This is the fallback working, not the fix
+        -- failing: without the API there is nothing that can tell a drawn
+        -- champions row from a required one, and inventing the distinction
+        -- would be worse than repeating what the tracker already says.
+        check(block.Champions.Text:GetText() == "Champions (0/3)",
+            "without the API the row's own count is used, got "
+            .. tostring(block.Champions.Text:GetText()))
+    end
+
+    -- The anchor. heroPanel draws its own "Falric" on its plate; it has to sit
+    -- just under the heading, not under the champions row 44px lower.
+    local falric
+    for _, region in ipairs(HeroPanelMplusPlate.overlay.__regions) do
+        if region.GetText and region:GetText() == "Falric" and region:IsShown() then
+            falric = region
+        end
+    end
+    check(falric ~= nil, "heroPanel should draw its own extra-boss rows")
+
+    local headingBottom = heading.Text:GetBottom()
+    local champBottom   = block.Champions.Text:GetBottom()
+    if falric and headingBottom and champBottom then
+        check(champBottom < headingBottom,
+            "the fixture must put champions below the heading to be a test")
+        local gap = headingBottom - falric:GetTop()
+        check(gap >= 0 and gap < 12,
+            "the extra-boss list should hang off its heading, not off the lowest row; "
+            .. "gap was " .. string.format("%.1f", gap))
+        check(falric:GetTop() > champBottom,
+            "the list must sit in the reserved space, above the champions row")
+    end
+
+    -- Now a key that really does require them. The count appears, off the API
+    -- rather than off the row - the widget still says 0/3 from the fixture, so
+    -- a "1/3" on screen can only have come from C_MythicPlus.
+    if not MINIMAL then
+        CHAMP_DEAD, CHAMP_REQUIRED = 1, 3
+        ns.Mplus.Refresh("test: champions required")
+        tick(); tick()
+
+        check(block.Champions.Text:GetText() == "Champions (1/3)",
+            "a real champions requirement states its count, got "
+            .. tostring(block.Champions.Text:GetText()))
+
+        read = ns.Mplus.Read()
+        check(read.championsRequired == 3 and read.championsDead == 1,
+            "champions counts should come from C_MythicPlus, got "
+            .. tostring(read.championsDead) .. "/" .. tostring(read.championsRequired))
+
+        -- Complete it. The heading treatment goes green, the same way the
+        -- extra-bosses heading does.
+        CHAMP_DEAD = 3
+        ns.Mplus.Refresh("test: champions complete")
+        tick(); tick()
+        check(block.Champions.Text:GetText() == "Champions (3/3)",
+            "a finished champions objective still states its count, got "
+            .. tostring(block.Champions.Text:GetText()))
+
+        CHAMP_DEAD, CHAMP_REQUIRED = 0, 0
+    end
+
+    -- Put the fixture back: hidden, and nothing required.
+    block.Champions:Hide()
+    ns.Mplus.Refresh("test: champions row hidden again")
+    tick(); tick()
+
+    read = ns.Mplus.Read()
+    for _, b in ipairs(read.bosses) do
+        check(not b.champions, "a hidden champions row must not be collected")
+    end
+end
 
 --------------------------------------------------------------------------------
 -- Affixes
@@ -4421,6 +4549,198 @@ do
     ElvUI = nil
 end
 
+--------------------------------------------------------------------------------
+-- Party key checks
+--
+-- heroPanel answers a key check by putting a line in *chat*, on the player's
+-- behalf, so what matters is exactly when it speaks: on the eight commands and
+-- on nothing else, once per throttle window however many people ask, and never
+-- at all when the switch is off or the client cannot send.
+--
+-- This replaced an addon-message version that did nothing on the live client -
+-- see the note at the top of Keys.lua. The shape of the test is the same; what
+-- is asserted is now a chat line rather than a SendAddonMessage.
+--
+-- The bag and chat globals are stubbed here rather than up with the rest of the
+-- mock client on purpose. Keys.lua has to survive their absence - that is what
+-- the HP_MINIMAL run is - so this section starts by proving the absent case and
+-- only then supplies them.
+--------------------------------------------------------------------------------
+
+do
+    local keys = ns.Keys
+    check(keys ~= nil, "the key-check module should be loaded")
+
+    if keys then
+        -- Matching, before anything is sent. Every sigil, both spellings,
+        -- inside a sentence, with trailing punctuation - and nothing that
+        -- merely contains the word.
+        for _, cmd in ipairs(keys.COMMANDS) do
+            check(keys.IsRequest(cmd), cmd .. " should be a key check")
+            check(keys.IsRequest("anyone " .. cmd .. "?"),
+                cmd .. " should still be one inside a sentence")
+            check(keys.IsRequest(string.upper(cmd)),
+                cmd .. " should be case insensitive")
+        end
+        check(not keys.IsRequest("monkeys"), "a word containing the command is not one")
+        check(not keys.IsRequest("keys"), "the bare word without a sigil is not a command")
+        check(not keys.IsRequest("!"), "a lone sigil is not a command")
+        check(not keys.IsRequest("!keystone"), "a longer word starting with it is not one")
+        check(not keys.IsRequest(""), "an empty line is not one")
+
+        -- Every chat event the WeakAura listened on. The mock registers
+        -- anything, so all six should have taken; a real client without
+        -- CHAT_MSG_INSTANCE_CHAT keeps the other five.
+        check(#keys.listening == 6,
+            "should listen on all six group chat events, got " .. tostring(#keys.listening))
+
+        -- No SendChatMessage at all. This is the HP_MINIMAL client, and the
+        -- only acceptable behaviour is a refusal that says so.
+        local realSend  = SendChatMessage
+        local realParty = GetNumPartyMembers
+        local realRaid  = GetNumRaidMembers
+        local realSlots = GetContainerNumSlots
+        local realLink  = GetContainerItemLink
+
+        SendChatMessage, GetNumPartyMembers, GetNumRaidMembers = nil, nil, nil
+        GetContainerNumSlots, GetContainerItemLink = nil, nil
+
+        local sent, why = keys.Announce(true)
+        check(not sent, "a client with no SendChatMessage must not claim to have answered")
+        check(type(why) == "string" and string.find(why, "SendChatMessage", 1, true),
+            "...and should say which call it is missing, got " .. tostring(why))
+        check(keys.FindKeystone() == nil, "no container API means no keystone, not an error")
+        local ok = pcall(fire, "CHAT_MSG_PARTY", "!keys", "Someone")
+        check(ok, "a key check on such a client must not throw")
+
+        -- Now a client that can talk, with bags to read.
+        local said = {}
+        SendChatMessage = function(message, channel)
+            table.insert(said, { message = message, channel = channel })
+        end
+
+        local KEYSTONE = "|cffa335ee|Hitem:138019:0:0:0:0:0:0:0:60|h[Keystone: Blackrock Depths (12)]|h|r"
+        local bags = { [0] = { "|cffffffff|Hitem:6948:0:0:0:0:0:0:0:60|h[Hearthstone]|h|r" } }
+
+        GetContainerNumSlots = function(bag) return bags[bag] and #bags[bag] or 0 end
+        GetContainerItemLink = function(bag, slot)
+            return bags[bag] and bags[bag][slot] or nil
+        end
+
+        GetNumPartyMembers = function() return 0 end
+        GetNumRaidMembers  = function() return 0 end
+
+        sent, why = keys.Announce(true)
+        check(not sent, "there is nobody to answer when you are not in a group")
+        check(#said == 0, "...and nothing should have been said")
+
+        GetNumPartyMembers = function() return 4 end
+
+        -- A hearthstone is not a keystone.
+        check(keys.FindKeystone() == nil, "an ordinary item must not read as a keystone")
+
+        -- The switch off means silence, whatever is typed.
+        keys.SetEnabled(false)
+        fire("CHAT_MSG_PARTY", "!keys", "Someone")
+        check(#said == 0, "the switch off means nothing is said")
+
+        keys.SetEnabled(true)
+        check(keys.IsEnabled(), "the switch should read back on")
+
+        -- An ordinary line is not a request.
+        fire("CHAT_MSG_PARTY", "these keys are heavy", "Someone")
+        check(#said == 0, "ordinary group chat says nothing")
+
+        -- No key in the bags: say so rather than say nothing. A silent client
+        -- is indistinguishable from one that is not running the addon.
+        fire("CHAT_MSG_PARTY", "!keys", "Someone")
+        check(#said == 1, "a key check with no keystone should still answer, got " .. tostring(#said))
+        if said[1] then
+            check(said[1].message == "No keystone in bags.",
+                "wrong no-key line: " .. tostring(said[1].message))
+            check(said[1].channel == "PARTY", "wrong channel: " .. tostring(said[1].channel))
+        end
+
+        -- Put a key in the second bag, a few slots down, so the scan has to
+        -- walk to reach it.
+        bags[2] = { false, false, KEYSTONE }
+        GetContainerNumSlots = function(bag) return bags[bag] and #bags[bag] or 0 end
+        GetContainerItemLink = function(bag, slot)
+            local entry = bags[bag] and bags[bag][slot]
+            return entry or nil
+        end
+        check(keys.FindKeystone() == KEYSTONE, "the keystone should be found in any bag slot")
+
+        tick(10)
+        fire("CHAT_MSG_PARTY_LEADER", "!keys", "Leader")
+        check(#said == 2, "a key check from the leader should be answered, got " .. tostring(#said))
+        if said[2] then
+            check(said[2].message == KEYSTONE, "the answer should be the item link itself")
+            check(said[2].channel == "PARTY", "wrong channel: " .. tostring(said[2].channel))
+        end
+
+        -- Repeats inside the window say nothing more. This matters more than it
+        -- did for the addon-message version: every heroPanel user in the group
+        -- answers, so a doubled reply is the addon spamming chat on the
+        -- player's behalf.
+        fire("CHAT_MSG_PARTY", "?key", "Someone")
+        fire("CHAT_MSG_RAID", "#keys", "Another")
+        tick(2)
+        fire("CHAT_MSG_PARTY", "$key please", "AThird")
+        check(#said == 2, "repeats inside the throttle window say nothing more, got "
+            .. tostring(#said))
+
+        -- ...and it is a window rather than a latch.
+        tick(10)
+        fire("CHAT_MSG_RAID_LEADER", "!keys", "Someone")
+        check(#said == 3, "the throttle should expire, got " .. tostring(#said))
+
+        -- Instance chat is a listening channel. It is not a reply channel: the
+        -- group has a party too, and PARTY reaches the same people on a client
+        -- that may not have the instance one at all.
+        tick(10)
+        fire("CHAT_MSG_INSTANCE_CHAT", "!keys", "Someone")
+        check(#said == 4, "instance chat should be listened to, got " .. tostring(#said))
+        if said[4] then
+            check(said[4].channel == "PARTY",
+                "instance chat should still be answered in party, got " .. tostring(said[4].channel))
+        end
+
+        -- In a raid the answer goes to the raid, because PARTY would reach four
+        -- of the forty.
+        GetNumRaidMembers = function() return 10 end
+        tick(10)
+        fire("CHAT_MSG_RAID", "!keys", "Someone")
+        check(#said == 5, "a raid key check should be answered, got " .. tostring(#said))
+        if said[5] then
+            check(said[5].channel == "RAID", "wrong raid channel: " .. tostring(said[5].channel))
+        end
+        GetNumRaidMembers = function() return 0 end
+
+        -- Answering by hand ignores the throttle outright.
+        local before = #said
+        SlashCmdList["HEROPANEL"]("keys")
+        check(#said == before + 1, "/hp keys should answer whatever the throttle says, got "
+            .. tostring(#said))
+
+        -- ...and the same command sets the switch, which is what the options
+        -- window's toggle writes too.
+        SlashCmdList["HEROPANEL"]("keys off")
+        check(not keys.IsEnabled(), "/hp keys off should turn it off")
+        before = #said
+        tick(10)
+        fire("CHAT_MSG_PARTY", "!keys", "Someone")
+        check(#said == before, "...and it should then stay quiet")
+        SlashCmdList["HEROPANEL"]("keys on")
+        check(keys.IsEnabled(), "/hp keys on should turn it back on")
+
+        SendChatMessage      = realSend
+        GetNumPartyMembers   = realParty
+        GetNumRaidMembers    = realRaid
+        GetContainerNumSlots = realSlots
+        GetContainerItemLink = realLink
+    end
+end
 --------------------------------------------------------------------------------
 -- A store written by nothing at all
 --

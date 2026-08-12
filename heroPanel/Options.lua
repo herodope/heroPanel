@@ -1374,6 +1374,25 @@ local function Build()
                             set = function(hex) ns.db.text.done   = hex end },
     })
 
+    -- Party key checks.
+    --
+    -- Not a skin setting, and in this group anyway: it is the only thing in the
+    -- window that is about keystones rather than about how a panel is drawn,
+    -- and a group of its own for one switch would cost more scroll than it
+    -- saves confusion. The sublabel carries a sigil, because "key checks" does
+    -- not say what to type and the whole feature is what to type.
+    --
+    -- It says "links your keystone" rather than naming the feature twice. This
+    -- switch puts a line in chat under the player's own name, which is the one
+    -- thing in this window that other people see, and a player deciding whether
+    -- to leave it on is deciding about that rather than about key checks.
+    y = NewToggle(body, y, "Answer party key checks",
+        "!keys in group chat links your keystone for you",
+        function() return ns.Keys and ns.Keys.IsEnabled() end,
+        function(value)
+            if ns.Keys then ns.Keys.SetEnabled(value) end
+        end)
+
     -- There is no HEADER group. header.show still exists and still governs the
     -- quest tracker's header row, but it is on and there is no control for it:
     -- heroPanel's header is where the lock, the count and the collapse caret

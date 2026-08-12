@@ -513,7 +513,14 @@ local function CollectBosses(tracker)
         table.insert(found, subRows[i])
     end
 
-    Add(block.Champions)
+    -- Champions. Flat rather than folded into the list above: it is its own
+    -- objective, with its own API and its own update event, and not one of the
+    -- additional bosses however much its row looks like one on screen.
+    --
+    -- Marked so Redraw can put the API's counts on it - see the champions note
+    -- in mplus.Read for why the row's own numbers are not trusted here.
+    local champions = Add(block.Champions)
+    if champions then champions.champions = true end
 
     -- Top down, which is the order they are read in.
     table.sort(found, function(a, b)
@@ -563,6 +570,26 @@ function mplus.Read()
         data.trashRequired = tonumber(trash.trashRequired)
     end
 
+    -- Champions, and the one place in this file where the API is not merely
+    -- preferred to the row but is the only thing that can answer.
+    --
+    -- On this client the tracker draws the champions row whether or not the
+    -- objective is required. A +15 Stratholme carried "Defeat Champions" for
+    -- the whole run and completed timed without ever finishing it, while
+    -- GetActiveKeystoneChampions reported championsRequired = 0 throughout -
+    -- and every recorded run on this account says the same, at every key level
+    -- from 1 to 15.
+    --
+    -- So the row being on screen does not mean the party owes anything, and the
+    -- row's own progressMax cannot be read as a requirement either. Only the
+    -- API separates "displayed" from "required", which is why Redraw draws this
+    -- row from these two numbers rather than from the widget it sits on.
+    local champ = CallApi("GetActiveKeystoneChampions")
+    if type(champ) == "table" then
+        data.championsDead     = tonumber(champ.championsDead)
+        data.championsRequired = tonumber(champ.championsRequired)
+    end
+
     ------------------------------------------------------------------
     -- Fallbacks, read off the tracker's own widgets.
     --
@@ -601,6 +628,16 @@ function mplus.Read()
         if forces then
             data.trashDead     = tonumber(forces.progress)
             data.trashRequired = tonumber(forces.progressMax)
+        end
+    end
+
+    -- Only when the API said nothing at all. A championsRequired of 0 is an
+    -- answer - "drawn, not required" - and must not be overwritten by the row.
+    if not data.championsRequired then
+        local champions = tracker.ObjectiveBlock and tracker.ObjectiveBlock.Champions
+        if champions then
+            data.championsDead     = tonumber(champions.progress)
+            data.championsRequired = tonumber(champions.progressMax)
         end
     end
 
@@ -1957,6 +1994,7 @@ local function Redraw()
     -- tracker drew them. The extra bosses themselves are a variable-length
     -- list that has to be windowed, so heroPanel fades them and draws its own.
     local contentBottom
+    local headingBottom
     local styled, subList = 0, {}
 
     for i = 1, #data.bosses do
@@ -1970,20 +2008,69 @@ local function Redraw()
             if boss.counter then FadeRegion(boss.counter) end
             table.insert(subList, boss)
         else
+            -- Champions is drawn as a heading rather than as a boss, off the
+            -- API's counts rather than the row's own.
+            --
+            -- As a boss row it got a pending ring, which states that the party
+            -- has something left to do - and on this client that is usually
+            -- false, because the row is drawn whether or not the objective is
+            -- required. A +15 ran the whole way with a pending champions ring
+            -- on a requirement of zero. The heading treatment says the count
+            -- when there is one and says nothing when there is not, which is
+            -- the difference the API can actually see.
+            if boss.champions then
+                if data.championsRequired then
+                    boss.progress = data.championsDead or 0
+                    boss.maximum  = data.championsRequired
+                    boss.done     = boss.maximum > 0 and boss.progress >= boss.maximum
+                end
+                boss.group = true
+            end
+
             styled = styled + 1
             StyleBossRow(styled, boss)
 
             local bottom = boss.label:GetBottom()
             if bottom and (not contentBottom or bottom < contentBottom) then contentBottom = bottom end
+
+            -- The expandable heading's own bottom, kept apart from the lowest
+            -- row on the panel - see the anchor note below. Champions is a
+            -- heading by the time it reaches here and is not this one.
+            if boss.group and not boss.champions and bottom then headingBottom = bottom end
         end
     end
     HideRowsFrom(styled + 1)
 
-    if #subList > 0 and contentBottom then
+    -- Anchored under the heading the list belongs to, not under the lowest row
+    -- on the panel.
+    --
+    -- Those were the same point right up until a row appeared *below* the
+    -- expanded children. Ascension anchors the champions row under the space it
+    -- reserves for them, so contentBottom jumped to the bottom of that whole
+    -- block and the list was pushed below it. What that looked like on screen
+    -- was a tall gap between the heading and the champions row - the reserved
+    -- space, with Ascension's faded rows still standing in it - and heroPanel's
+    -- own list stranded underneath, reading as though it belonged to champions
+    -- rather than to the heading four rows above it.
+    --
+    -- Drawn against its heading, the list lands in the space that was reserved
+    -- for it and the gap closes.
+    local anchor = headingBottom or contentBottom
+
+    if #subList > 0 and anchor then
         local plateTop = plate:GetTop()
-        local listTop  = plateTop and (contentBottom - plateTop - 4) or -120
+        local listTop  = plateTop and (anchor - plateTop - 4) or -120
         local listBottom = LayoutSubList(subList, listTop)
-        if plateTop then contentBottom = plateTop + listBottom end
+
+        -- Whichever ends up lower wins. The list is no longer guaranteed to be
+        -- the bottom of the panel: with a champions row under it, that row is,
+        -- and sizing the plate to the list would cut the champions row off.
+        if plateTop then
+            local listScreen = plateTop + listBottom
+            if not contentBottom or listScreen < contentBottom then
+                contentBottom = listScreen
+            end
+        end
     else
         HideSubRowsFrom(1)
         ui.wheel:Hide()

@@ -27,5 +27,6 @@ Move.lua
 Skin.lua
 Lines.lua
 Mplus.lua
+Keys.lua
 Options.lua
 Compat.lua

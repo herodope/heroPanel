@@ -24,6 +24,7 @@ rather than on the next reload.
 | 3 | Text — fonts, per-state colours, header chrome, collapse caret, right-aligned counts, glyph art | done (quest tracker) |
 | 4 | Mythic+ panel — header, keystone timer, chest tiers, threshold bar, enemy forces, boss rows | done |
 | 5 | Options panel, LibSharedMedia fonts | done |
+| 6 | Party key checks — `!keys` in group chat links your keystone from your bags | done |
 
 Known-good on the Ascension client this was built against. The notes below
 record what that client does differently from a stock 3.3.5a one — several of
@@ -50,6 +51,7 @@ exists. Restart the client or `/reload`.
 | `/hp glyphs <auto\|art\|tga\|blocks>` | Where the lock and caret come from |
 | `/hp texture <path>` | Put any texture in the caret's slot, untinted; no path resets it |
 | `/hp mplus` | Report what the Mythic+ panel resolved, and which source each number came from |
+| `/hp keys [on\|off]` | Answer `!keys` in group chat by linking your keystone; no argument links it now |
 | `/hp mode <auto\|own\|holder\|yield>` | Who positions the trackers — see Compatibility |
 | `/hp skin [on\|off]` | Skin the trackers, or hand them back to Blizzard |
 | `/hp status` | Report which frames were found and hooked |
@@ -309,6 +311,87 @@ rather than to the scroll child, because a `ScrollFrame` would clip it and a fon
 list showing four of its ten rows is not a list. It still anchors to its button,
 so it follows the body as it scrolls.
 
+## Party key checks
+
+Somebody types `!keys` in group chat and everybody's keystone appears, without
+anybody opening a bag. heroPanel watches for eight commands:
+
+```
+!keys  ?keys  #keys  $keys
+!key   ?key   #key   $key
+```
+
+Four sigils over two spellings, because which one a server's players settle on
+is local habit rather than anything the addon can know, and a request that only
+works when typed one particular way is one most of the party will conclude is
+broken.
+
+When it sees one, it reads your own bags, finds the keystone item and **links it
+into chat**. That is the whole mechanism. The item link is the message, so it is
+readable by everyone in the group whether or not they run heroPanel, and no
+other addon is in the path.
+
+### Why the bags rather than an addon message
+
+This started as a request to `Ascension_MythicPlus`, on the theory that the
+addon which owns the keystone data should be the one to publish it:
+
+```
+/run SendAddonMessage("ASC_MYTHIC_PLUS", "RequestKeystones", "PARTY")
+```
+
+**That does nothing on this client.** Not "nothing useful" — nothing at all,
+typed by hand as a `/run`, with a key in the bag and a party to send it to. No
+reply, no error, no chat output. Whatever Ascension's addon listens for, it is
+not that prefix and message, and since `Ascension_MythicPlus` is server-delivered
+rather than shipped in `Interface\AddOns`, there is no source on disk to read the
+real protocol out of. Guessing at a second protocol is not better than guessing
+at the first.
+
+The call is left commented in `Keys.lua` rather than deleted, so the next person
+to have the same good idea can see that it was had, tried and did not work. If a
+future build ever ships that addon as loose Lua, its real prefix is worth
+reading out of it — an addon message would answer for the whole group at once
+instead of one line per heroPanel user, and would put nothing in chat that the
+player did not type.
+
+### What it listens on, and what it says
+
+Six events: `CHAT_MSG_PARTY`, `CHAT_MSG_RAID`, `CHAT_MSG_INSTANCE_CHAT` and the
+`_LEADER` variant of each. A key check happens while a group is forming, and a
+group forming for a dungeon is as likely to be in instance chat as in party
+chat. The `_LEADER` events are separate from the base ones on this client, and
+the leader is the person most likely to be asking. `CHAT_MSG_INSTANCE_CHAT` does
+not exist on a stock 3.3.5a client, so all six are registered defensively and a
+client missing one keeps the other five.
+
+The reply goes to `RAID` when you are in a raid and `PARTY` otherwise. Instance
+chat is a listening channel but not a reply channel — a group that has one has a
+party too, and `PARTY` reaches the same people on a client that may not have the
+instance channel at all.
+
+With no keystone in your bags it says so rather than saying nothing, because a
+silent client is indistinguishable from one that is not running the addon.
+
+Matching is word by word rather than a substring search. `anyone !keys?` is a
+request, because that is how it actually gets typed; `monkeys` is not, and a
+party that cannot say the word is a party that turns the feature off. Only
+trailing punctuation is trimmed — the leading character is the command. This is
+deliberately looser than the WeakAura this replaces, which anchored on `^!keys`
+and ignored any line that did not begin with the command.
+
+**One answer per client per five seconds.** This reply is visible chat rather
+than a silent addon message, so a duplicate is not merely redundant — it is the
+addon spamming the group under the player's name. `/hp keys` ignores the
+throttle outright, since posting by hand is a decision that the last answer was
+not good enough.
+
+The switch is **Answer party key checks** at the bottom of the Mythic+ group in
+the options window, and `/hp keys on|off`. On by default — it costs nothing
+until one of eight short words appears in group chat, and a feature that ships
+switched off is a feature nobody knows is there. `/hp status` reports the state
+and prints the keystone it can currently see in your bags.
+
 ## Reading over bright terrain
 
 The design's colours were chosen against a solid `#14161F`. Background opacity is
@@ -562,6 +645,8 @@ heroPanel/
   Lines.lua       line styling, quest blocks, right-aligned counts, hover
   Mplus.lua       the Mythic+ panel — keystone timer, chest tiers, threshold
                   bar, enemy forces and boss rows
+  Keys.lua        party key checks — !keys in group chat links your keystone
+                  out of your bags
   Options.lua     the options window and the Interface → AddOns category
   Compat.lua      conflict detection
   Media.lua       fonts, by way of LibSharedMedia
@@ -634,6 +719,7 @@ panel    watch / mplus: bgColor, bgOpacity, borderColor, borderAlpha,
                         borderStyle, radius, textShadow, textShadowSize
          options:       bgColor   -- the config window's own background
 autoHide combat, mythic -- the quest tracker only
+keys     respond -- answer !keys in group chat by linking your keystone
 bg       texture             -- global; one piece of art for both panels
 font     face, and size = { watchHeader, watchTitle, watchBody,
                             mplusHeader, mplusTimer, mplusBody, options }
@@ -777,6 +863,33 @@ above.
   six rows tall with the wheel scrolling it. The required boss and the
   extra-bosses heading are still restyled where the tracker drew them; only the
   variable-length list is taken over.
+* **That list hangs off its own heading, not off the lowest row on the panel.**
+  Those were the same point until a row turned up *below* the expanded children.
+  Ascension anchors the champions row under the space it reserves for them, so
+  the "lowest row" jumped to the bottom of that whole block and heroPanel's list
+  was pushed underneath it. On screen that was a tall gap between the heading and
+  champions — the reserved space, with Ascension's faded rows still standing in
+  it — and the list stranded below, reading as though it belonged to champions
+  rather than to the heading four rows above. Anchored to its heading, the list
+  lands in the space reserved for it and the gap closes. The panel's height then
+  takes whichever of the list or the rows below it ends up lower, since the list
+  is no longer guaranteed to be the bottom of the panel.
+* **A drawn champions row is not a champions requirement.** On this client the
+  tracker draws "Defeat Champions" whether or not the objective is required: a
+  +15 Stratholme carried the row from start to finish and completed *timed*
+  without it, while `C_MythicPlus.GetActiveKeystoneChampions()` reported
+  `championsRequired = 0` throughout — as does every recorded run on that
+  account, at every key level from 1 to 15. So the widget cannot be read as a
+  requirement and neither can its `progressMax`; only the API separates
+  "displayed" from "required".
+
+  heroPanel therefore draws that row as a **heading** off the API's counts
+  rather than as a boss row off the widget's. As a boss row it got a pending
+  ring, which states that the party still owes something — and on this client
+  that is usually false. The heading treatment states the count when there is
+  one and says nothing when the requirement is zero. Without `C_MythicPlus` at
+  all there is no way to tell the two apart, so the fallback repeats what the
+  tracker already says rather than inventing the distinction.
 * **The scroll catcher takes the wheel but not the mouse.** `EnableMouseWheel`
   without `EnableMouse`, so a scroll reaches the list while a click or a drag
   still falls through to the tracker underneath, which is mouse-enabled for
