@@ -334,9 +334,11 @@ The caret's click target:
 ## 4c. Auto-hide
 
 Both toggles are in the **Quest tracker** group and are off by default. They
-fade the tracker to nothing rather than hiding it: `WatchFrame` is protected,
-`Hide` is refused under lockdown, and "hide in combat" has to work at the exact
-moment lockdown begins.
+fade the tracker to nothing *and* hide it where the client allows: `WatchFrame`
+is protected, `Hide` is refused under lockdown, and "hide in combat" has to work
+at the exact moment lockdown begins — so the fade is what always lands, and the
+hide is what makes the rectangle stop taking clicks. A key starting is not a
+combat transition, so in Mythic+ the hide lands immediately.
 
 - [ ] **Hide in combat** off: pulling something changes nothing
 - [ ] On: the tracker **and heroPanel's panel** both vanish on the pull
@@ -350,10 +352,30 @@ moment lockdown begins.
       comes back when it ends, without a reload
 - [ ] Both on at once, in a key: it stays hidden through the whole run rather
       than flickering back between pulls
-- [ ] Known and accepted: an invisible tracker still occupies its rectangle for
-      targeting if it has been unlocked at some point in the session.
-      `EnableMouse` is protected, so there is nothing to be done about it in
-      combat — it is the same trade the lock already makes
+
+**Click-through.** This is the half the mock cannot check — it has no cursor and
+no targeting. Unlock the tracker first (`/hp unlock`, drag it, lock it again) so
+the frame has the mouse, and put it somewhere with something behind it: mobs, a
+vendor, ground clutter, a Blizzard frame.
+
+- [ ] **In a key**, with hide-in-Mythic+ on: click and right-click where the
+      tracker was. The click reaches what is behind it — no dead rectangle, no
+      quest line eating a click, no POI button under the cursor
+- [ ] Target a mob standing behind where the tracker was, by clicking it
+- [ ] Turn in or pick up a quest during the run: the tracker does not come back
+      up invisible-and-clickable. The refresh re-hides it
+- [ ] `/hp debug` says *"hidden outright; its rectangle takes no clicks"* once
+      per hide, not once per refresh
+- [ ] **In combat**, with hide-in-combat on: the rectangle is *still* live until
+      the fight ends. That is known and accepted — `Hide` is refused under
+      lockdown and there is no call that would land. The debug line says the hide
+      was deferred
+- [ ] The deferred hide does **not** fire after the fight: leaving combat shows
+      the tracker, it does not hide it a moment later
+- [ ] A tracker the *player* hid (or the client's own "hide objectives" setting)
+      is never shown by the auto-hide lifting
+- [ ] `/hp skin off` while a key is running shows the tracker again rather than
+      leaving it hidden with nothing on screen saying why
 
 ## 5. Resize grips
 
@@ -423,7 +445,20 @@ Scale goes to the tracker and position keeps going to the holder.
 - [ ] The turn-in question mark still sits in the left margin beside its title
 - [ ] The **POI arrow** sits to the *right* of its quest's name, on that quest's
       row, and does not stack with the question mark
+- [ ] It lands **after the last character** of the name, not part-way along it.
+      This is the one the mock cannot measure honestly: real text metrics are the
+      whole point of the bug, and the harness measures five pixels a character
+      whatever font it is handed
+- [ ] Drag the **quest font size** up and down while a POI button is on screen.
+      It follows the end of the name at every size — the rect the tracker laid
+      the title out in does not, which is what put the marker mid-name before
 - [ ] A quest with a long name does not push the arrow out of the panel
+- [ ] A quest name long enough to **wrap onto two lines** still gets a marker
+      inside the panel rather than one pushed off the right edge
+- [ ] `/hp dump` lists the button as `placed, beside title (name ends …, arrow at
+      …, panel …)`. If it is ever wrong again, those four numbers say which of
+      the three ways it went wrong — mismeasured name, clamp, or a tracker laid
+      out wider than the panel
 - [ ] `/hp skin off` puts both back where the tracker had them
 
 ## 8. Combat

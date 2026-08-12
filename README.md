@@ -354,19 +354,47 @@ Two toggles in the Quest tracker group, off by default: hide the objective
 tracker while in combat, and hide it for the length of a Mythic+ run. They are
 independent, and either one being true hides it.
 
-**It fades rather than hides, and that is the whole design.** `WatchFrame` is
+**It fades first and hides second, because neither one is enough on its own.**
+
+The alpha goes to zero, and that is the half that always lands. `WatchFrame` is
 protected and `Hide` is among the calls the client refuses under lockdown — and
 "hide in combat" has to take effect at the exact moment lockdown begins, so the
-one call that looks obvious is the one guaranteed to fail every single time.
-`SetAlpha` is neither protected nor something Blizzard's layout code reads back,
-so it lands whatever else is happening. heroPanel's own plate is hidden properly,
-because that one is ours. The alpha taken away is remembered and put back, rather
-than assuming the tracker was at 1.
+one call that looks obvious is the one guaranteed to fail there. `SetAlpha` is
+neither protected nor something Blizzard's layout code reads back, so it lands
+whatever else is happening.
+
+Then the frame is hidden outright, when the client will allow it, and that is the
+half that makes the region **click-through**. Alpha zero takes the tracker off
+the screen and leaves its rectangle live: a tracker that has been unlocked once
+in a session keeps the mouse for the rest of it (see *Locking no longer takes the
+mouse away*), and its quest lines and POI buttons take clicks of their own
+besides — those are Blizzard's, not heroPanel's to switch off one at a time.
+`Hide` takes the whole subtree out of the input path in one call.
+
+`Hide` goes through `ns.RunWhenSafe`, and that split falls exactly where the two
+triggers need it. **A key starting is not a combat transition**, so the Mythic+
+hide lands there and then and the region stays click-through for the length of
+the run. A combat hide is deferred, so until that fight ends the tracker is
+invisible but still in the way — the same trade as before, and the best the
+client allows.
+
+Both deferred halves re-ask "is it still wanted hidden" rather than trusting the
+state they were queued in: the combat queue flushes on `PLAYER_REGEN_ENABLED` and
+so does the lift, so a hide queued during a fight would otherwise land a frame
+after the fight it was queued for had ended. What was taken is remembered — the
+alpha, and whether heroPanel is the one that hid the frame at all — so turning
+the feature or the skin off puts back what was there rather than assuming the
+tracker was at 1 and shown. A tracker the *player* had hidden is never shown.
+
+heroPanel's own plate is hidden properly, because that one is ours.
 
 `Refresh` returns early while auto-hidden. Without that, the next refresh — and a
 fight produces plenty — would put the panel straight back up over a tracker that
 has been faded out from under it, which is the worst of both: heroPanel's chrome
-on screen with no tracker in it.
+on screen with no tracker in it. On its way out it re-applies the hide, because
+the game shows the tracker again from under the fade often enough — a turn-in is
+enough — and a tracker that comes back up at alpha zero is invisible and
+clickable, which is the one state this exists to prevent.
 
 The Mythic+ half asks `ns.Mplus.IsActive()` rather than the API directly, so
 there is one answer to "is a key running" and the two panels cannot disagree.
@@ -374,10 +402,12 @@ there is one answer to "is a key running" and the two panels cannot disagree.
 because it runs on a ticker while a key is up.
 
 What this does *not* do is take the mouse off the tracker: `EnableMouse` is
-protected too. An invisible tracker that has been unlocked at some point in the
-session still occupies its rectangle for targeting. That is the same trade the
-lock already makes, and making it worse in combat is not worth a call that would
-be refused anyway.
+protected too, and it would only cover heroPanel's own doing anyway — Blizzard's
+quest lines take their own clicks. `Hide` covers the subtree in one call and is
+refused in exactly the same places, so there is nothing `EnableMouse` would buy.
+The one case left uncovered is a **combat** hide: between the pull and the end of
+the fight the tracker is invisible and still in the way, because every call that
+would fix that is refused for the duration.
 
 ## Fonts
 
@@ -455,9 +485,35 @@ that names the arrow something else keeps the old behaviour rather than having
 heroPanel guess and get the two the wrong way round.
 
 Unlike the left-margin tuck, the arrow is re-anchored on every pass rather than
-settling — it is placed from the title's right edge, and a title whose text
-changes length would otherwise leave it behind. Re-anchoring is idempotent, so a
-pass that changes nothing moves nothing.
+settling — it is placed from the end of the title's text, and a title whose text
+changes length, or whose font the player has just changed, would otherwise leave
+it behind. Re-anchoring is idempotent, so a pass that changes nothing moves
+nothing.
+
+**Measured from the drawn string, not from the rect it is drawn in.** Placing it
+from `GetRight` put the arrow part-way along the quest name in the game, and the
+rect and the string are two different measurements of which neither is right on
+its own:
+
+* The rect is the room the string was *given*. This tracker constrains its titles
+  so they can wrap, so a short name leaves a wide rect around it and an arrow
+  placed from that edge lands out past the name with nothing in between.
+* The rect can also be **narrower** than what is drawn in it, because it is the
+  size the string was last laid out at. heroPanel sets the player's font a few
+  lines above the tuck walk in the same pass, and a title laid out by the client
+  at 12 and redrawn at 16 spills a third past the rect it was measured in. That
+  is the one that was reported.
+* `GetStringWidth` answers for the string as it will be drawn, now, so it covers
+  both. What it cannot answer is a title that **wrapped**: then it is the length
+  of every line laid end to end and says nothing about where the last one stops.
+  A label taller than 1.6× its own font size has wrapped, and that case takes the
+  rect instead.
+
+Left-justified strings only — anywhere else the text does not begin at the left
+edge, so adding its width to that edge measures nothing. `/hp dump` reports the
+placement's own verdict for a POI button rather than a tuck verdict it was never
+subject to, with the four screen-pixel numbers that tell the failures apart:
+where the name ends, where the arrow went, and the panel's own span.
 
 ## Compatibility
 

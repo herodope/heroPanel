@@ -61,6 +61,7 @@ local originals = {}   -- FontString -> { path, size, flags, r, g, b, a }
 local decorated = {}   -- FontString -> { raw, shown }
 local dashAlpha = {}   -- FontString -> original alpha
 local moved     = {}   -- object -> { points, width, height } for art tucked back in
+local placed    = {}   -- POI button -> what the last placement decided, for /hp dump
 
 local blocks    = {}   -- quest blocks built by the last Apply
 local wrappers  = {}   -- pool of hover frames
@@ -457,9 +458,10 @@ end
 -- reads as a marker on that line rather than as a second icon in a stack.
 --
 -- Unlike the left-margin tuck this one re-anchors on every pass rather than
--- settling: it is positioned from the title's right edge, and a title whose
--- text changes length would otherwise leave the arrow behind. Re-anchoring is
--- idempotent, so a pass that changes nothing moves nothing.
+-- settling: it is positioned from the end of the title's text, and a title
+-- whose text changes length - or whose font the player has just changed - would
+-- otherwise leave the arrow behind. Re-anchoring is idempotent, so a pass that
+-- changes nothing moves nothing.
 --------------------------------------------------------------------------------
 
 local POI_GAP = 5   -- between the end of the title and the arrow
@@ -476,6 +478,53 @@ local function IsQuestPoi(object)
     return string.find(string.lower(name), "poi", 1, true) == 1
 end
 
+-- A quest title that is taller than the font it is set in has wrapped onto a
+-- second line. The tracker's titles do wrap - a long one is two rows deep in
+-- the panel - and that is the one case where the string width stops meaning
+-- what it looks like it means.
+local function IsWrapped(label, height)
+    local ok, _, size = pcall(label.GetFont, label)
+    if not ok or type(size) ~= "number" or size <= 0 then return false end
+    return height > size * 1.6
+end
+
+-- Where a title's text ends on screen, which is not the same thing as where its
+-- FontString ends.
+--
+-- The right edge of the rect is what the arrow used to be measured from, and in
+-- the game it landed part-way along the quest name rather than after it. The
+-- rect and the drawn string are two different measurements, and neither one is
+-- right on its own:
+--
+--   * The rect is the room the string was given. A tracker that constrains its
+--     titles so they can wrap - this one does - leaves that rect wide with a
+--     short title sitting inside it, so measuring from it puts the arrow out
+--     past the end of the name with nothing in between.
+--   * The rect can also be *narrower* than what is drawn in it, because it is
+--     the size the string was last laid out at. heroPanel sets the player's
+--     font a few lines above the tuck walk in this same pass, and a title laid
+--     out by the client at 12 and redrawn at 16 spills a third past the rect it
+--     was measured in.
+--   * The string width is the string as it will be drawn, now, so it answers
+--     both of those. What it cannot answer is a title that wrapped: then it is
+--     the length of every line laid end to end and says nothing about where the
+--     last one stops. That is what the rect is better at, so that case takes it.
+--
+-- Left-justified strings only. Anywhere else the text does not begin at the
+-- left edge, so adding its width to that edge measures nothing.
+local function TextRight(label, left, right, height, scale)
+    if type(label.GetStringWidth) ~= "function" then return right end
+
+    local justify = label.GetJustifyH and label:GetJustifyH()
+    if justify and justify ~= "LEFT" then return right end
+
+    local ok, width = pcall(label.GetStringWidth, label)
+    if not ok or type(width) ~= "number" or width <= 0 then return right end
+    if IsWrapped(label, height) then return right end
+
+    return left + width * scale
+end
+
 -- The title whose row this object sits on, by vertical overlap in screen
 -- pixels. blocks is built by Apply before the tuck walk runs, and its first
 -- line is always the title.
@@ -484,9 +533,11 @@ local function TitleOnRow(top, bottom)
         local line  = blocks[i].lines and blocks[i].lines[1]
         local label = line and line.label
         if label and label.GetLeft then
-            local _, labelRight, labelTop, labelBottom = ScreenRect(label)
+            local labelLeft, labelRight, labelTop, labelBottom, labelScale = ScreenRect(label)
             if labelTop and top > labelBottom and bottom < labelTop then
-                return labelRight, labelTop, labelBottom
+                local height = (labelTop - labelBottom) / labelScale
+                return TextRight(label, labelLeft, labelRight, height, labelScale),
+                       labelTop, labelBottom
             end
         end
     end
@@ -505,8 +556,8 @@ local function PlaceBesideTitle(object, plate)
         return string.format("too big %.0fx%.0f", width, height)
     end
 
-    local labelRight, labelTop, labelBottom = TitleOnRow(top, bottom)
-    if not labelRight then return "no title on this row" end
+    local titleRight, labelTop, labelBottom = TitleOnRow(top, bottom)
+    if not titleRight then return "no title on this row" end
 
     if not SaveGeometry(object) then return "no anchor to restore" end
 
@@ -515,10 +566,10 @@ local function PlaceBesideTitle(object, plate)
     pcall(object.SetWidth, object, width)
     pcall(object.SetHeight, object, height)
 
-    -- Just past the end of the title, and never past the panel's inner edge -
-    -- a long quest name would otherwise push the arrow out of the panel, which
-    -- is the problem this is meant to fix rather than move.
-    local targetLeft = labelRight + POI_GAP * panelScale
+    -- Just past the last character of the title, and never past the panel's
+    -- inner edge - a long quest name would otherwise push the arrow out of the
+    -- panel, which is the problem this is meant to fix rather than move.
+    local targetLeft = titleRight + POI_GAP * panelScale
     local maxLeft    = panelRight - ICON_MARGIN * panelScale - width * scale
     if targetLeft > maxLeft then targetLeft = maxLeft end
 
@@ -530,7 +581,14 @@ local function PlaceBesideTitle(object, plate)
     object:SetPoint("TOPLEFT", plate, "TOPLEFT",
         (targetLeft - panelLeft) / scale,
         (targetTop - panelTop) / scale)
-    return "beside title"
+
+    -- Reported in screen pixels, because these four numbers are what tells the
+    -- ways this can go wrong apart from one another. An arrow short of where
+    -- the name ends means the title was mismeasured; an arrow at the panel's
+    -- inner edge means the clamp took it; a name ending past the panel means
+    -- the tracker is laid out wider than the panel is drawn.
+    return string.format("beside title (name ends %.0f, arrow at %.0f, panel %.0f..%.0f)",
+        titleRight, targetLeft, panelLeft, panelRight)
 end
 
 -- Walks the tracker's whole subtree rather than named levels of it.
@@ -557,7 +615,7 @@ local function TuckStrayArt(watch)
     ns.WalkFrameTree(watch, function(object, info)
         if info.objectType == "FontString" then return end
         if IsQuestPoi(object) then
-            PlaceBesideTitle(object, plate)
+            placed[object] = PlaceBesideTitle(object, plate)
             -- Do not descend: its own art is anchored to it and comes along.
             return false
         end
@@ -581,7 +639,12 @@ function lines.DumpTuck()
         if info.objectType == "FontString" then return end
         count = count + 1
 
-        local verdict = TuckVerdict(object, plate)
+        -- A POI button is not tucked and its tuck verdict would be a lie - it
+        -- reads "already inside" of an arrow that was placed there deliberately.
+        -- What the placement itself decided is reported instead.
+        local verdict = IsQuestPoi(object)
+            and (placed[object] or "POI, not placed this pass")
+            or TuckVerdict(object, plate)
         local name = (object.GetName and object:GetName()) or nil
 
         -- Anything named, and anything heroPanel has moved, is always listed.
@@ -589,8 +652,10 @@ function lines.DumpTuck()
         -- verdict was wanted: a named frame that came back "already inside" or
         -- "hidden" is the interesting case, because it is the one that explains
         -- why nothing happened. Only unnamed clutter is dropped.
-        if moved[object] then
+        if moved[object] and not IsQuestPoi(object) then
             verdict = "|cFF79C68Dtucked|r, now " .. verdict
+        elseif moved[object] then
+            verdict = "|cFF79C68Dplaced|r, " .. verdict
         elseif not name and (verdict == "already inside" or verdict == "not drawn") then
             return
         end
@@ -1081,6 +1146,7 @@ function lines.Restore()
             end)
         end
         wipe(moved)
+        wipe(placed)
     end
 
     for fontString, original in pairs(originals) do

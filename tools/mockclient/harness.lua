@@ -595,12 +595,18 @@ local lineDefs = {
     { text = "Alpha wolf slain: 0/1",     dash = "- ", top = 740, left = 1020 },
     -- The middle quest is the one being pointed at, so the arrow has a title
     -- above and below it to be put on the wrong row of.
-    -- `right` because this is the one title measured against: the mock gives
-    -- every line a fixed 180px rect, and an arrow placed after a title that
-    -- wide is always clamped to the panel edge, which tests the clamp and
-    -- nothing else. Five pixels a character is the harness's own text metric.
+    --
+    -- `right` because this is the one title measured against, and it is set
+    -- deliberately short of the string drawn in it - 60 pixels of rect around
+    -- 110 pixels of text, at the harness's own five pixels a character. That is
+    -- the shape the bug was reported in: heroPanel sets the player's font in the
+    -- same pass as it places the arrow, so a title laid out by the client at one
+    -- size and redrawn at a larger one leaves a rect that has not caught up, and
+    -- an arrow measured from that rect lands part-way along the quest name. The
+    -- other 180px lines are the opposite case - room to spare around a short
+    -- string - so between them the two rules are pinned from both sides.
     { text = "Supplies for the Front",    dash = nil,  top = 720, left = 1010,
-      poi = true, right = 1010 + 22 * 5 },
+      poi = true, right = 1010 + 60 },
     { text = "Iron ore collected: 12/12", dash = "- ", top = 704, left = 1020 },
     { text = "A Cure for the Ailing",     dash = nil,  top = 684, left = 1010 },
     { text = "Deliver the tonic to Marla", dash = "- ", top = 668, left = 1020 },
@@ -3669,10 +3675,16 @@ end
 --------------------------------------------------------------------------------
 -- Auto-hide
 --
--- The tracker is faded rather than hidden, and that is the whole design. Hide
--- is refused on WatchFrame under lockdown, which is exactly when "hide in
--- combat" has to take effect - so the obvious call is the one guaranteed to
--- fail every time. SetAlpha is not protected.
+-- Two halves, because neither one is enough. The alpha goes to zero, which is
+-- the half that always lands: Hide is refused on WatchFrame under lockdown,
+-- which is exactly when "hide in combat" has to take effect, and SetAlpha is not
+-- protected. Then the frame is hidden outright when the client allows it, which
+-- is the half that makes the rectangle click-through - a faded tracker still
+-- takes the clicks, and its quest lines and POI buttons take their own.
+--
+-- The split falls where the two triggers need it: a key starting is not a combat
+-- transition, so the Mythic+ hide lands immediately; a combat hide waits, and
+-- must then not land after the fight it was queued for has ended.
 --------------------------------------------------------------------------------
 
 do
@@ -3697,6 +3709,8 @@ do
         "entering combat should fade the tracker, got " .. tostring(WatchFrame:GetAlpha()))
     check(not HeroPanelWatchPlate:IsShown(), "...and take heroPanel's panel with it")
     check(ns.Skin.IsAutoHidden(), "...and say so")
+    check(WatchFrame:IsShown(),
+        "Hide is protected, so a combat hide cannot land during the fight itself")
 
     -- A refresh mid-fight must not put the panel back up over a tracker that is
     -- not there. Quest turn-ins fire plenty of these.
@@ -3711,6 +3725,10 @@ do
         "leaving combat should bring it back, got " .. tostring(WatchFrame:GetAlpha()))
     check(HeroPanelWatchPlate:IsShown(), "...and the panel with it")
     check(not ns.Skin.IsAutoHidden(), "...and clear the flag")
+    -- The deferred hide and the lift both run off PLAYER_REGEN_ENABLED. A hide
+    -- queued for a fight must not land a frame after that fight has ended.
+    check(WatchFrame:IsShown(),
+        "the hide queued during the fight must not fire once the fight is over")
 
     -- Off means off: a fight with the setting disabled changes nothing.
     ns.db.autoHide.combat = false
@@ -3729,9 +3747,27 @@ do
     check(ns.Skin.IsAutoHidden() == ns.Mplus.IsActive(),
         "the quest tracker should follow the keystone state")
 
+    -- The case this was reported for: a key starts out of combat, so the Hide
+    -- lands there and then and the tracker's rectangle stops taking clicks for
+    -- the length of the run. A faded frame is still a frame.
+    if ns.Mplus.IsActive() then
+        check(not WatchFrame:IsShown(),
+            "a key starting out of combat should hide the tracker outright, not just fade it")
+
+        -- The game shows the tracker again from under the fade often enough - a
+        -- turn-in is one - and it comes back invisible and clickable.
+        WatchFrame:Show()
+        ns.Skin.Refresh("tracker shown from under the fade")
+        tick(); tick()
+        check(not WatchFrame:IsShown(),
+            "a tracker shown from under an auto-hide should be hidden again")
+    end
+
     ns.db.autoHide.mythic = false
     ns.Skin.RefreshAutoHide()
     tick(); tick()
+    check(WatchFrame:IsShown(), "ending the auto-hide should show the tracker again")
+    check(WatchFrame:GetAlpha() == 1, "...at the alpha it had before")
 
     -- Turning the skin off must never leave a faded tracker behind.
     ns.db.autoHide.combat = true
@@ -3742,10 +3778,30 @@ do
     check(WatchFrame:GetAlpha() == 1,
         "/hp skin off must hand back a visible tracker even mid-fight, got "
         .. tostring(WatchFrame:GetAlpha()))
+    check(WatchFrame:IsShown(), "...and a shown one")
     leaveCombat()
     ns.Skin.SetEnabled(true)
     ns.db.autoHide.combat = false
     tick(); tick()
+
+    -- The same switch, over the half that does land: a tracker hidden outright
+    -- for a key must be shown again by the skin being turned off, not left
+    -- hidden with nothing on screen saying why.
+    if ns.Mplus.IsActive() then
+        ns.db.autoHide.mythic = true
+        ns.Skin.RefreshAutoHide()
+        tick(); tick()
+        check(not WatchFrame:IsShown(), "the key should have hidden it outright")
+
+        ns.Skin.SetEnabled(false)
+        tick(); tick()
+        check(WatchFrame:IsShown(), "/hp skin off must show a tracker heroPanel hid")
+        check(WatchFrame:GetAlpha() == 1, "...at the alpha it had before")
+
+        ns.db.autoHide.mythic = false
+        ns.Skin.SetEnabled(true)
+        tick(); tick(); tick()
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -3811,9 +3867,17 @@ do
         "the arrow belongs inside the panel, got left " .. tostring(poi:GetLeft())
         .. " against panel " .. tostring(plate:GetLeft()) .. ".." .. tostring(plate:GetRight()))
 
-    check(poi:GetLeft() >= title:GetRight(),
-        "the arrow should sit after the end of the quest name, got "
-        .. tostring(poi:GetLeft()) .. " against a title ending at " .. tostring(title:GetRight()))
+    -- Measured from where the name is drawn, not from the rect it is drawn in.
+    -- This title's rect deliberately stops short of its own string, which is the
+    -- shape the bug was reported in: an arrow placed from the rect lands
+    -- part-way along the quest name instead of after it.
+    local textEnd = title:GetLeft() + title:GetStringWidth()
+    check(textEnd > title:GetRight() + 1,
+        "the mock's title must draw wider than its own rect or this proves nothing, "
+        .. "text ends " .. tostring(textEnd) .. ", rect ends " .. tostring(title:GetRight()))
+    check(poi:GetLeft() >= textEnd,
+        "the arrow should sit after the last character of the quest name, got "
+        .. tostring(poi:GetLeft()) .. " against text ending at " .. tostring(textEnd))
 
     -- On its own quest's row, not the one above or below it.
     local top, bottom = poi:GetTop(), poi:GetBottom()

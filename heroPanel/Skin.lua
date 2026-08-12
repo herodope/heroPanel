@@ -707,6 +707,10 @@ local function Refresh(reason)
         if skin.IsAutoHidden and skin.IsAutoHidden() then
             plate:Hide()
             if ns.Lines then ns.Lines.ClearHover() end
+            -- And the tracker itself, which the game can put back up from under
+            -- the fade - a turn-in is enough. Invisible and clickable is the one
+            -- state auto-hide must not leave the screen in.
+            if skin.EnforceAutoHide then skin.EnforceAutoHide() end
             return
         end
 
@@ -778,29 +782,45 @@ skin.Refresh = Refresh
 -- Getting the quest tracker out of the way on its own: during a fight, and for
 -- the length of a Mythic+ run, each independently.
 --
--- The tracker is hidden by taking its alpha to zero rather than by calling Hide
--- on it. That is not a shortcut - it is the only thing that works. WatchFrame is
--- protected and Hide is among the calls the client refuses under lockdown, and
--- "hide in combat" has to take effect at the exact moment lockdown begins, so
--- the one route that would look obvious is the one route that is guaranteed to
--- fail every single time. SetAlpha is neither protected nor something
--- Blizzard's layout code reads back, so it lands whatever else is happening.
+-- Two things happen to the tracker, because neither one is enough on its own.
+--
+--   * Its alpha goes to zero. SetAlpha is neither protected nor something
+--     Blizzard's layout code reads back, so it lands whatever else is going on -
+--     including at the exact moment lockdown begins, which is when "hide in
+--     combat" has to take effect. It is the half that is guaranteed to work.
+--   * The frame is hidden outright, when the client will allow it. Alpha zero
+--     takes the tracker off the screen and leaves its rectangle live: a tracker
+--     that has been unlocked once in a session keeps the mouse for the rest of
+--     it (see Move.lua), and its quest lines and POI buttons take clicks of
+--     their own besides - those are Blizzard's, not heroPanel's to switch off
+--     one at a time. An invisible frame went on swallowing clicks meant for
+--     whatever was behind it. Hide takes the whole subtree out of the input
+--     path in one call, which is what makes the region click-through.
+--
+-- Hide is protected, so it goes through ns.RunWhenSafe - and that split falls
+-- exactly where the two triggers need it. A key starting is not a combat
+-- transition, so the Mythic+ hide lands there and then and the region is
+-- click-through for the length of the run, which is the case this was reported
+-- for. A combat hide is deferred, so until that fight ends the tracker is
+-- invisible but still in the way. That is the same trade as before and it is
+-- the best the client allows; nothing here can be made to land under lockdown.
+--
+-- Both deferred halves re-ask AutoHideWanted rather than trusting the state
+-- they were queued in. The combat queue flushes on PLAYER_REGEN_ENABLED and so
+-- does the lift, so a hide queued during a fight would otherwise land a frame
+-- after the fight it was queued for had already ended.
 --
 -- heroPanel's own plate is hidden properly, because that one is ours.
 --
--- What this does not do is take the mouse off the tracker. EnableMouse *is*
--- protected, so an invisible tracker that has been unlocked at some point in
--- the session still occupies its rectangle for targeting purposes. That is the
--- same trade the lock already makes and it is written down in Move.lua; making
--- it worse in combat is not worth a call that would be refused anyway.
---
--- The alpha heroPanel took away is remembered, so turning the feature off - or
--- turning the skin off - puts back whatever the tracker had rather than
--- assuming it was 1.
+-- What was taken away is remembered - the alpha, and whether heroPanel is the
+-- one that hid the frame at all - so turning the feature off, or turning the
+-- skin off, puts back what was there rather than assuming it was 1 and shown.
 --------------------------------------------------------------------------------
 
-local autoHidden       = false
-local trackerAlphaSaved            -- the tracker's own alpha before we took it
+local autoHidden        = false
+local trackerAlphaSaved             -- the tracker's own alpha before we took it
+local trackerHiddenByUs = false     -- a Hide of ours landed, so a Show is ours to make
+local hidePending       = false     -- a Hide is sitting in the combat queue
 
 local function AutoHideWanted()
     local auto = ns.db and ns.db.autoHide
@@ -812,6 +832,57 @@ local function AutoHideWanted()
         return true
     end
     return false
+end
+
+-- A tracker that is already hidden - by the player's own setting, or by the
+-- game - is not ours to hide, and so must never become ours to show again. That
+-- is the whole reason this asks IsShown rather than tracking intent: the flag
+-- records what heroPanel actually did, not what it meant to do.
+--
+-- The flag is deliberately not a guard on re-entry. The game shows the tracker
+-- from under us often enough - a turn-in is enough - and a tracker that has come
+-- back up at alpha zero is invisible and clickable, which is the exact state
+-- this exists to prevent. Refresh calls this on every pass while auto-hidden.
+local function HideTrackerWhenSafe()
+    if hidePending then return end
+
+    local watch = ns.GetTrackerFrame("watch")
+    if not (watch and watch.IsShown and watch:IsShown()) then return end
+
+    -- RunWhenSafe runs the call now and returns true, or queues it behind the
+    -- fight and returns false. Queued is the only state worth remembering: it
+    -- is what stops every refresh in a long fight from stacking up its own copy.
+    local ran = ns.RunWhenSafe(function()
+        hidePending = false
+        if not (skin.enabled and AutoHideWanted()) then return end
+
+        local frame = ns.GetTrackerFrame("watch")
+        if not (frame and frame:IsShown()) then return end
+        if not pcall(frame.Hide, frame) then return end
+
+        trackerHiddenByUs = true
+        ns.Debug("objective tracker hidden outright; its rectangle takes no clicks.")
+    end, "auto-hide hide")
+    hidePending = not ran
+end
+
+local function ShowTrackerIfOurs()
+    if not trackerHiddenByUs then return end
+
+    ns.RunWhenSafe(function()
+        -- Hidden again while this waited out a fight: leave it hidden, and
+        -- leave the flag set, because it is still ours to undo later.
+        if skin.enabled and AutoHideWanted() then return end
+
+        trackerHiddenByUs = false
+        local frame = ns.GetTrackerFrame("watch")
+        if frame then pcall(frame.Show, frame) end
+    end, "auto-hide show")
+end
+
+-- Called from Refresh while the tracker is auto-hidden, for the case above.
+function skin.EnforceAutoHide()
+    if autoHidden then HideTrackerWhenSafe() end
 end
 
 -- Returns true when the tracker is currently hidden by this, which is what
@@ -830,11 +901,13 @@ local function ApplyAutoHide()
                 trackerAlphaSaved = (ok and alpha) or 1
             end
             pcall(watch.SetAlpha, watch, 0)
+            HideTrackerWhenSafe()
         end
         if plate then plate:Hide() end
         if ns.Lines then ns.Lines.ClearHover() end
         ns.Debug("objective tracker auto-hidden.")
     else
+        ShowTrackerIfOurs()
         if watch and trackerAlphaSaved ~= nil then
             pcall(watch.SetAlpha, watch, trackerAlphaSaved)
             trackerAlphaSaved = nil
@@ -1041,6 +1114,11 @@ function skin.Disable()
         end
         trackerAlphaSaved = nil
         autoHidden = false
+
+        -- And shown again, if hiding it is what took it off the screen.
+        -- skin.enabled is already false by here, so the deferred half's "is it
+        -- still wanted hidden" test comes back no even if a key is still up.
+        ShowTrackerIfOurs()
     end
 
     if hoverTicker then hoverTicker:Stop() end
