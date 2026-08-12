@@ -472,12 +472,12 @@ end
 --   opts.deferred true if opts.set may be refused in combat, so the player is
 --                 told once rather than left wondering
 --
--- The two trackers pass the lock state as `visible`, because a grip is a piece
+-- All three panels pass the lock state as `visible`, because a grip is a piece
 -- of edit-mode furniture and leaving it on a panel someone has finished
 -- arranging is one more thing drawn over their game for no reason. The options
--- window passes nothing: it is a dialog you are looking at precisely because
--- you are configuring something, and it is already draggable whatever the
--- trackers' lock says.
+-- window was always-on for a while, on the grounds that the lock governs the
+-- trackers rather than it - which is true, and still read as the third panel
+-- having missed the memo.
 --------------------------------------------------------------------------------
 
 local GRIP_SIZE  = 14
@@ -657,13 +657,12 @@ local function OnDragStart(frame)
     -- Both trackers stay draggable in combat, which is when you are most
     -- likely to want to move one.
     --
-    -- WatchFrame is protected, and this used to refuse a drag in combat on
-    -- that basis. It turns out not to be needed: StartMoving / StopMovingOrSizing
-    -- on the tracker are not among the calls the 3.3.5a client refuses under
-    -- lockdown, and dragging an unlocked tracker through a Mythic+ boss fight
-    -- produced no taint. The refusal cost the one case the feature is for, so
-    -- it is gone. The deferral in ns.RunWhenSafe still guards the calls that
-    -- genuinely are protected - SetPoint, Show, Hide, SetScale, EnableMouse.
+    -- WatchFrame is protected and a drag was refused in combat on that basis
+    -- once, needlessly: StartMoving / StopMovingOrSizing are not among the calls
+    -- the 3.3.5a client refuses under lockdown, and dragging an unlocked tracker
+    -- through a boss fight produced no taint. ns.RunWhenSafe still guards the
+    -- calls that genuinely are protected - SetPoint, Show, Hide, SetScale,
+    -- EnableMouse.
 
     -- In holder mode the frame under the cursor is the tracker, but the frame
     -- that actually moves is the holder it is docked into.
@@ -700,14 +699,10 @@ end
 
 -- Apply the current lock state to one tracker.
 --
--- This used to push the whole job through ns.RunWhenSafe, which meant unlocking
--- during a fight did nothing until the fight was over - and a fight is exactly
--- when you notice the tracker is in the way. The drag itself has never been the
--- problem: StartMoving and StopMovingOrSizing are not among the calls the
--- client refuses under lockdown, and dragging an unlocked tracker through a
--- boss pull produces no taint.
---
--- So the work is split by what each call actually needs:
+-- Pushing the whole job through ns.RunWhenSafe came first and meant unlocking
+-- during a fight did nothing until the fight was over, which is exactly when you
+-- notice the tracker is in the way. So the work is split by what each call
+-- actually needs:
 --
 --   * SetMovable and RegisterForDrag are done once, at hook time, and left
 --     alone. Registering for drag does not by itself let anything move: every
@@ -744,12 +739,9 @@ local function ApplyLockState(key)
 
     -- Locking deliberately leaves the mouse on.
     --
-    -- It used to turn it off again, and that is what made unlocking during a
-    -- fight do nothing until the fight was over: the mouse has to be on before
-    -- the frame can be dragged, EnableMouse is refused under lockdown, and a
-    -- tracker that had been locked out of combat had already had it taken away.
-    -- Locking is the state you are in when you go into a fight, so that was the
-    -- case every time.
+    -- Turning it off again is what made unlocking mid-fight do nothing: the mouse
+    -- has to be on before the frame can be dragged, EnableMouse is refused under
+    -- lockdown, and locking is the state you are in when a fight starts.
     --
     -- The cost is that the tracker's rectangle stops being click-through once
     -- it has been unlocked once in a session - you cannot target something

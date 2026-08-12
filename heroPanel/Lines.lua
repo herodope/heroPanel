@@ -43,9 +43,10 @@ local CHECK_SIZE    = 11
 local DASH_MAX_W    = 16   -- widest a FontString can be and still be a dash
 local COUNTER_RIGHT = 14   -- gap between the right-aligned count and the panel
 
--- The check is drawn from solids by ns.NewGlyph. Blizzard's tick textures are
--- yellow and green respectively, and the design wants the completed-objective
--- colour exactly - a tint multiplies, so coloured art cannot get there.
+-- The check comes from ns.NewGlyph, so it is heroPanel's own art rather than
+-- Blizzard's. Their tick textures are yellow and green, and the design wants the
+-- completed-objective colour exactly - a tint multiplies, so coloured art cannot
+-- get there.
 
 --------------------------------------------------------------------------------
 -- State
@@ -241,17 +242,10 @@ end
 
 -- The configured size, whatever it is.
 --
--- This used to clamp growth to two points over the size the tracker had laid
--- the line out at, on the reasoning that the tracker measures each line and
--- places the next one before heroPanel sees it, so a bigger font cannot ask for
--- more room. That reasoning is still true and the clamp was still wrong: this
--- client lays quest text out at 12, so the ceiling was 14 and every font
--- setting from 14 upwards drew identically. Dragging the size from 16 to 20
--- moved the header and the objective counts - which are heroPanel's own
--- FontStrings and were never clamped - and left the quest names and their
--- descriptions exactly where they were. A control that stops responding
--- half way along its track reads as broken, and explaining that it is a
--- deliberate ceiling does not make it read as anything else.
+-- Clamping growth to two points over the size the tracker laid the line out at
+-- came first, and made every setting from 14 upwards draw identically on a client
+-- that lays quest text out at 12 - a control that stops responding half way
+-- along its track.
 --
 -- So the size is applied as configured. Text large enough to crowd the line
 -- below it will crowd the line below it; the answer to that is the panel's
@@ -491,10 +485,9 @@ end
 -- Where a title's text ends on screen, which is not the same thing as where its
 -- FontString ends.
 --
--- The right edge of the rect is what the arrow used to be measured from, and in
--- the game it landed part-way along the quest name rather than after it. The
--- rect and the drawn string are two different measurements, and neither one is
--- right on its own:
+-- Measuring from the right edge of the rect came first and landed the arrow
+-- part-way along the quest name. The rect and the drawn string are two different
+-- measurements, and neither one is right on its own:
 --
 --   * The rect is the room the string was given. A tracker that constrains its
 --     titles so they can wrap - this one does - leaves that rect wide with a

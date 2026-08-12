@@ -11,8 +11,8 @@ local ADDON_NAME, ns = ...
 ns.name    = ADDON_NAME
 ns.version = "0.1.0"
 
--- Public API surface. Later phases (options panel, skin) and other addons
--- talk to heroPanel through this table.
+-- Public API surface. Every other file in the addon registers into this table,
+-- and it is what another addon would talk to heroPanel through.
 _G.HeroPanel = ns
 
 --------------------------------------------------------------------------------
@@ -77,13 +77,9 @@ end
 ns.defaults = {
     debug   = false,
 
-    -- Which panels heroPanel skins. One flag each.
-    --
-    -- This used to be a single `enabled`, and one flag for two panels was a
-    -- compromise rather than a setting: turning the Mythic+ panel off to see
-    -- Ascension's own tracker also handed the quest tracker back to Blizzard,
-    -- and there was no way to keep one and not the other. They are separate
-    -- modules skinning separate addons' frames, so they get separate switches.
+    -- Which panels heroPanel skins. One flag each, because they are separate
+    -- modules over separate addons' frames: a single `enabled` came first and
+    -- made it impossible to hand one panel back without the other.
     --
     -- Neither is a master. "/hp skin on|off" still sets both, because that
     -- command is the escape hatch and an escape hatch that only frees half of
@@ -106,14 +102,10 @@ ns.defaults = {
         mplus = false,
     },
 
-    -- Panel chrome, one block per tracker.
-    --
-    -- This used to be one global set - db.bg, db.border, db.radius - shared by
-    -- both panels. Two panels sharing one background opacity is a compromise
-    -- rather than a setting: the Mythic+ panel is a dense block of numbers that
-    -- wants something solid behind it, and the quest tracker is a column of
-    -- lines a player often wants nearly transparent over the world. Neither
-    -- choice is wrong and there was no way to have both.
+    -- Panel chrome, one block per tracker. One global set covered both once,
+    -- which forced a compromise: the Mythic+ panel is a dense block of numbers
+    -- that wants something solid behind it, and the quest tracker is a column of
+    -- lines a player often wants nearly transparent over the world.
     --
     -- The backdrop texture stays global, below: it is one piece of art, and two
     -- panels drawn from different ones would read as two addons.
@@ -132,26 +124,19 @@ ns.defaults = {
             bgColor     = "#14161F",
             bgOpacity   = 1.0,
             borderColor = "#33364A",
-            -- Still separate from the style, and still reaching the same place
-            -- from the other end: alpha 0 and style "none" both turn off every
-            -- edge heroPanel draws. There is no longer a control that sets it
-            -- to 0 - the border swatch row had a "Transparent" entry and it was
-            -- a second way to say what the style's None already said, which is
-            -- one control too many for one outcome. The key stays because
-            -- Plate.lua reads it, and the v4 migration turns an existing
-            -- alpha of 0 into style "none" so nobody loses the setting.
+            -- Alpha 0 and border style "none" both turn off every edge
+            -- heroPanel draws, and nothing in the options window sets this to 0
+            -- any more: the border swatch row's "Transparent" entry was a second
+            -- way to say what the style's None already said. The key stays
+            -- because Plate.lua reads it.
             borderAlpha = 1.0,
             borderStyle = "hairline",
-            -- Square, and no longer configurable.
-            --
-            -- There are no rounded corners on 3.3.5a and heroPanel ships no
-            -- corner art, so this was only ever a chamfer of nought to three
-            -- pixels approximated by stepping the plate in - four outcomes
-            -- behind a seventeen-position slider, and at gameplay distance the
-            -- difference between the four is not visible. It stays in the store
-            -- because Plate.lua reads it and a future build might ship real
-            -- corner art; it is not in the options window, because a control
-            -- nobody can see the effect of is a control that reads as broken.
+            -- Square, and not configurable. There are no rounded corners on
+            -- 3.3.5a and heroPanel ships no corner art, so this can only ever be
+            -- a chamfer of nought to three pixels stepped into the plate, which
+            -- is not visible at gameplay distance. The key stays because
+            -- Plate.lua reads it and real corner art would make it mean
+            -- something again.
             radius      = 0,
 
             -- A black outline behind every string this panel draws.
@@ -184,13 +169,13 @@ ns.defaults = {
 
     -- Getting the quest tracker out of the way on its own.
     --
-    -- Both of these hide the tracker by taking its alpha to zero rather than by
-    -- calling Hide on it. That is not a shortcut, it is the only thing that
-    -- works: WatchFrame is protected, Hide is one of the calls the client
-    -- refuses under lockdown, and "hide in combat" has to take effect at the
-    -- exact moment lockdown begins. SetAlpha is not protected, so it lands
-    -- every time. heroPanel's own plate is hidden properly, since that one is
-    -- ours.
+    -- Both of these fade the tracker and then hide it, because neither call is
+    -- enough alone. SetAlpha is not protected and lands whatever else is
+    -- happening, which is what makes the tracker disappear on time - "hide in
+    -- combat" has to take effect at the exact moment lockdown begins, and Hide
+    -- is one of the calls the client refuses there. Hide is what makes the
+    -- region click-through, so it goes through ns.RunWhenSafe and lands as soon
+    -- as the client allows. See the auto-hide notes in Skin.lua.
     autoHide = {
         combat = false,
         mythic = false,
@@ -215,14 +200,10 @@ ns.defaults = {
         -- so the default cannot depend on LSM being installed.
         face = "Friz Quadrata TT",
 
-        -- Absolute point sizes, one per text role.
-        --
-        -- This was a single base size plus a per-panel multiplier, and that
-        -- shape was wrong twice over. The multiplier was applied to a base that
-        -- already carried the design's half-point steps, so the number a player
-        -- set and the number on screen were never the same one; and every role
-        -- inside a panel moved together, so making the quest names bigger made
-        -- the objectives bigger with them whether or not that was wanted.
+        -- Absolute point sizes, one per text role. A single base size plus a
+        -- per-panel multiplier came first and was dropped: the number a player
+        -- set was never the number on screen, and every role inside a panel
+        -- moved together.
         --
         -- These are what they say they are: the size that role is drawn at.
         -- The small steps the design puts on one string relative to the rest of
@@ -285,9 +266,9 @@ ns.defaults = {
     options = { point = nil, x = 0, y = 0, scale = 1.0 },
 
     glyph = {
-        -- auto | art | blocks. See the glyph notes in Util.lua; "auto" uses the
-        -- shipped art when the client will load it and falls back to drawing
-        -- the shapes from solids when it will not.
+        -- auto | art | tga | blocks. See the glyph notes in Util.lua; "auto"
+        -- uses the shipped art when the client will load it and falls back to
+        -- drawing the shapes from solids when it will not.
         mode = "auto",
     },
 }
@@ -362,17 +343,10 @@ ns.ApplyDefaults = ApplyDefaults
 --------------------------------------------------------------------------------
 -- Schema version
 --
--- heroPanel has never been released. The store's shape has changed five times
--- already and will change again, and there is nobody running a build old enough
--- for a stale store to be worth carrying forward - so a store that does not
--- match this build is discarded rather than migrated.
---
--- That is a deliberate trade and it only holds while this is true. There used
--- to be a migration chain here: each shape change knew how to re-say itself in
--- the next shape, so a player's colours survived an upgrade. It was the right
--- code to write for a released addon and the wrong code to keep for one that
--- is not, because every step had to go on working forever and be tested
--- forever, to protect settings that take a minute to set again.
+-- A store that does not match this build is discarded rather than migrated.
+-- There was a migration chain here once - each shape change knew how to re-say
+-- itself in the next - and it was dropped while the addon was pre-release and
+-- the shape was still moving.
 --
 -- The number is a stamp, not a chain. Nothing reads the ones before it and its
 -- absolute value means nothing; all that matters is that it *differs* from the
@@ -380,9 +354,6 @@ ns.ApplyDefaults = ApplyDefaults
 -- meaning or shape, and leave it alone when only a default moves - a changed
 -- default reaching an existing store is what ApplyDefaults deliberately does
 -- not do, and is not a reason to throw the store away.
---
--- When this addon is released, this comment is the thing to come back to: at
--- that point stores start being worth keeping and a migration path is owed.
 --------------------------------------------------------------------------------
 
 local DB_VERSION = 5
@@ -393,19 +364,17 @@ ns.DB_VERSION = DB_VERSION
 
 -- Carried across a discard rather than thrown away with the rest.
 --
--- Geometry is the exception to "settings are cheap to set again", and it is the
--- exception twice over. Dragging three panels into place and sizing them is the
--- only part of configuring this addon that takes real effort, and it is the
--- part least likely to be what a discard is *for*: these keys have not changed
--- shape once in the addon's history, while the colour and font blocks have
--- changed five times between them.
+-- Geometry is the exception to "settings are cheap to set again". Dragging three
+-- panels into place and sizing them is the only part of configuring this addon
+-- that takes real effort, and it is the part least likely to be what a discard
+-- is *for*.
 --
 -- Exempting them is not trusting them blindly. Tracker geometry carries its own
--- stamp - GEOMETRY_VERSION in Move.lua - and ns.GetSaved drops a position
--- written in an older shape independently of anything here, so the two versions
--- guard different things and neither has to know about the other. Whatever
--- survives this is still put through ApplyDefaults afterwards, so a half-filled
--- frame block is completed rather than believed.
+-- stamp - GEOMETRY_VERSION in Move.lua - and Move.lua's GetSaved drops a
+-- position written in an older shape independently of anything here, so the two
+-- versions guard different things and neither has to know about the other.
+-- Whatever survives this is still put through ApplyDefaults afterwards, so a
+-- half-filled frame block is completed rather than believed.
 --
 --   frame    lock state, ownership mode, and each tracker's point/x/y/scale
 --   options  where the options window was left, and its scale
@@ -443,7 +412,7 @@ function ns.InitDB()
     return ns.db
 end
 
--- Reset the whole store back to defaults (used by the options panel later).
+-- Reset the whole store back to defaults. Used by the options window's Reset.
 function ns.ResetDB()
     HEROPANEL_DB = {}
     return ns.InitDB()
@@ -521,8 +490,9 @@ end)
 --------------------------------------------------------------------------------
 -- Slash commands
 --
--- Phase 1 has no UI chrome, so lock/unlock and status live here. The options
--- panel replaces most of this later.
+-- Everything the options window offers is settable from here too, and the
+-- diagnostics are here only: dump, probe, frame, texture and mplus print reports
+-- rather than change anything, which is not what a settings window is for.
 --------------------------------------------------------------------------------
 
 local function PrintUsage()
@@ -537,7 +507,7 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp mode <auto|own|holder|yield>|r - who positions the trackers")
     ns.Print("  |cFFC2C6D8/hp font <8-30>|r - set every text size at once")
     ns.Print("  |cFFC2C6D8/hp fontface <name>|r - set the LibSharedMedia face by name")
-    ns.Print("  |cFFC2C6D8/hp glyphs <auto|art|blocks>|r - where the lock and caret come from")
+    ns.Print("  |cFFC2C6D8/hp glyphs <auto|art|tga|blocks>|r - where the lock and caret come from")
     ns.Print("  |cFFC2C6D8/hp skin [on|off]|r - skin both trackers, or hand them both back "
         .. "(|cFF8B8FA3one at a time in the options window|r)")
     ns.Print("  |cFFC2C6D8/hp keys [on|off]|r - answer !keys / ?keys in group chat by "
@@ -636,7 +606,7 @@ SlashCmdList["HEROPANEL"] = function(input)
         end
     elseif cmd == "font" then
         -- One number for every role, which is the only thing a single argument
-        -- can sensibly mean now that there are five of them. The per-role sizes
+        -- can sensibly mean now that there are seven of them. The per-role sizes
         -- are the options window's job; this is the blunt instrument for
         -- putting the whole skin back to a legible size in one line.
         local size = tonumber(rest)

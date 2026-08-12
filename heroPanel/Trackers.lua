@@ -10,8 +10,8 @@
                It frequently does not exist yet at ADDON_LOADED, so it is
                polled rather than assumed.
 
-    Also exposes ns.GetTrackerHeight, the collapse-aware height helper that
-    later phases anchor their own chrome against.
+    Also owns the collapse state both panels read, which is deliberately not
+    the tracker's own collapsed flag - see ns.IsCollapsed.
 ----------------------------------------------------------------------------]]
 
 local ADDON_NAME, ns = ...
@@ -83,12 +83,6 @@ end
 function ns.GetTrackerFrame(key)
     local record = ns.trackers[key]
     return record and record.frame or nil
-end
-
--- The frame to move / scale for a tracker. Prefers the holder when present.
-function ns.GetMoverFrame(key)
-    local record = ns.trackers[key]
-    return record and record.mover or nil
 end
 
 --------------------------------------------------------------------------------
@@ -164,10 +158,6 @@ end)
 -- Collapse state
 --------------------------------------------------------------------------------
 
--- Approximate header height used when a collapsed frame reports a height that
--- still includes its hidden body.
-ns.HEADER_HEIGHT = 32
-
 function ns.IsCollapsed(target)
     local record = ns.ResolveTracker(target)
     if not record then return false end
@@ -205,59 +195,6 @@ function ns.SetCollapsedState(target, collapsed)
     if not record or not ns.db then return false end
     ns.db.collapsed[record.key] = collapsed and true or false
     return true
-end
-
---------------------------------------------------------------------------------
--- Height helper
---
--- ns.GetTrackerHeight(target) -> height, scaledHeight
---
---   target may be a key ("watch"), a tracker record, or either tracker frame.
---   Returns 0, 0 when the tracker is missing or hidden.
---   When collapsed, returns the header height rather than the frame's stale
---   full height, so callers can anchor to what is actually on screen.
---------------------------------------------------------------------------------
-
--- Fallback for frames that report a zero or nil height: measure the union of
--- the visible children instead.
-local function MeasureVisibleChildren(frame)
-    local top, bottom
-    ns.WalkFrameTree(frame, function(object, info)
-        if info.kind ~= "child" then return end
-        if not (object.IsShown and object:IsShown()) then return false end
-        local objTop, objBottom = object:GetTop(), object:GetBottom()
-        if objTop and objBottom then
-            if not top or objTop > top then top = objTop end
-            if not bottom or objBottom < bottom then bottom = objBottom end
-        end
-    end, { maxDepth = 2, includeRegions = false })
-
-    if top and bottom then return top - bottom end
-    return 0
-end
-
-function ns.GetTrackerHeight(target)
-    local record = ns.ResolveTracker(target)
-
-    -- Allow a raw frame that is not one of our trackers, so later phases can
-    -- reuse this for their own panels.
-    local frame = record and record.frame or (IsFrame(target) and target or nil)
-    if not frame then return 0, 0 end
-    if frame.IsVisible and not frame:IsVisible() then return 0, 0 end
-
-    local height
-    if record and ns.IsCollapsed(record) then
-        height = record.headerHeight or ns.HEADER_HEIGHT
-        -- If the frame genuinely shrank on collapse, believe the smaller value.
-        local actual = frame:GetHeight() or 0
-        if actual > 0 and actual < height then height = actual end
-    else
-        height = frame:GetHeight() or 0
-        if height <= 0 then height = MeasureVisibleChildren(frame) end
-    end
-
-    local scale = (frame.GetScale and frame:GetScale()) or 1
-    return height, height * scale
 end
 
 --------------------------------------------------------------------------------

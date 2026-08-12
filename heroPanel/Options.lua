@@ -19,22 +19,23 @@
     a panel that restyles itself as you drag its own background swatch makes it
     impossible to see what you are setting.
 
-    Placement is deliberate too. The window is centred on UIParent in its own
-    strata, well away from where either tracker defaults to, so opening the
-    config never lands on top of the frames it configures.
+    Placement is deliberate too. The window opens centred on UIParent in its own
+    strata, and is then measured against whatever is actually on screen and slid
+    clear if a tracker is under it - see ClearOfTrackers.
 
     Three groups, in this order.
 
       Global          what would read as two addons if the two panels disagreed
                       about it - the font family, the backdrop texture - plus
-                      this window's own text size.
-      Quest tracker   that panel's background, border and corner, and three
-                      font sizes: the header row, the quest names, and the
-                      descriptions and their counts.
-      Mythic+ tracker the same chrome controls again, one font size, and the
-                      state colours.
+                      this window's own text size and background.
+      Quest tracker   that panel's background, border, text shadow and three
+                      font sizes (the header row, the quest names, and the
+                      descriptions and their counts), plus the two auto-hide
+                      toggles.
+      Mythic+ tracker the same chrome controls again, three font sizes of its
+                      own - header, timer and body - and the state colours.
 
-    There are no scale sliders. Both panels carry a resize grip in their
+    There are no scale sliders. All three panels carry a resize grip in their
     bottom-right corner while the trackers are unlocked, which is the corner of
     the thing being resized rather than a percentage to guess at.
 ----------------------------------------------------------------------------]]
@@ -54,13 +55,10 @@ local CONTENT_WIDTH = PANEL_WIDTH - PAD_X * 2
 
 -- The body scrolls.
 --
--- It did not, and the note here used to explain how the rows had been shaved
--- twice to keep the whole window under UIParent's 768 units. That was already
--- the wrong shape of answer and splitting the panel and border settings per
--- tracker settled it: the same six controls exist twice now, once for each
--- panel, and no amount of tightening fits two of everything plus a global
--- group into 768 units - let alone into what is left of them once a player
--- nudges their UI scale up.
+-- The window was a fixed height once and its rows were shaved twice to stay
+-- under UIParent's 768 units; splitting the chrome per tracker made that
+-- unwinnable, since two of everything plus a global group does not fit however
+-- tightly it is packed.
 --
 -- So the header, the enable row and the footer are fixed, and everything
 -- between them lives in a ScrollFrame. The window is sized to its content up
@@ -160,9 +158,8 @@ local OPTIONS_BG_SWATCHES = {
 -- controls reaching one outcome is not a choice, it is a question about which
 -- of them the panel is currently obeying. The style keeps the job, because
 -- "no border" belongs with the other border shapes rather than among the
--- colours; borderAlpha stays in the store because Plate.lua reads it, and the
--- v4 migration turns an existing alpha of 0 into style "none" so nobody who had
--- picked Transparent loses it.
+-- colours; borderAlpha stays in the store because Plate.lua reads it, and
+-- picking any colour here sets it back to 1.
 local BORDER_SWATCHES = {
     { colour = "#33364A" }, { colour = "#1F2130" },
     { colour = "#9184D9" }, { colour = "#E7C67C" },
@@ -517,7 +514,7 @@ end
 --
 -- isSelected and onSelect are still passed in rather than a get/set pair on a
 -- colour, because a click has to write more than the colour - the border row
--- clears the alpha a migrated store may still be carrying.
+-- also sets borderAlpha back to 1, so picking a colour always shows one.
 local function NewSwatchRow(parent, y, label, entries, isSelected, onSelect)
     local title = NewText(parent, 0, TEXT_BODY, label)
     title:SetPoint("LEFT", parent, "TOPLEFT", PAD_X, -(y + SWATCH_SIZE / 2))
@@ -960,16 +957,10 @@ local function PanelGroup(parent, y, key)
 
     -- There is no corner radius control.
     --
-    -- It went in three shapes and none of them was worth a row. There are no
-    -- rounded corners on 3.3.5a and heroPanel ships no corner art, so the
-    -- radius is approximated by stepping the plate in at each corner, and
-    -- ns.NotchFor turns any value at all into one of four chamfers - nought,
-    -- one, two or three pixels. First it was a 0-16 slider, so twelve of its
-    -- seventeen positions changed nothing; then it was four positions of four
-    -- pixels, so every step did something, and the something was a difference
-    -- of one pixel on a 300px panel that nobody could see at gameplay distance.
-    -- A control whose whole range is invisible is a control that reads as
-    -- broken however carefully its steps are chosen.
+    -- There are no rounded corners on 3.3.5a and heroPanel ships no corner art,
+    -- so ns.NotchFor turns any radius into one of four chamfers, nought to three
+    -- pixels - a range nobody can see at gameplay distance, which two attempts at
+    -- a control (a 0-16 slider, then four four-pixel steps) both demonstrated.
     --
     -- So the panels are square, HEROPANEL_DB.panel.<key>.radius is 0, and the
     -- key stays in the store because Plate.lua reads it and real corner art
@@ -1016,10 +1007,9 @@ end
 --------------------------------------------------------------------------------
 -- One text role's size
 --
--- Absolute points, straight into HEROPANEL_DB.font.size. The old control was a
--- percentage over a shared base, and the arithmetic was the problem: what a
--- player set and what was drawn were never the same number, and the whole panel
--- moved together whichever part of it they were trying to change.
+-- Absolute points, straight into HEROPANEL_DB.font.size. A percentage over a
+-- shared base came first and was dropped: what a player set and what was drawn
+-- were never the same number.
 --------------------------------------------------------------------------------
 
 local function NewFontSlider(parent, y, label, role, sublabel)
@@ -1172,13 +1162,9 @@ local function Build()
     -- something else has gone wrong - and one you have to go looking for is not
     -- that.
     --
-    -- One switch per panel. It was a single "Enable skin" covering both, and
-    -- that made the commonest thing anybody wants to do with a skin - see what
-    -- the panel looks like without it - impossible to do to one panel at a
-    -- time: turning the Mythic+ panel off to compare it against Ascension's own
-    -- tracker also handed the quest tracker back to Blizzard. They are two
-    -- panels over two different addons' frames and the rest of this window has
-    -- already split along that line, so the escape hatch splits too.
+    -- One switch per panel. A single "Enable skin" covering both came first and
+    -- made the commonest thing anybody wants from a skin - seeing one panel
+    -- without it - impossible to do to one panel at a time.
     --
     -- Both stay in the fixed block rather than moving down into each panel's
     -- own group. A switch that turns a panel off is not a setting of that panel
@@ -1347,10 +1333,10 @@ local function Build()
     -- dungeon name, the required boss a point and a half over the others -
     -- stay in the code, because those are proportions rather than preferences.
     --
-    -- The state colours live here for now. They colour a quest title, a normal
-    -- line and a completed one, which is quest-tracker language, but the only
-    -- place all three are visible side by side at a glance is the Mythic+
-    -- panel's boss list.
+    -- The state colours live in this group even though they are quest-tracker
+    -- language - a quest title, a normal line, a completed one - because the only
+    -- place all three are visible side by side at a glance is the Mythic+ panel's
+    -- boss list.
     ------------------------------------------------------------------
 
     y = GroupLabel(body, y + GROUP_GAP, "Mythic+ tracker", true)
@@ -1483,15 +1469,10 @@ local function Build()
     -- wide, so stretching the frame would leave every control exactly where it
     -- was and just add empty space down the right.
     --
-    -- It follows the lock, like the trackers' grips do. This was built always-on
-    -- at first, reasoning that the lock governs the trackers and this window has
-    -- never consulted it to decide whether its own header can be dragged. That
-    -- reasoning is fine and the result was still wrong: three panels with a
-    -- corner handle, two of which put it away when you lock and one of which
-    -- does not, reads as the third one having missed the memo. Consistency
-    -- across the three is worth more than the distinction, and the lock button
-    -- is in this window's own header, so the way back is never more than one
-    -- click away.
+    -- It follows the lock, like the trackers' grips do. Built always-on at
+    -- first, on the grounds that the lock governs the trackers rather than this
+    -- window - which read as the third panel having missed the memo. The lock
+    -- button is in this window's own header, so the way back is one click.
     ------------------------------------------------------------------
 
     panel.grip = ns.NewResizeGrip(panel, {
@@ -1830,8 +1811,8 @@ local function BuildInterfaceCategory()
     blurb:SetWidth(500)
     blurb:SetJustifyH("LEFT")
     blurb:SetText("Skin, mover and lock controls for the objective tracker and the Mythic+ tracker.\n\n"
-        .. "heroPanel's settings open in their own window, centred on screen so it never sits on "
-        .. "top of the trackers it configures. Type |cFFC2C6D8/hp|r at any time, or use the button below.")
+        .. "heroPanel's settings open in their own window, centred on screen and moved aside if a "
+        .. "tracker is under it. Type |cFFC2C6D8/hp|r at any time, or use the button below.")
 
     local open = CreateFrame("Button", nil, category, "UIPanelButtonTemplate")
     open:SetWidth(180)

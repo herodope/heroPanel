@@ -1,9 +1,9 @@
 --[[--------------------------------------------------------------------------
     heroPanel - Util.lua
 
-    Shared helpers: timers, combat-safe deferral, script hooking, colour
-    parsing, and the throttled frame-tree scanner that later phases reuse for
-    line styling and chest-tier maths.
+    Shared helpers: timers, throttled tickers, combat-safe deferral, script
+    hooking, cursor hit testing, texture and glyph drawing, font sizes, colour
+    parsing, and the frame-tree walker the skin uses to find what it styles.
 ----------------------------------------------------------------------------]]
 
 local ADDON_NAME, ns = ...
@@ -121,10 +121,10 @@ end
 --------------------------------------------------------------------------------
 -- Throttled tickers
 --
--- Same idea as the tree scanner below, for work that is not a tree walk: one
--- shared OnUpdate drives every active ticker off its own accumulator. Used by
--- the skin's hover watcher, which has to sample the cursor but must not do so
--- once per frame.
+-- One shared OnUpdate drives every active ticker off its own accumulator, so
+-- repeating work costs one script rather than one per caller. Used by the skin's
+-- hover watcher, which has to sample the cursor but must not do so once per
+-- frame.
 --------------------------------------------------------------------------------
 
 local TICK_MIN_INTERVAL = 0.05
@@ -214,14 +214,16 @@ end
 --------------------------------------------------------------------------------
 -- Texture files
 --
--- heroPanel ships no art, so every glyph is a client texture. Which ones exist
--- varies between 3.3.5a builds, so paths are given as a candidate list and the
--- first one that loads wins.
+-- Every caller passes exactly one path and gets ns.SOLID back if it does not
+-- load, so a texture that fails costs its shape and never leaves an empty
+-- region. The varargs form behind that is a fallback chain nothing uses: the
+-- glyph code below says why one spelling per shape is what makes a failure
+-- attributable.
 --
 -- Texture:SetTexture reports success on most clients of this vintage but not
 -- all. Probe once against a texture that is certainly present: if the client
 -- answers meaningfully, trust the return value; if it always answers nil,
--- believing it would reject every path, so take the first candidate on faith.
+-- believing it would reject every path, so take the path on faith.
 --------------------------------------------------------------------------------
 
 ns.SOLID = "Interface\\Buttons\\WHITE8X8"
@@ -240,7 +242,7 @@ local function ClientReportsTextureResult()
     return reportsTextureResult
 end
 
--- ns.SetTextureFile(texture, "path", "fallback path", ...) -> path used
+-- ns.SetTextureFile(texture, "path", ...) -> the path that loaded, or ns.SOLID
 function ns.SetTextureFile(texture, ...)
     if not texture then return nil end
     local checked = ClientReportsTextureResult()
@@ -260,29 +262,29 @@ end
 --------------------------------------------------------------------------------
 -- Glyphs
 --
--- heroPanel ships no art and the design fixes exact glyph colours, and client
--- textures cannot satisfy both. SetVertexColor multiplies: Blizzard's gold
--- padlock tinted #75798C comes out muted gold, not #75798C, which is why the
--- header's lock and caret read as gold squares however they were tinted.
--- Nothing in the client's icon set is neutral enough to tint cleanly, and which
--- paths exist varies between 3.3.5a builds anyway.
+-- The design fixes exact glyph colours and client art cannot reach them.
+-- SetVertexColor multiplies, so Blizzard's gold padlock tinted #75798C comes out
+-- muted gold rather than #75798C - which is why the header's lock and caret read
+-- as gold squares however they were tinted. Nothing in the client's icon set is
+-- neutral enough to tint cleanly, and which paths exist varies between 3.3.5a
+-- builds anyway. So heroPanel draws its own, from white masks that tint exactly.
 --
--- So glyphs are drawn from WHITE8X8 blocks on a small cell grid - the same
--- approximation the panel's chamfered corners use. White tints exactly, the
--- shapes stay crisp at the sizes the header needs, and there is no art to ship
--- and none to miss.
+-- Two routes, tried in that order: the art shipped in media/, and a fallback
+-- that builds the shape out of WHITE8X8 blocks on a cell grid - the same
+-- approximation the panel's chamfered corners use. The blocks came first and are
+-- kept, so an unreadable file costs quality and not the glyph.
 --
 --     local glyph = ns.NewGlyph(parent, 12)
 --     glyph:SetShape("caretDown")
 --     glyph:SetColor(ns.HexToRGB("#75798C"))
 --------------------------------------------------------------------------------
 
--- The shipped art, one 64x64 white alpha mask per shape, generated as an
--- RLE-compressed 32-bit TGA. White tints exactly, so SetVertexColor
--- lands on the design's colour rather than multiplying into it, and the
--- client's own filtering keeps the shape smooth at the size the header needs.
--- The blocks below stay as the fallback for a client that reads neither, so
--- an unreadable file costs quality and not the glyph.
+-- The shipped art, one 64x64 white alpha mask per shape, as an RLE-compressed
+-- 32-bit TGA. TGA is what heroPanel ships and what every mode below resolves
+-- to, because it is the format this client has been reliable with. White tints
+-- exactly, so SetVertexColor lands on the design's colour rather than
+-- multiplying into it, and the client's own filtering keeps the shape smooth at
+-- the size the header needs.
 local MEDIA = "Interface\\AddOns\\" .. ADDON_NAME .. "\\media\\"
 
 ns.GLYPH_ART = {
@@ -292,10 +294,10 @@ ns.GLYPH_ART = {
     locked    = { file = "lock-closed" },
     unlocked  = { file = "lock-open" },
 
-    -- The Mythic+ shapes. These were block glyphs first and read as exactly
-    -- what the block note above warns about: a stopwatch and a crosshair are
-    -- mostly circle, and a circle made of 2px blocks at 12 device pixels is a
-    -- staircase. Rasterised as anti-aliased strokes they carry at that size.
+    -- The Mythic+ shapes. These were block glyphs first and are the reason the
+    -- art exists: a stopwatch and a crosshair are mostly circle, and a circle
+    -- made of 2px blocks at 12 device pixels is a staircase. Rasterised as
+    -- anti-aliased strokes they carry at that size.
     timer     = { file = "timer" },
     crosshair = { file = "crosshair" },
     ring      = { file = "ring" },
@@ -392,12 +394,17 @@ ns.GLYPHS = {
                   {4,9,2,1} },
 }
 
--- Glyph modes that pin one file rather than letting the chain choose. Two
--- different files can fail the same way on screen - a green square is what this
--- client draws for anything it resolves and then declines to decode - so
--- "which file is on screen" has to be answerable directly.
+-- Modes that pin the file rather than letting the load test decide. A green
+-- square is what this client draws for anything it resolves and then declines to
+-- decode, so "is the shipped art on screen at all" has to be answerable
+-- directly rather than inferred from how the glyph looks.
+--
+-- Both entries resolve to .tga, because .tga is what heroPanel ships. They stay
+-- separate because they say different things: "art" means "use the shipped art
+-- whatever the load test reported", while "tga" names the extension outright, so
+-- a build that ships a second format has somewhere to pin it.
 local FORCED_EXTENSION = {
-    art = ".tga",   -- forced past the load test
+    art = ".tga",
     tga = ".tga",
 }
 ns.GLYPH_MODES = { "auto", "art", "tga", "blocks" }
@@ -502,9 +509,9 @@ local function GlyphSetShape(glyph, name)
     if not cells or #cells == 0 then return false end
     glyph.shape = name
 
-    -- Art first, blocks only if it did not load. "art" and "blocks" force one
-    -- route: the two look very different and which one is live is not obvious
-    -- from a screenshot, so being able to pin it is how a bad glyph gets
+    -- Art first, blocks only if it did not load. "art", "tga" and "blocks" pin
+    -- one route: the two look very different and which one is live is not
+    -- obvious from a screenshot, so being able to pin it is how a bad glyph gets
     -- diagnosed in one step instead of three.
     local mode = (ns.db and ns.db.glyph and ns.db.glyph.mode) or "auto"
     local art  = (mode ~= "blocks") and ns.GLYPH_ART[name] or nil
@@ -681,8 +688,8 @@ end
 -- the font list are one piece of reasoning and splitting them across two files
 -- only made it possible for them to disagree.
 --
--- Sizes stay here: they are arithmetic on the configured base and have nothing
--- to do with which file the glyphs come out of.
+-- Sizes stay here: they are read per role straight out of the store and have
+-- nothing to do with which file the glyphs come out of.
 --------------------------------------------------------------------------------
 
 -- ns.GetFontSize(delta, role) -> points
@@ -699,18 +706,16 @@ end
 --   options       the options window itself
 --
 -- Each one is the size that role is drawn at, in points, straight from the
--- store. This used to be a single base size with a per-panel multiplier over
--- it, and the arithmetic was the problem: a player setting 20 was setting a
--- number that then had the design's half-point steps and a percentage applied
--- to it, so what they set and what they saw were never the same figure.
+-- store. A single base size with a per-panel multiplier over it came first and
+-- was dropped, because what the player set and what was drawn were never the
+-- same number.
 --
 -- delta is the small step the design puts on one string relative to the rest of
 -- its role - the tracked-quest badge under the header beside it, a boss row
 -- over the body of the Mythic+ panel. Those are proportions rather than
 -- preferences, so they stay in the code and move with the role.
 --
--- An unknown role falls back to the quest tracker's body size, which is the
--- closest thing heroPanel still has to a base.
+-- An unknown role falls back to the quest tracker's body size.
 function ns.GetFontSize(delta, role)
     local sizes = ns.db and ns.db.font and ns.db.font.size
     local size
@@ -720,13 +725,10 @@ function ns.GetFontSize(delta, role)
     return math.max(6, (size or 12) + (delta or 0))
 end
 
--- The range every font control offers. The old ceiling was 20 and the real
--- ceiling was lower still, because Lines.lua clamped a quest line to two points
--- over whatever the tracker had laid it out at - so a slider dragged from 16 to
--- 20 moved the header and the counts and left the quest text exactly where it
--- was. The clamp is gone and so is the reason for a tight range: text that
--- outgrows the panel is answered by dragging the panel's resize grip, which is
--- a thing the player can see happening.
+-- The range every font control offers. It was tighter while Lines.lua clamped a
+-- quest line to two points over the size the tracker had laid it out at; that
+-- clamp is gone, and text which outgrows the panel is answered by dragging the
+-- panel's resize grip instead.
 ns.FONT_SIZE_MIN = 8
 ns.FONT_SIZE_MAX = 30
 
@@ -879,111 +881,4 @@ function ns.WalkFrameTree(frame, callback, options)
     }
     Walk(frame, callback, opts, frame, 0, {})
     return true
-end
-
---------------------------------------------------------------------------------
--- Throttled frame-tree scanner
---
--- One shared OnUpdate driver runs every active scanner. Each scanner keeps its
--- own elapsed-time accumulator, so a scanner set to 0.1s does at most ~10
--- passes per second regardless of frame rate. Nothing runs per-frame.
---
---     local scanner = ns.NewTreeScanner(someFrame, function(object, info) ... end)
---     scanner:Start()          -- begin throttled scanning
---     scanner:ScanNow()        -- one immediate pass, ignores the throttle
---     scanner:SetInterval(0.2) -- 5 passes/sec instead of 10
---     scanner:Stop()
---------------------------------------------------------------------------------
-
-local MIN_INTERVAL = 0.1   -- hard floor: ~10 scans/sec
-local activeScanners = {}
-local driver
-
-local function DriverOnUpdate(_, elapsed)
-    local anyActive = false
-    for scanner in pairs(activeScanners) do
-        anyActive = true
-        scanner.accumulator = scanner.accumulator + elapsed
-        if scanner.accumulator >= scanner.interval then
-            scanner.accumulator = 0
-            scanner:ScanNow()
-        end
-    end
-    if not anyActive then driver:Hide() end
-end
-
-local scannerMethods = {}
-local scannerMeta = { __index = scannerMethods }
-
-function scannerMethods:SetFrame(frame)
-    self.frame = frame
-    return self
-end
-
-function scannerMethods:SetInterval(interval)
-    self.interval = math.max(tonumber(interval) or MIN_INTERVAL, MIN_INTERVAL)
-    return self
-end
-
-function scannerMethods:IsRunning()
-    return activeScanners[self] and true or false
-end
-
-function scannerMethods:ScanNow()
-    local frame = self.frame
-    if not frame then return false end
-    if self.requireVisible and frame.IsVisible and not frame:IsVisible() then return false end
-
-    self.scanCount = self.scanCount + 1
-    ns.WalkFrameTree(frame, self.callback, self.options)
-    if self.onComplete then self.onComplete(self) end
-
-    if self.once then self:Stop() end
-    return true
-end
-
-function scannerMethods:Start()
-    if not self.frame then return false end
-    activeScanners[self] = true
-    self.accumulator = self.interval   -- first pass on the next driver tick
-    driver:Show()
-    return true
-end
-
-function scannerMethods:Stop()
-    activeScanners[self] = nil
-    return self
-end
-
--- ns.NewTreeScanner(frame, callback, options)
---   options.interval        seconds between passes (floored at 0.1)
---   options.maxDepth        recursion limit, default 6
---   options.includeRegions  default true
---   options.includeChildren default true
---   options.requireVisible  skip the pass when the frame is hidden, default true
---   options.once            stop after the first completed pass
---   options.onComplete      called with the scanner after each pass
-function ns.NewTreeScanner(frame, callback, options)
-    if type(callback) ~= "function" then return nil end
-    options = options or {}
-
-    if not driver then
-        driver = CreateFrame("Frame", "HeroPanelScanDriver")
-        driver:Hide()
-        driver:SetScript("OnUpdate", DriverOnUpdate)
-    end
-
-    local scanner = setmetatable({
-        frame          = frame,
-        callback       = callback,
-        options        = options,
-        interval       = math.max(tonumber(options.interval) or MIN_INTERVAL, MIN_INTERVAL),
-        accumulator    = 0,
-        scanCount      = 0,
-        requireVisible = options.requireVisible ~= false,
-        once           = options.once and true or false,
-        onComplete     = options.onComplete,
-    }, scannerMeta)
-
-    return scanner
 end

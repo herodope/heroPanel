@@ -28,8 +28,8 @@ local ADDON_NAME, ns = ...
 --------------------------------------------------------------------------------
 -- Layout constants
 --
--- Straight from the design handoff. Font sizes are relative to the configured
--- base size and live with ns.GetFontSize.
+-- Straight from the design handoff. Font sizes are absolute per text role and
+-- come from ns.GetFontSize, which reads them out of the store.
 --------------------------------------------------------------------------------
 
 local PANEL_MIN_WIDTH = 288
@@ -78,9 +78,10 @@ local STRATA_BELOW = {
     BACKGROUND        = "BACKGROUND",
 }
 
--- Glyphs are drawn from solids by ns.NewGlyph rather than taken from client
--- art. The design fixes their colours and a tint cannot reach those from
--- Blizzard's coloured icons - see the glyph notes in Util.lua.
+-- Glyphs come from ns.NewGlyph, which draws heroPanel's own art and falls back
+-- to solids, rather than from client art. The design fixes their colours and a
+-- tint cannot reach those from Blizzard's coloured icons - see the glyph notes
+-- in Util.lua.
 
 --------------------------------------------------------------------------------
 -- State
@@ -180,17 +181,10 @@ local function BuildPlate(watch)
 
     -- The caret's own click target.
     --
-    -- Clicking the chevron used to depend on one of two things underneath it:
-    -- header.hit, which spans the row but sits below the tracker's frame level,
-    -- or Blizzard's collapse button, which is wherever the tracker put it and
-    -- is not the same rectangle as the glyph heroPanel draws. Once a tracker has
-    -- been unlocked in a session it keeps the mouse, and from then on header.hit
-    -- stops receiving anything - so the caret's live area shrank to whatever
-    -- part of Blizzard's button happened to be under it, which after the glyph
-    -- grew was a good deal smaller than the glyph.
-    --
-    -- A button of its own, raised above the tracker the way the lock is, means
-    -- the thing you click is the thing you can see.
+    -- A button of its own, raised above the tracker the way the lock is, so the
+    -- thing you click is the thing you can see. Borrowing header.hit or
+    -- Blizzard's collapse button instead came first and shrank the caret's live
+    -- area to whatever part of their rectangles happened to sit under the glyph.
     header.caretButton = CreateFrame("Button", nil, plate)
     header.caretButton:SetWidth(CARET_HIT)
     header.caretButton:SetHeight(CARET_HIT)
@@ -422,14 +416,11 @@ end
 -- panel: centred in the row, HEADER_PAD_X in from the right, mirroring the lock
 -- on the left. That is where the design puts it.
 --
--- It used to ride Blizzard's collapse button instead, on the reasoning that the
--- glyph the player clicks should be the glyph heroPanel drew. That put it
--- wherever the tracker happened to keep its button - on this client seven
--- pixels below the row's centre, hard against the divider and reading as though
--- it had slipped into the body. The reasoning was wrong anyway: the header's
--- click strip spans the whole row and collapses on click, and the tracker's own
--- button still takes its own clicks underneath, so both work wherever the
--- glyph is drawn.
+-- Riding Blizzard's collapse button instead came first and put the caret
+-- wherever the tracker keeps that button - on this client seven pixels below the
+-- row's centre, hard against the divider. Nothing is lost by placing it here:
+-- the tracker's own button still takes its own clicks underneath, so collapsing
+-- works wherever the glyph is drawn.
 local function AnchorCaret()
     if not plate then return end
 
@@ -453,9 +444,9 @@ local function StylePlate()
     ------------------------------------------------------------------
 
     -- The divider is an edge, so it takes the border's colour, alpha and style
-    -- rather than a hairline token of its own. Turning the border off used to
-    -- leave this line ruled across a panel that was otherwise not there, which
-    -- on a collapsed tracker is most of what is left to see.
+    -- rather than a hairline token of its own. As a fixed token it stayed ruled
+    -- across a panel that was otherwise not drawn, which on a collapsed tracker
+    -- is most of what is left to see.
     -- Seven tenths of the border's weight: the divider is a suggestion of a
     -- line under the header rather than a second border across the panel.
     local hr, hg, hb, ha, hasEdge = ns.BorderPaint(0.7, "watch")
@@ -987,10 +978,9 @@ local function HoverTick()
     end
 
     -- The caret's own button and Blizzard's collapse button, which are the two
-    -- things that reliably collapse the tracker. It used to be the whole header
-    -- strip, and that stopped being honest once the tracker started keeping the
-    -- mouse after its first unlock: the strip is below the tracker's frame
-    -- level, so it would light up under a cursor whose click went nowhere.
+    -- things that reliably collapse the tracker. Hovering the whole header strip
+    -- lit up under a cursor whose click went nowhere, since the strip sits below
+    -- the tracker's frame level once the tracker has taken the mouse.
     local overCollapse = ns.db.header.show
         and ((blizz.collapse and blizz.collapse:IsShown() and ns.MouseIsOver(blizz.collapse))
              or ns.MouseIsOver(header.caretButton))
@@ -1132,11 +1122,10 @@ end
 -- The single entry point for either skin flag, so nothing else has to remember
 -- to write HEROPANEL_DB.skin and call the right half.
 --
--- key is "watch", "mplus", or nil for both. The two panels used to share one
--- flag, which meant turning the Mythic+ panel off to compare it against
--- Ascension's own tracker also handed the quest tracker back to Blizzard. They
--- are separate modules over separate addons' frames and they are separate
--- settings now; this is the one place that knows both halves.
+-- key is "watch", "mplus", or nil for both. One shared flag came first, which
+-- meant turning the Mythic+ panel off also handed the quest tracker back to
+-- Blizzard; they are separate settings now, and this is the one place that
+-- knows both halves.
 function ns.SetSkinEnabled(key, enabled)
     if not ns.db then return false end
     enabled = enabled and true or false
@@ -1267,9 +1256,8 @@ end
 -- The walk starts at WatchFrame, so anything another addon parents somewhere
 -- else is invisible to it - including, potentially, the header drawn over ours.
 -- Reporting the text around the tracker with the frame that owns it names the
--- culprit outright. It uses the holder heroPanel already observed in Phase 1
--- rather than any hardcoded frame name, so this works for whichever addon it
--- turns out to be.
+-- culprit outright. It uses the holder Move.lua already observed rather than any
+-- hardcoded frame name, so this works for whichever addon it turns out to be.
 local NEIGHBOUR_LIMIT = 20
 
 -- What a region is, in one column: the text for a FontString, the tail of the

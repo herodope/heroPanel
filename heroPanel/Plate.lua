@@ -29,9 +29,12 @@ ns.MAX_NOTCH = 3
 -- radius is approximated by stepping the plate in at each corner: the
 -- background is drawn as three rectangles (a full-width middle band plus two
 -- bands inset horizontally) and the border as four 1px edges with a stepped
--- pixel run across each corner. At the default 8px radius that is a 2px
--- chamfer - not an arc, but it takes the hard point off the corner and reads
--- as "soft" at gameplay distance.
+-- pixel run across each corner.
+--
+-- The default is 0, so the panels are square and none of this draws. The
+-- machinery stays because real corner art would make the setting mean
+-- something; there is no control for it, since every value it can take is
+-- invisible at gameplay distance. See the note in Options.lua.
 --------------------------------------------------------------------------------
 
 function ns.NotchFor(radius)
@@ -124,7 +127,7 @@ function ns.PanelStyle(key)
         borderColor = saved.borderColor or "#33364A",
         borderAlpha = saved.borderAlpha or 1,
         borderStyle = saved.borderStyle or "hairline",
-        radius      = saved.radius      or 8,
+        radius      = saved.radius      or 0,
     }
 end
 
@@ -191,7 +194,7 @@ function ns.StylePlateChrome(plate, style)
     local borderColor = style.borderColor or "#33364A"
     local borderAlpha = style.borderAlpha or 1
     local borderStyle = style.borderStyle or "hairline"
-    local radius      = style.radius      or 8
+    local radius      = style.radius      or 0
     local shadowAlpha = style.shadowAlpha or 0.45
 
     local notch  = ns.NotchFor(radius)
@@ -240,11 +243,9 @@ function ns.StylePlateChrome(plate, style)
         ns.Debug("border style '%s' drawn as hairline.", tostring(borderStyle))
         borderStyle = "hairline"
     end
-    -- An edge at zero alpha is not an edge. The contour used to survive it, on
-    -- the reasoning that it is elevation rather than border - but the player who
-    -- turns the border off and the background to nothing is asking for the panel
-    -- to stop being drawn, and a black outline around nothing is the one thing
-    -- still visible when the tracker is collapsed.
+    -- An edge at zero alpha is not an edge. The contour survived it once, as
+    -- elevation rather than border - which left a black outline around nothing,
+    -- and on a collapsed tracker that is most of what is left to see.
     local showBorder = (borderStyle ~= "none") and borderAlpha > 0
     local inset      = (borderStyle == "inset") and 1 or 0
 

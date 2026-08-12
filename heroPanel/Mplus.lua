@@ -43,8 +43,9 @@ ns.Mplus = mplus
 --------------------------------------------------------------------------------
 -- Layout constants
 --
--- From the design handoff. Font sizes are deltas against the configured base
--- size, so /hp font still moves the whole panel together.
+-- From the design handoff. This panel's text is drawn at three absolute sizes -
+-- mplusHeader, mplusTimer and mplusBody - with the design's small steps within
+-- each role kept in the code as deltas against it.
 --------------------------------------------------------------------------------
 
 local PANEL_MIN_WIDTH = 300
@@ -58,12 +59,11 @@ local KEY_GAP         = 3     -- dungeon name -> keystone level, deliberately ti
 
 -- The affixes have their own row under the dungeon name.
 --
--- They used to be anchored right-to-left from the header's top-right corner,
--- sharing the name row. That only works while there are few of them and they
--- are small: this client runs up to eight, and at 20px eight of them are 181px
--- of a 262px content width, so they would take the whole row and drive straight
--- through the dungeon name whatever the name was shortened to. A row of their
--- own removes the contest rather than tuning it.
+-- Sharing the name row, anchored right-to-left from its top-right corner, came
+-- first: this client runs up to eight affixes, and at 20px eight of them are
+-- 181px of a 262px content width, so they drove straight through the dungeon
+-- name whatever it was shortened to. A row of their own removes the contest
+-- rather than tuning it.
 --
 -- Left to right on the panel's own content column, so the first affix is
 -- leftmost and the row starts where the timer glyph, the bars and the enemy
@@ -138,12 +138,10 @@ local TICK_INTERVAL   = 0.25  -- how often the clock, bar and tier are redrawn
 -- between the top of the tracker and that row is a fixed budget, and on a
 -- compact tracker heroPanel's block is taller than it.
 --
--- It used to overflow silently: LayoutForces would give up on sitting above the
--- boss row and fall back to sitting under the timer bar, which on this client
--- put heroPanel's own enemy-forces bar straight through "Lord Vyletongue". The
--- affix row is what tipped it over - 24px of header block that was not there
--- when the spacing was chosen - but the overflow was always one design change
--- away, because nothing was checking.
+-- It overflowed silently once: LayoutForces gave up on sitting above the boss row
+-- and fell back to under the timer bar, which put heroPanel's own enemy-forces
+-- bar straight through a boss name. The affix row tipped it over, but nothing was
+-- checking, so the overflow was always one design change away.
 --
 -- So the gaps give. Each one has a floor, pixels are taken from them in this
 -- order until the bar clears the row again, and a tracker with room keeps every
@@ -1472,11 +1470,9 @@ local function LayoutTimer(data, width)
     -- A FontString's bottom edge is the bottom of its descender, which is
     -- proportional to its size, so bottom-aligning two strings of different
     -- sizes leaves the smaller one sitting low by about a fifth of the
-    -- difference. This was a flat 3px, which was right for the 24/11 pair the
-    -- row used to be and wrong for every other one - and at the defaults the
-    -- gap between the two has gone from thirteen points to three. Working it out
-    -- from the sizes themselves keeps the two clocks reading off one line
-    -- whatever they are set to.
+    -- difference. A flat 3px came first and was right only for the one size pair
+    -- it was measured against. Working it out from the sizes themselves keeps the
+    -- two clocks reading off one line whatever they are set to.
     local lift = math.max(0, (ns.GetFontSize(0, "mplusTimer")
                               - ns.GetFontSize(TOTAL_DELTA, "mplusBody")) * 0.2)
 
@@ -1666,12 +1662,10 @@ end
 -- against the panel's far edge, which reads as an unrelated number. The design
 -- wants it in the sentence.
 --
--- It used to be held back until the first extra boss died, on the reasoning
--- that "(0/4)" is a count of nothing. That was wrong, and wrong about the more
--- useful half: the denominator is how many of these the key needs, and needing
--- to know that is at its most acute *before* any of them are dead - it is what
--- decides whether the group detours for them at all. Withholding it until the
--- first kill meant the number arrived after the decision it informs.
+-- Holding it back until the first extra boss died came first, on the grounds
+-- that "(0/4)" is a count of nothing - which had it backwards. The denominator
+-- decides whether the group detours for these at all, so withholding it until
+-- the first kill meant the number arrived after the decision it informs.
 --
 -- Rewriting a tracker string is the one thing in here that changes what the
 -- game drew, so it follows Lines.lua's rule for the same move: the original is
@@ -1715,11 +1709,10 @@ local function StyleBossRow(index, boss)
     -- than a list: the required boss is the title, the extra-bosses heading
     -- sits a step under it, and the bosses under that are body text.
     --
-    -- The heading used to be +0.5, one point under the title, which at the
-    -- sizes anyone actually runs is not a step - the two read as the same size
-    -- and the block read as two titles. At base it is a point and a half under
-    -- the title and half a point over the rows it heads, which is a hierarchy
-    -- in both directions.
+    -- The heading was +0.5 once, one point under the title, which at the sizes
+    -- anyone actually runs is not a step - the block read as two titles. It now
+    -- sits a point and a half under the title and half a point over the rows it
+    -- heads, which is a hierarchy in both directions.
     local size = ns.GetFontSize(-0.5, "mplusBody")
     if boss.primary then
         size = ns.GetFontSize(1.5, "mplusBody")
@@ -2456,8 +2449,8 @@ end
 -- Wiring
 --
 -- The tracker frequently does not exist at ADDON_LOADED, so the panel is built
--- from the same discovery point Phase 1 already polls for rather than from a
--- second timer of its own.
+-- off the HEROPANEL_TRACKER_FOUND that Trackers.lua already polls for, rather
+-- than from a second timer of its own.
 --------------------------------------------------------------------------------
 
 ns:On("HEROPANEL_TRACKER_FOUND", function(key)
