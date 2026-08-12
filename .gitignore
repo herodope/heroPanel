@@ -15,6 +15,12 @@ desktop.ini
 # Local design reference — not part of the distributed addon
 design_handoff_heroPanel/
 
+# Author-side notes and tooling — not part of the distributed addon and of no
+# use to a player installing it. Kept locally, deliberately untracked.
+CLAUDE.md
+TESTING.md
+tools/
+
 # Packaging output
 /dist/
 /release/
