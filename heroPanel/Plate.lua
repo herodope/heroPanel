@@ -22,6 +22,12 @@ local ADDON_NAME, ns = ...
 -- Corner steps at the largest supported radius.
 ns.MAX_NOTCH = 3
 
+-- Every edge this file knows how to draw. Published because it is the answer to
+-- two questions in two places: what StylePlateChrome falls back from below, and
+-- what the store will accept as a saved border style. The options window's own
+-- list carries labels beside these keys, which is presentation; this is the set.
+ns.BORDER_STYLES = { hairline = true, inset = true, none = true }
+
 --------------------------------------------------------------------------------
 -- Corner radius
 --
@@ -239,7 +245,7 @@ function ns.StylePlateChrome(plate, style)
     --             way the chamfer stands in for a radius.
     --   none      no line, and no contour either - "none" means no edge, and
     --             leaving the shadow behind would still draw one.
-    if borderStyle ~= "hairline" and borderStyle ~= "inset" and borderStyle ~= "none" then
+    if not ns.BORDER_STYLES[borderStyle] then
         ns.Debug("border style '%s' drawn as hairline.", tostring(borderStyle))
         borderStyle = "hairline"
     end

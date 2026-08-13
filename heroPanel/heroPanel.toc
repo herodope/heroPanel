@@ -19,6 +19,7 @@ libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
 libs\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
 
 Core.lua
+Store.lua
 Util.lua
 Media.lua
 Plate.lua

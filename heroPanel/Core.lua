@@ -343,17 +343,22 @@ ns.ApplyDefaults = ApplyDefaults
 --------------------------------------------------------------------------------
 -- Schema version
 --
--- A store that does not match this build is discarded rather than migrated.
--- There was a migration chain here once - each shape change knew how to re-say
--- itself in the next - and it was dropped while the addon was pre-release and
--- the shape was still moving.
+-- The shape the store is written in. Store.lua carries a store from an older
+-- shape up to this one; nothing is discarded on a mismatch.
 --
--- The number is a stamp, not a chain. Nothing reads the ones before it and its
--- absolute value means nothing; all that matters is that it *differs* from the
--- last build whose store shape is incompatible. Bump it whenever a key changes
--- meaning or shape, and leave it alone when only a default moves - a changed
--- default reaching an existing store is what ApplyDefaults deliberately does
--- not do, and is not a reason to throw the store away.
+-- The number is a stamp. Its absolute value means nothing - all that matters is
+-- that it differs from the last build whose shape was different, and that it
+-- only ever goes up. Bump it whenever a key changes meaning or shape, and leave
+-- it alone when only a default moves: a changed default reaching an existing
+-- store is what ApplyDefaults deliberately does not do, and is not a shape
+-- change.
+--
+-- Bumping it is cheap now. Reconciliation keeps every value that still fits the
+-- new shape whether or not anybody wrote a migration step, so the bump costs
+-- only the values whose shape genuinely changed. Write a step in
+-- Store.MIGRATIONS for the ones reconciliation cannot work out on its own - a
+-- key renamed, a key split in two, a value that kept its type and changed its
+-- meaning.
 --------------------------------------------------------------------------------
 
 local DB_VERSION = 5
@@ -362,53 +367,35 @@ local DB_VERSION = 5
 -- copy of the number, which went stale every time this moved.
 ns.DB_VERSION = DB_VERSION
 
--- Carried across a discard rather than thrown away with the rest.
---
--- Geometry is the exception to "settings are cheap to set again". Dragging three
--- panels into place and sizing them is the only part of configuring this addon
--- that takes real effort, and it is the part least likely to be what a discard
--- is *for*.
---
--- Exempting them is not trusting them blindly. Tracker geometry carries its own
--- stamp - GEOMETRY_VERSION in Move.lua - and Move.lua's GetSaved drops a
--- position written in an older shape independently of anything here, so the two
--- versions guard different things and neither has to know about the other.
--- Whatever survives this is still put through ApplyDefaults afterwards, so a
--- half-filled frame block is completed rather than believed.
---
---   frame    lock state, ownership mode, and each tracker's point/x/y/scale
---   options  where the options window was left, and its scale
-local KEEP_ACROSS_DISCARD = { "frame", "options" }
-
--- Empty is not stale. A first login has no version stamp either, and a fresh
--- store is not something to announce the discarding of.
-local function DiscardStaleStore()
-    if type(HEROPANEL_DB) ~= "table" then return false end
-    if HEROPANEL_DB.dbVersion == DB_VERSION then return false end
-    if next(HEROPANEL_DB) == nil then return false end
-
-    local was  = HEROPANEL_DB.dbVersion
-    local kept = {}
-    for i = 1, #KEEP_ACROSS_DISCARD do
-        local key = KEEP_ACROSS_DISCARD[i]
-        if type(HEROPANEL_DB[key]) == "table" then kept[key] = HEROPANEL_DB[key] end
-    end
-    HEROPANEL_DB = kept
-
-    ns.Warn("your settings were written by an older build and have been reset "
-        .. "(store %s, this build wants %d). heroPanel is pre-release and does not "
-        .. "carry settings between shapes - but your frame positions and sizes "
-        .. "were kept.", tostring(was or "unstamped"), DB_VERSION)
-    return true
-end
-
 function ns.InitDB()
     if type(HEROPANEL_DB) ~= "table" then HEROPANEL_DB = {} end
-    DiscardStaleStore()
-    ApplyDefaults(HEROPANEL_DB, ns.defaults)
-    HEROPANEL_DB.dbVersion = DB_VERSION
+
+    -- Store.lua is a file like any other and a file can fail to load. Without
+    -- it there is no reconciliation and no chain, but there is still an addon:
+    -- defaults over whatever is in the store is what every login did before any
+    -- of this existed, and it is a great deal better than no settings at all.
+    if not (ns.Store and ns.Store.Prepare) then
+        ApplyDefaults(HEROPANEL_DB, ns.defaults)
+        HEROPANEL_DB.dbVersion = DB_VERSION
+        ns.db    = HEROPANEL_DB
+        ns.DEBUG = HEROPANEL_DB.debug and true or false
+        ns.Warn("the store module is not loaded - your settings are being read "
+            .. "as-is and not checked. Look for a Lua error at login.")
+        return ns.db
+    end
+
+    -- Store.Prepare returns the table to use rather than editing in place: the
+    -- migration chain runs on a copy, so on a shape change this is a different
+    -- table from the one that went in.
+    local report
+    HEROPANEL_DB, report = ns.Store.Prepare(HEROPANEL_DB, DB_VERSION, ns.defaults)
+
     ns.db    = HEROPANEL_DB
     ns.DEBUG = HEROPANEL_DB.debug and true or false
+
+    -- Announced after ns.DEBUG is set, so the debug-level detail in the report
+    -- is not silenced by a flag that is about to be turned on.
+    ns.Store.Announce(report)
     return ns.db
 end
 
@@ -513,6 +500,7 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp keys [on|off]|r - answer !keys / ?keys in group chat by "
         .. "linking your keystone (|cFF8B8FA3no argument links it now|r)")
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
+    ns.Print("  |cFFC2C6D8/hp store|r - report what this login did to your saved settings")
     ns.Print("  |cFFC2C6D8/hp dump|r - report the geometry the skin measured")
     ns.Print("  |cFFC2C6D8/hp mplus|r - report what the Mythic+ panel resolved, and from where")
     ns.Print("  |cFFC2C6D8/hp probe [all]|r - report what else draws inside the panel; |cFF8B8FA3all|r adds heroPanel's own")
@@ -692,6 +680,12 @@ SlashCmdList["HEROPANEL"] = function(input)
         end
     elseif cmd == "status" then
         ns.PrintStatus()
+    elseif cmd == "store" then
+        if ns.Store then
+            ns.Store.PrintReport()
+        else
+            ns.Print("the store module is not loaded.")
+        end
     elseif cmd == "dump" then
         if ns.Skin and ns.Skin.Dump then
             ns.Skin.Dump()

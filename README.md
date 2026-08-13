@@ -9,8 +9,8 @@ screen and lock them there. Everything is configured in an in-game options
 window, and changes apply immediately — no reloading to see what a setting did.
 
 > **Pre-release (0.2.0).** Feature complete and playable, but still being
-> tested. See [Updating](#updating) for what happens to your settings between
-> pre-release builds.
+> tested. Your settings carry across updates — see
+> [Updating](#updating).
 
 ---
 
@@ -160,6 +160,7 @@ Everything below is also in the options window, except where noted.
 | `/hp mode <auto\|own\|holder\|yield>` | Who positions the trackers |
 | `/hp skin [on\|off]` | Style the trackers, or hand them back to the game |
 | `/hp status` | Report what heroPanel found and hooked |
+| `/hp store` | Report what this login did to your saved settings |
 
 ## If something looks wrong
 
@@ -177,11 +178,14 @@ include, along with which other UI addons you run.
 
 Copy the new `heroPanel` folder over the old one and `/reload`.
 
-While heroPanel is pre-release its settings format is still changing. When it
-changes, heroPanel says so in chat and puts the defaults back for colours,
-fonts and sizes — but **your tracker positions, scales and lock state are kept**,
-since those are the part that takes real effort to set up. Once heroPanel is
-released properly, settings will carry across updates instead.
+**Your settings carry across.** heroPanel checks the saved settings against the
+build it is running: everything that still means something is kept exactly as
+you set it, and only a setting whose shape genuinely changed goes back to its
+default. If any did, it says so once in chat — `/hp store` then lists which, so
+you know what to set again rather than having to hunt for it.
+
+Downgrading is safe too. An older build will not rewrite settings written by a
+newer one; it uses the parts it understands, leaves the rest alone, and says so.
 
 ## Licence
 
