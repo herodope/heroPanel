@@ -81,6 +81,22 @@ local store = ns.Store
 local MIGRATIONS = {}
 store.MIGRATIONS = MIGRATIONS
 
+-- boons.dimMelee became boons.markMelee.
+--
+-- A rename, which is exactly the case reconciliation cannot work out for
+-- itself: without this the old key is pruned as junk and the new one is filled
+-- in from its default, so somebody who had turned melee marking on would find
+-- it off again. The setting also changed what it does - dimming the two
+-- melee-only boons, which is what an unowned boon already looks like, became a
+-- border in a colour nothing else on the bar uses - but the answer to "do you
+-- want these two called out" is the same either way, so the value carries.
+MIGRATIONS[6] = function(db)
+    if type(db.boons) == "table" and db.boons.dimMelee ~= nil then
+        db.boons.markMelee = db.boons.dimMelee and true or false
+        db.boons.dimMelee  = nil
+    end
+end
+
 --------------------------------------------------------------------------------
 -- The rules
 --
@@ -148,6 +164,23 @@ local RULES = {
     ["options.scale"]   = { type = "number",
                             min = function() return ns.SCALE_MIN end,
                             max = function() return ns.SCALE_MAX end },
+
+    -- The boon bar's geometry. It is not one of ns.trackers - heroPanel creates
+    -- this frame rather than finding it - so it does not fall under the
+    -- frame.* rules above and needs its own. `point` matters for the same
+    -- reason it does there: its default is nil, and without a rule saying it is
+    -- a real key, pruning would read a saved position as junk and drop it.
+    ["boons.point"]       = ANCHOR,
+    ["boons.x"]           = COORD,
+    ["boons.y"]           = COORD,
+    ["boons.scale"]       = { type = "number",
+                              min = function() return ns.SCALE_MIN end,
+                              max = function() return ns.SCALE_MAX end },
+    ["boons.iconSize"]    = { type = "number",
+                              min = function() return ns.BOON_ICON_MIN end,
+                              max = function() return ns.BOON_ICON_MAX end },
+    ["boons.orientation"] = { type = "string",
+                              values = function() return ns.BOON_ORIENTATIONS end },
 
     ["panel.*.bgColor"]        = COLOUR,
     ["panel.*.borderColor"]    = COLOUR,

@@ -434,6 +434,63 @@ local function AnchorCaret()
     header.caretButton:SetPoint("CENTER", header.caret, "CENTER", 0, 0)
 end
 
+--------------------------------------------------------------------------------
+-- Header on mouseover
+--
+-- Off by default. The header row is where the lock, the quest count and the
+-- collapse caret live, so it is chrome rather than content: once a tracker has
+-- been arranged and locked, none of the three is needed on screen while you are
+-- reading the quest underneath it.
+--
+-- Alpha, not Show and Hide. The row keeps its height either way, so the quest
+-- lines do not jump up the moment the cursor leaves - a tracker that moves
+-- while you are reading it is worse than chrome you had stopped noticing. It
+-- also keeps the whole feature off the layout path: SetAlpha is not protected,
+-- so this lands in combat like every other visual change heroPanel makes.
+--
+-- The hover target is the whole panel rather than the header band alone. An
+-- invisible 30px strip you have to find with the cursor is not a control, and
+-- hovering the tracker to see what its header says is what anybody will try
+-- first.
+--------------------------------------------------------------------------------
+
+-- Everything heroPanel draws in the band, resolved once and kept.
+--
+-- header.hit and header.caretButton are deliberately absent: they carry no art,
+-- and taking their clicks away with the alpha would give a header you can see
+-- and cannot use - the cursor is already over the panel by the time it is
+-- visible, which is exactly when you want to click it.
+local headerFade
+local headerAlpha    -- what they are at now, so a tick that changes nothing costs nothing
+
+local function ApplyHeaderAlpha(hovered)
+    if not plate then return end
+
+    if not headerFade then
+        headerFade = {
+            header.lock, header.label, header.badgeFill, header.badgeText, header.caret,
+            plate.divider.left, plate.divider.mid, plate.divider.right,
+        }
+    end
+
+    local settings = ns.db and ns.db.header
+    local wanted = 1
+    if type(settings) == "table" and settings.mouseover and not hovered then wanted = 0 end
+
+    if headerAlpha == wanted then return end
+    headerAlpha = wanted
+
+    for i = 1, #headerFade do headerFade[i]:SetAlpha(wanted) end
+end
+
+-- Recompute from scratch. Called when the setting changes and after every
+-- layout, where the widgets may have been shown or hidden under us.
+function skin.RefreshHeaderFade()
+    if not plate then return end
+    headerAlpha = nil
+    ApplyHeaderAlpha(plate:IsVisible() and ns.MouseIsOver(plate))
+end
+
 local function StylePlate()
     if not plate then return end
 
@@ -670,6 +727,10 @@ local function UpdateHeader(watch)
         header.caretHover:Hide()
         for _, texture in pairs(plate.divider) do texture:Hide() end
     end
+
+    -- After the show/hide, because that is what decides which of these widgets
+    -- is on screen to be faded at all.
+    skin.RefreshHeaderFade()
 end
 
 --------------------------------------------------------------------------------
@@ -971,7 +1032,13 @@ end
 local function HoverTick()
     if not skin.enabled or not plate or not plate:IsVisible() then return end
 
-    if not ns.MouseIsOver(plate) then
+    -- Measured once and used twice. It is the same question the header fade and
+    -- the line hover both ask, and asking it twice a tick is two cursor reads
+    -- and two chances for them to disagree at the panel's edge.
+    local hovered = ns.MouseIsOver(plate)
+    ApplyHeaderAlpha(hovered)
+
+    if not hovered then
         header.caretHover:Hide()
         if ns.Lines then ns.Lines.ClearHover() end
         return

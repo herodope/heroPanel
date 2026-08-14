@@ -209,6 +209,10 @@ local function Apply(reason)
         pcall(ns.Mplus.Restyle)
         pcall(ns.Mplus.Refresh, reason)
     end
+    -- The boon bar takes its chrome from the Mythic+ panel's colours, so a
+    -- change made in that group has to reach it too, and its own group's
+    -- orientation control routes through here as well.
+    if ns.Boons then pcall(ns.Boons.Restyle) end
     pcall(options.Restyle)
 end
 options.Apply = Apply
@@ -361,6 +365,41 @@ end
 -- with square ends.
 --------------------------------------------------------------------------------
 
+-- The label column: everything to the left of the switch.
+--
+-- Set explicitly, because a FontString with no width is as wide as its text and
+-- draws straight under whatever is to its right - which is a sublabel
+-- disappearing behind the toggle, unreadable, looking like a rendering fault
+-- rather than like a string that is too long.
+--
+-- Both toggle callers land on the same number: the body is 440 wide with PAD_X
+-- either side and the enable block is 416 with 8, so the content column is 400
+-- in both cases.
+--
+-- The practical budget for a sublabel is about 46 characters. That is not a
+-- limit anything enforces - a longer one wraps and grows its row now rather
+-- than breaking - but a window where every row is one line reads as a list,
+-- and one where some rows are two reads as a form.
+local LABEL_WIDTH  = CONTENT_WIDTH - TOGGLE_WIDTH - 12
+local ACTION_WIDTH = CONTENT_WIDTH - 118 - 12
+
+-- How many lines a string takes once it is given a width.
+--
+-- 3.3.5a's FontString has no word-wrap switch: a width means it wraps, and no
+-- width means it runs under its neighbour. So the width is set and the row is
+-- grown to fit whatever that produces - which is what keeps this window honest
+-- when somebody drags the options font size up, since every row in it is
+-- absolutely placed at build time and cannot reflow afterwards.
+--
+-- GetStringWidth measures the string unwrapped, which is all that is needed to
+-- count the lines it will break into.
+local function WrappedLines(fs, width)
+    local ok, measured = pcall(fs.GetStringWidth, fs)
+    measured = (ok and tonumber(measured)) or 0
+    if measured <= 0 or width <= 0 then return 1 end
+    return math.max(1, math.ceil(measured / width))
+end
+
 local function NewToggle(parent, y, label, sublabel, get, set, padX)
     padX = padX or PAD_X
 
@@ -385,12 +424,34 @@ local function NewToggle(parent, y, label, sublabel, get, set, padX)
     knobFill:Layout(KNOB_SIZE, KNOB_SIZE, KNOB_SIZE / 2)
 
     local title = NewText(parent, 0.5, TEXT_BRIGHT, label)
+    title:SetWidth(LABEL_WIDTH)
+    title:SetJustifyH("LEFT")
     title:SetPoint("LEFT", parent, "TOPLEFT", padX, -(y + TOGGLE_HEIGHT / 2) + (sublabel and 7 or 0))
 
-    local sub
-    if sublabel then
-        sub = NewText(parent, -2, TEXT_MUTED, sublabel)
-        sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
+    -- sublabel is a string, or a list of them for a control that needs two
+    -- lines. A list rather than one string with a newline in it: an embedded
+    -- break is invisible in the source, and GetStringWidth measures the whole
+    -- string rather than its longest line, so the row-height arithmetic below
+    -- would silently get it wrong.
+    local subLines = sublabel
+    if type(subLines) == "string" then subLines = { subLines } end
+
+    local extraHeight, anchor = 0, title
+    if subLines then
+        local lineHeight = ns.GetFontSize(-2, "options") + 3
+        for i = 1, #subLines do
+            local sub = NewText(parent, -2, TEXT_MUTED, subLines[i])
+            sub:SetWidth(LABEL_WIDTH)
+            sub:SetJustifyH("LEFT")
+            sub:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, (i == 1) and -3 or -1)
+            anchor = sub
+
+            -- The first line is what the row's base height already allows for.
+            -- Every line after it, and every line any of them wraps onto, is
+            -- height the row has to grow by.
+            extraHeight = extraHeight
+                + (WrappedLines(sub, LABEL_WIDTH) - (i == 1 and 1 or 0)) * lineHeight
+        end
     end
 
     local widget = {}
@@ -413,7 +474,7 @@ local function NewToggle(parent, y, label, sublabel, get, set, padX)
     end)
 
     table.insert(controls, widget)
-    return y + (sublabel and 40 or ROW_HEIGHT), widget
+    return y + (subLines and (40 + extraHeight) or ROW_HEIGHT), widget
 end
 
 --------------------------------------------------------------------------------
@@ -566,12 +627,16 @@ end
 -- Segmented control
 --------------------------------------------------------------------------------
 
-local function NewSegmented(parent, y, label, entries, get, set)
+-- width is optional and defaults to what the border-style row wants. It is
+-- offered because a segment is only as readable as its label fits into:
+-- "Horizontal" and "Vertical" do not go in 78 units at the sizes this window is
+-- set at, and the answer to that is a wider segment rather than a shorter word.
+local function NewSegmented(parent, y, label, entries, get, set, width)
     local title = NewText(parent, 0, TEXT_BODY, label)
     title:SetPoint("LEFT", parent, "TOPLEFT", PAD_X, -(y + 13))
 
     local buttons = {}
-    local width = 78
+    width = width or 78
     for i = 1, #entries do
         local entry = entries[i]
         local button = CreateFrame("Button", nil, parent)
@@ -744,7 +809,13 @@ local function NewStateColours(parent, y, label, entries)
     end
 
     table.insert(controls, widget)
-    return y + SWATCH_SIZE + 14, widget
+    -- The swatch, plus its caption underneath, plus clearance.
+    --
+    -- This was 14, which covered the swatch and left the caption to overlap the
+    -- next row's title by a couple of pixels - the one row in the window where
+    -- the label hangs *below* its control rather than beside it, so the row's
+    -- height has to account for a string the other builders never have.
+    return y + SWATCH_SIZE + 26, widget
 end
 
 --------------------------------------------------------------------------------
@@ -1028,6 +1099,44 @@ end
 -- Footer buttons
 --------------------------------------------------------------------------------
 
+--------------------------------------------------------------------------------
+-- A labelled action button on its own row
+--
+-- Not a setting - it does something on the spot and has nothing to show back.
+-- The one in the window so far, Reset, is a footer button, which is right for a
+-- control that applies to the whole window and wrong for one that applies to a
+-- single group.
+--------------------------------------------------------------------------------
+
+local function NewActionRow(parent, y, label, sublabel, action, onClick)
+    local title = NewText(parent, 0.5, TEXT_BRIGHT, label)
+    title:SetWidth(ACTION_WIDTH)
+    title:SetJustifyH("LEFT")
+    title:SetPoint("LEFT", parent, "TOPLEFT", PAD_X, -(y + 13) + (sublabel and 7 or 0))
+
+    local extraHeight = 0
+    if sublabel then
+        local sub = NewText(parent, -2, TEXT_MUTED, sublabel)
+        sub:SetWidth(ACTION_WIDTH)
+        sub:SetJustifyH("LEFT")
+        sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
+        extraHeight = (WrappedLines(sub, ACTION_WIDTH) - 1)
+            * (ns.GetFontSize(-2, "options") + 3)
+    end
+
+    local button = CreateFrame("Button", nil, parent)
+    button:SetWidth(118)
+    button:SetHeight(26)
+    button:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -PAD_X, -y)
+    Chrome(button, BoxStyle("#1C1F2E", 1, "#33364A", 1, 6))
+
+    local text = NewText(button, -0.5, TEXT_BODY, action)
+    text:SetPoint("CENTER")
+
+    button:SetScript("OnClick", onClick)
+    return y + (sublabel and (40 + extraHeight) or ROW_HEIGHT)
+end
+
 local function NewFooterButton(parent, width, label, accent, onClick)
     local button = CreateFrame("Button", nil, parent)
     button:SetWidth(width)
@@ -1300,6 +1409,22 @@ local function Build()
             if ns.Skin then pcall(ns.Skin.Refresh, "hide-when-empty toggled") end
         end)
 
+    -- The header row on demand.
+    --
+    -- QUESTS, the count, the lock and the caret are chrome: useful while you
+    -- are arranging the tracker, and nothing you need on screen while reading
+    -- the quest under them. This fades them rather than removing the row, so
+    -- the quest lines stay where they are.
+    y = NewToggle(body, y, "Header on mouseover",
+        "shows the header only while you hover the panel",
+        function() return ns.db.header.mouseover end,
+        function(value)
+            ns.db.header.mouseover = value and true or false
+            if ns.Skin and ns.Skin.RefreshHeaderFade then
+                pcall(ns.Skin.RefreshHeaderFade)
+            end
+        end)
+
     -- Getting the tracker out of the way on its own.
     --
     -- Both of these fade the tracker to nothing rather than hiding it, because
@@ -1372,11 +1497,176 @@ local function Build()
     -- switch puts a line in chat under the player's own name, which is the one
     -- thing in this window that other people see, and a player deciding whether
     -- to leave it on is deciding about that rather than about key checks.
+    -- Two lines, because the feature *is* what to type and one sigil is not the
+    -- whole of it. Which one a server's players settle on is local habit, so
+    -- heroPanel answers eight spellings - and a control that names one of them
+    -- reads as the only one that works.
+    --
+    -- The second line is built from ns.Keys.COMMANDS rather than written out
+    -- again. That list is published for exactly this, and a hand-copied one is a
+    -- list that goes stale the first time a sigil is added.
+    local function OtherKeyCommands()
+        local list = ns.Keys and ns.Keys.COMMANDS
+        if type(list) ~= "table" then return "also !keys and the singular forms" end
+
+        local others = {}
+        for i = 1, #list do
+            if list[i] ~= "?keys" then table.insert(others, list[i]) end
+        end
+        return "also " .. table.concat(others, " ")
+    end
+
     y = NewToggle(body, y, "Answer party key checks",
-        "!keys in group chat links your keystone for you",
+        {
+            "?keys in group chat links your keystone for you",
+            OtherKeyCommands(),
+        },
         function() return ns.Keys and ns.Keys.IsEnabled() end,
         function(value)
             if ns.Keys then ns.Keys.SetEnabled(value) end
+        end)
+
+    ------------------------------------------------------------------
+    -- BOONS
+    --
+    -- The Mythic+ boon bar, which is a third panel rather than a skin over
+    -- somebody else's frame - see Boons.lua. Its group is last because it is
+    -- the one feature in this window that is off until asked for, and a group
+    -- of controls for something switched off does not want to be the first
+    -- thing anybody scrolls past.
+    --
+    -- There is no scale slider and no lock of its own. The bar carries the same
+    -- corner resize grip the other three panels do, and it obeys the single
+    -- global lock the padlock in this window's header sets - which is why the
+    -- lock row below says out loud that it covers the trackers too, rather than
+    -- looking like a control for this bar alone.
+    ------------------------------------------------------------------
+
+    y = GroupLabel(body, y + GROUP_GAP, "Boons", true)
+
+    -- Resolved per call rather than captured, for the same reason PanelSaved is:
+    -- Reset replaces the whole store, and a closure holding the old table would
+    -- go on writing to a table nothing reads.
+    local function BoonsSaved()
+        if type(ns.db.boons) ~= "table" then ns.db.boons = {} end
+        return ns.db.boons
+    end
+
+    -- Every boon setting except the enable switch changes the bar's shape or
+    -- its visuals and nothing else, so they all land the same way.
+    local function BoonsRefresh(reason)
+        if ns.Boons then pcall(ns.Boons.Refresh, reason) end
+    end
+
+    y = NewToggle(body, y, "Boon bar", "a clickable bar of your Mythical Boons",
+        function() return ns.Boons and ns.Boons.IsEnabled() end,
+        function(value)
+            if ns.Boons then ns.Boons.SetEnabled(value) end
+        end)
+
+    y = NewSegmented(body, y, "Orientation", {
+            { key = "horizontal", label = "Horizontal" },
+            { key = "vertical",   label = "Vertical"   },
+        },
+        function() return BoonsSaved().orientation or "horizontal" end,
+        function(key) BoonsSaved().orientation = key end,
+        100)
+
+    -- Icon size and the corner grip's scale are not the same lever and both are
+    -- worth having. Size is how big one icon is, which is what decides whether
+    -- the bar can be read at a glance; scale is how big the whole bar is,
+    -- including the gaps between its three groups.
+    y = NewSlider(body, y, "Icon size",
+        ns.BOON_ICON_MIN or 20, ns.BOON_ICON_MAX or 64, ns.BOON_ICON_STEP or 2,
+        function() return BoonsSaved().iconSize or 32 end,
+        function(value)
+            BoonsSaved().iconSize = value
+            BoonsRefresh("boon icon size changed")
+        end,
+        function(value) return string.format("%d px", Int(value)) end,
+        "drag the bar's corner to scale the whole bar")
+
+    y = NewToggle(body, y, "Only in Mythic dungeons",
+        "off shows it everywhere, for positioning",
+        function() return BoonsSaved().mythicOnly ~= false end,
+        function(value)
+            BoonsSaved().mythicOnly = value and true or false
+            BoonsRefresh("boon gating changed")
+        end)
+
+    y = NewToggle(body, y, "Hide unowned boons", "compacts the bar; out of combat only",
+        function() return BoonsSaved().hideUnowned end,
+        function(value)
+            BoonsSaved().hideUnowned = value and true or false
+            BoonsRefresh("boon hide-unowned toggled")
+        end)
+
+    y = NewToggle(body, y, "Hide when you have none",
+        "hides the bar until you pick one up",
+        function() return BoonsSaved().hideEmpty end,
+        function(value)
+            BoonsSaved().hideEmpty = value and true or false
+            BoonsRefresh("boon hide-empty toggled")
+        end)
+
+    y = NewToggle(body, y, "Mark melee-only boons",
+        "gold border on Piercing and Adaptation",
+        function() return BoonsSaved().markMelee end,
+        function(value)
+            BoonsSaved().markMelee = value and true or false
+            BoonsRefresh("boon melee marking toggled")
+        end)
+
+    -- Anchoring, and then the slot order, are the two settings that move things
+    -- rather than colour them, so they sit below the appearance rows.
+    y = NewToggle(body, y, "Anchor under Mythic+ panel",
+        "follows that panel; you cannot drag it",
+        function() return BoonsSaved().anchorMplus end,
+        function(value)
+            BoonsSaved().anchorMplus = value and true or false
+            BoonsRefresh("boon anchoring toggled")
+        end)
+
+    -- The slot order and the keybinds are one idea, so the sublabel has to
+    -- carry both halves: what moves, and what that does for the keys. Said in
+    -- one line because a setting that needs a paragraph is a setting nobody
+    -- turns on.
+    y = NewToggle(body, y, "Line boons up in slots 1-5",
+        "held boons move to the front, for the keys",
+        function() return BoonsSaved().slotOrder end,
+        function(value)
+            BoonsSaved().slotOrder = value and true or false
+            BoonsRefresh("boon slot order toggled")
+        end)
+
+    -- The in-combat tooltip is a one-line summary heroPanel writes, because
+    -- three of the fifteen live client strings are wrong - BoonData.lua names
+    -- them. This is the way back to the client's own text for anyone who would
+    -- rather read that and judge for themselves.
+    y = NewToggle(body, y, "Full boon text", "client's own text instead of a summary",
+        function() return BoonsSaved().rawTooltip end,
+        function(value)
+            BoonsSaved().rawTooltip = value and true or false
+        end)
+
+    y = NewToggle(body, y, "Lock position", "the same lock as the trackers",
+        function() return ns.IsLocked() end,
+        function(value) ns.SetLocked(value and true or false) end)
+
+    -- Where the keys are. Not a control, and worth a row anyway: the bindings
+    -- live in the client's own Key Bindings window rather than in here, and
+    -- nothing else in this group would say so.
+    do
+        local note = NewText(body, -2, TEXT_MUTED,
+            "Keys: Key Bindings \194\183 heroPanel \194\183 Boon slot 1-5")
+        note:SetPoint("TOPLEFT", body, "TOPLEFT", PAD_X, -y)
+        y = y + 22
+    end
+
+    y = NewActionRow(body, y, "Bar position",
+        "back to the middle of the screen", "Reset",
+        function()
+            if ns.Boons then ns.Boons.ResetPosition() end
         end)
 
     -- There is no HEADER group. header.show still exists and still governs the

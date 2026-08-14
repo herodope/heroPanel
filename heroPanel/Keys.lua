@@ -79,14 +79,35 @@ local CHAT_EVENTS = {
     "CHAT_MSG_INSTANCE_CHAT_LEADER",
 }
 
--- What marks an item link as a keystone. Matched against the link text, which
--- carries the item's name, and plain rather than as a pattern.
+-- What marks an item link as a keystone. Matched against the item's name, and
+-- plain rather than as a pattern.
 --
 -- A name match rather than an item ID because there is no single keystone item
--- to key off: every dungeon and every level is its own item, and the list is
--- Ascension's to change. The name is the one part that has to stay stable,
--- because players read it.
+-- to key off: every dungeon and every level is its own item. The datamine lists
+-- 6700 of them spread from 60008 to 2712518, which is not a range anything can
+-- usefully test against - the Mythical Keystone Cache below sits right in the
+-- middle of it. The name is the one part that has to stay stable, because
+-- players read it.
 local KEYSTONE_MARK = "Keystone"
+
+-- A real keystone is named "Keystone: <Dungeon> (<level>)", so its name begins
+-- with this. Preferred over a loose match rather than required, because the
+-- naming is Ascension's to change and a check that misses a renamed keystone
+-- entirely is worse than one that occasionally links the wrong thing.
+local KEYSTONE_PREFIX = "Keystone:"
+
+-- Items that carry "Keystone" in their name and are not one.
+--
+-- The Mythical Keystone Cache is the box the keystone comes out of, and it can
+-- sit in the bags beside the keystone itself - so a plain "does the name
+-- contain Keystone" test would answer a key check by linking the box. The ID is
+-- the authoritative half; the word is the half that still works when the next
+-- container is added under a different ID.
+local NOT_A_KEYSTONE_ID = {
+    [97243] = true,   -- Mythical Keystone Cache
+}
+
+local NOT_A_KEYSTONE_WORD = { "Cache" }
 
 local NO_KEYSTONE = "No keystone in bags."
 
@@ -146,14 +167,47 @@ end
 -- Reading the bags
 --------------------------------------------------------------------------------
 
+-- The displayed name inside an item link, or the whole link if it has none.
+--
+-- An item link is |cXXXXXXXX|Hitem:id:...|h[Name]|h|r, so the name is what sits
+-- between the brackets. Reading it out matters: the link text also carries the
+-- item ID, and testing the whole link for a word means digits can match one.
+local function LinkName(link)
+    return string.match(link, "%[(.-)%]") or link
+end
+
+local function LinkItemID(link)
+    return tonumber(string.match(link, "|Hitem:(%d+)"))
+end
+
+-- Something with "Keystone" in its name that is not a keystone.
+local function IsImpostor(link, name)
+    if NOT_A_KEYSTONE_ID[LinkItemID(link) or 0] then return true end
+    for i = 1, #NOT_A_KEYSTONE_WORD do
+        if string.find(name, NOT_A_KEYSTONE_WORD[i], 1, true) then return true end
+    end
+    return false
+end
+
 -- The player's keystone, as an item link, or nil.
 --
 -- Bags 0 to 4: the backpack and the four bag slots. The bank is deliberately
 -- not searched - it cannot be read while away from it, and a keystone in the
 -- bank is not one that can be run tonight anyway.
+--
+-- Two passes' worth of judgement in one loop. An item whose name *begins*
+-- "Keystone:" is the real thing and wins outright; anything else that merely
+-- contains "Keystone" is held as a fallback and only used if the bags turn out
+-- to have nothing better. That ordering is what makes the exclusions above a
+-- second line of defence rather than the only one: with a cache and a keystone
+-- in the bags at once - which is the normal state, since the keystone comes out
+-- of the cache - the keystone is linked even if a future container slips the
+-- list entirely.
 function keys.FindKeystone()
     if type(GetContainerNumSlots) ~= "function" then return nil end
     if type(GetContainerItemLink) ~= "function" then return nil end
+
+    local fallback
 
     for bag = 0, 4 do
         local slots = 0
@@ -162,14 +216,24 @@ function keys.FindKeystone()
 
         for slot = 1, slots do
             local gotLink, link = pcall(GetContainerItemLink, bag, slot)
-            if gotLink and type(link) == "string"
-               and string.find(link, KEYSTONE_MARK, 1, true) then
-                return link
+            if gotLink and type(link) == "string" then
+                local name = LinkName(link)
+
+                if string.find(name, KEYSTONE_MARK, 1, true) and not IsImpostor(link, name) then
+                    if string.sub(name, 1, #KEYSTONE_PREFIX) == KEYSTONE_PREFIX then
+                        return link
+                    end
+                    fallback = fallback or link
+                end
             end
         end
     end
 
-    return nil
+    if fallback then
+        ns.Debug("no item named '%s...' in the bags; falling back to %s.",
+            KEYSTONE_PREFIX, tostring(LinkName(fallback)))
+    end
+    return fallback
 end
 
 --------------------------------------------------------------------------------

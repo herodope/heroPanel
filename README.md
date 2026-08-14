@@ -22,10 +22,13 @@ A clean, movable, configurable skin for your objective trackers on
 
 heroPanel gives the quest tracker and the Mythic+ tracker a proper panel, a
 readable header, better fonts and colours, and lets you drag them anywhere on
-screen and lock them there. Everything is configured in an in-game options
-window, and changes apply immediately — no reloading to see what a setting did.
+screen and lock them there. It also ships an optional **Mythic+ boon bar**, so
+the Mythical Boons in your bags are one click or one keypress away instead of
+buried in an inventory slot mid-run. Everything is configured in an in-game
+options window, and changes apply immediately — no reloading to see what a
+setting did.
 
-> **Pre-release (0.2.0).** Feature complete and playable, but still being
+> **Pre-release (0.2.1).** Feature complete and playable, but still being
 > tested. Your settings carry across updates — see
 > [Updating](#updating).
 
@@ -64,7 +67,7 @@ Type **`/hp`** (or `/heropanel`) to open the options window. It's also under
 little grip in its bottom-right corner to resize it. Click **Lock** when you're
 happy — that hides the grips and stops you nudging things by accident.
 
-**To change how it looks:** everything is in the options window, in three
+**To change how it looks:** everything is in the options window, in four
 groups:
 
 * **Global** — the font, and the options window's own size and background.
@@ -72,6 +75,7 @@ groups:
   text shadow, and the auto-hide switches.
 * **Mythic+ tracker** — the same panel controls again, its own three text
   sizes, and the colours it uses for objective states.
+* **Boons** — the Mythic+ boon bar, which is off until you turn it on.
 
 Each tracker is styled separately on purpose: the Mythic+ panel is a block of
 numbers that usually wants something solid behind it, while the quest tracker is
@@ -99,9 +103,48 @@ meter and the boss rows.
 and the header still reads over snow or open sky. There's an optional text
 shadow (1–3 px) if you want more.
 
+## Mythic+ boon bar
+
+Mythic keystone dungeons have Boon Crystals. Clicking one hands everybody nearby
+a random **Mythical Boon**, which is a consumable that buffs the whole party for
+about thirty seconds. They share a cooldown, they expire after a few minutes,
+and the only way to see what you are holding is to open your bags — in the
+middle of a timed run.
+
+The boon bar is a row of icons, one per boon. Ones you are carrying are in full
+colour with a stack count and can be clicked; ones you are not are greyed out
+but still show you what they do. There is a cooldown sweep, and using any boon
+greys the rest, because they share the cooldown.
+
+It is **off by default**, since it only means anything inside a key. Turn it on
+with *Boon bar* in the Boons group, or `/hp boons on`.
+
+Worth knowing:
+
+* By default it only appears in a Mythic dungeon. Turn *Only in Mythic
+  dungeons* off to place it.
+* **Keybinds** are five slots under **Key Bindings → heroPanel**. A slot is a
+  position on the bar; turn on *Line boons up in slots 1-5* and the boons you
+  are actually carrying move to the front, so a bound key always fires one. The
+  key you bound is drawn in the corner of the icon.
+* It can hang under the Mythic+ panel instead of sitting where you drag it —
+  *Anchor under Mythic+ panel*.
+* Two boons only help melee. *Mark melee-only boons* puts a gold border on them.
+* Hovering a boon out of combat shows its real item tooltip, with the expiry.
+  In combat you get a one-line summary instead, so you are not reading a wall of
+  text mid-pull.
+
+One limitation to know about: the game will not let an addon point a button at a
+bag slot while you are in combat. So a boon looted mid-fight lights up on the
+bar straight away, but does not become clickable until the fight ends. Nothing
+is lost — it is there waiting.
+
+`/hp boons` on its own reports what it found: which boons are in your bags,
+which key fires which slot, and whether the bar thinks it is in a key.
+
 ## Party key checks
 
-Someone types **`!keys`** in party, raid or instance chat, and heroPanel links
+Someone types **`?keys`** in party, raid or instance chat, and heroPanel links
 your keystone straight from your bags — you don't have to open anything.
 
 It answers to eight spellings, so it works whichever one your group has settled
@@ -134,6 +177,11 @@ One thing to know about the combat one: while you're actually in a fight, the
 game won't let an addon fully remove the tracker, so it becomes invisible but
 its area can still catch mouse clicks until combat ends. The Mythic+ one has no
 such limit — that region is properly click-through for the whole run.
+
+There is a third switch in the same group, **Header on mouseover**, which is
+smaller in scope: the header row — `QUESTS`, the count, the lock and the collapse
+arrow — is only drawn while the cursor is over the panel. The row keeps its
+height, so your quest lines stay exactly where they are.
 
 ## Fonts
 
@@ -170,10 +218,11 @@ Everything below is also in the options window, except where noted.
 | `/hp help` | List the commands |
 | `/hp lock` / `/hp unlock` | Lock or unlock both trackers for dragging |
 | `/hp scale <watch\|mplus> <0.5-1.5>` | Set a tracker's scale |
-| `/hp reset [watch\|mplus]` | Clear saved position and scale |
+| `/hp reset [watch\|mplus\|boons]` | Clear saved position and scale |
 | `/hp font <8-30>` | Set every text size at once |
 | `/hp fontface <name>` | Pick a font by name |
-| `/hp keys [on\|off]` | Answer `!keys` in group chat — no argument posts your key now |
+| `/hp keys [on\|off]` | Answer `?keys` in group chat — no argument posts your key now |
+| `/hp boons [on\|off\|reset]` | The Mythic+ boon bar — no argument reports what it found |
 | `/hp mode <auto\|own\|holder\|yield>` | Who positions the trackers |
 | `/hp skin [on\|off]` | Style the trackers, or hand them back to the game |
 | `/hp status` | Report what heroPanel found and hooked |

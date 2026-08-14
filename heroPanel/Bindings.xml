@@ -1,0 +1,37 @@
+<Bindings>
+    <!--
+        Key bindings for the Mythic+ boon bar.
+
+        Five slots rather than one row per boon. A slot is a position on the
+        bar, and heroPanel's "line boons up in the slots" setting makes those
+        positions the boons you are actually carrying - so slot 1 is your first
+        boon rather than always the same one. Nobody carries fifteen boons, and
+        fifteen rows here is a list nobody reads to the bottom of.
+
+        Declared here so they appear in the client's own Key Bindings window and
+        the key the player chooses is saved by the client. The action below is
+        only a fallback: while the bar is on, Boons.lua installs an override
+        binding on the same key that clicks the slot's button directly, and an
+        override takes priority over this. That indirection is not optional -
+        using an item needs the click to come from the binding system rather
+        than from Lua, or the client refuses it.
+
+        BINDING_HEADER_HEROPANEL and the BINDING_NAME_* strings are set in
+        Boons.lua.
+    -->
+    <Binding name="HEROPANEL_BOON1" header="HEROPANEL">
+        if HeroPanel and HeroPanel.Boons then HeroPanel.Boons.BindingFallback(1) end
+    </Binding>
+    <Binding name="HEROPANEL_BOON2">
+        if HeroPanel and HeroPanel.Boons then HeroPanel.Boons.BindingFallback(2) end
+    </Binding>
+    <Binding name="HEROPANEL_BOON3">
+        if HeroPanel and HeroPanel.Boons then HeroPanel.Boons.BindingFallback(3) end
+    </Binding>
+    <Binding name="HEROPANEL_BOON4">
+        if HeroPanel and HeroPanel.Boons then HeroPanel.Boons.BindingFallback(4) end
+    </Binding>
+    <Binding name="HEROPANEL_BOON5">
+        if HeroPanel and HeroPanel.Boons then HeroPanel.Boons.BindingFallback(5) end
+    </Binding>
+</Bindings>

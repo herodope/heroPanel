@@ -9,7 +9,7 @@
 local ADDON_NAME, ns = ...
 
 ns.name    = ADDON_NAME
-ns.version = "0.2.0"
+ns.version = "0.2.1"
 
 -- Public API surface. Every other file in the addon registers into this table,
 -- and it is what another addon would talk to heroPanel through.
@@ -194,6 +194,68 @@ ns.defaults = {
         respond = true,
     },
 
+    -- The Mythic+ boon bar. See Boons.lua.
+    --
+    -- Off by default, which is the opposite of the call made for key checks
+    -- just above, and for the opposite reason. Key checks cost nothing until
+    -- somebody types two characters; this puts a bar of fifteen icons on screen
+    -- the moment it is installed, and it only means anything inside a Mythic
+    -- keystone run. A feature that rearranges somebody's UI before they have
+    -- asked for it is one they turn off by uninstalling the addon.
+    --
+    -- There is no lock of its own. The bar obeys the single global
+    -- frame.locked, the same flag the padlock in the options header and
+    -- /hp lock set - two locks would be two things to check when a frame will
+    -- not move.
+    boons = {
+        enabled     = false,
+        orientation = "horizontal",
+        iconSize    = 32,
+
+        -- Exactly the check the client's own boon UI makes: a party instance
+        -- at dungeon difficulty 3. Off means "always show", which is how the
+        -- bar gets positioned somewhere other than mid-run.
+        mythicOnly  = true,
+
+        -- Both off, because the bar's value is that a boon is always in the
+        -- same place. Compacting it moves everything every time a boon is
+        -- looted, which is a bar you have to read rather than aim at.
+        hideUnowned = false,
+        hideEmpty   = false,
+
+        -- Piercing and Adaptation do nothing for a caster, so they can be
+        -- marked with a border in a colour nothing else on the bar uses.
+        --
+        -- A border rather than dimming them, which is what this did first.
+        -- Dimming says "you do not have this one" - it is what an unowned boon
+        -- already looks like - so a dimmed melee boon you were holding read as
+        -- one you were not. A border adds a signal instead of subtracting one.
+        --
+        -- Off by default all the same: heroPanel does not know what the player
+        -- is playing, and marking two icons on a hybrid's bar is worse than
+        -- marking none.
+        markMelee   = false,
+
+        -- Hang the bar off the bottom of the Mythic+ panel instead of leaving
+        -- it wherever it was dragged. Off by default, because it moves a frame
+        -- the player has already placed, and because it does nothing at all
+        -- when the Mythic+ panel is not on screen.
+        anchorMplus = false,
+
+        -- Line the boons you are actually carrying up at the front of the bar,
+        -- so the five keybind slots always point at something usable. Off by
+        -- default: it reorders the bar as boons are looted and used, and the
+        -- bar's other virtue is that a given boon is always in the same place.
+        slotOrder   = false,
+
+        -- The full client description in place of heroPanel's one-line
+        -- summary. See the note on the summaries in BoonData.lua - three of the
+        -- fifteen live strings are wrong, which is why this is not the default.
+        rawTooltip  = false,
+
+        point = nil, x = 0, y = 0, scale = 1.0,
+    },
+
     font = {
         -- Resolved through LibSharedMedia by Media.lua. This value is the one
         -- face 3.3.5a always has, and it is answered without asking the library
@@ -255,6 +317,19 @@ ns.defaults = {
         -- header alone would leave a bare plate, which reads as the skin having
         -- half failed.
         hideEmpty = false,
+
+        -- Draw the header row only while the cursor is over the panel.
+        --
+        -- Off by default. The header is where the lock, the quest count and the
+        -- collapse caret live, so it is chrome rather than content - and once a
+        -- tracker has been arranged and locked, none of the three is needed on
+        -- screen while you are reading the quest under it. It stays off by
+        -- default all the same, because a control that is invisible until
+        -- hovered is one a player has to already know is there.
+        --
+        -- This fades the row rather than removing it, so the band keeps its
+        -- height and the quest lines do not jump the moment the cursor leaves.
+        mouseover = false,
     },
 
     -- Where the options window was left, and how big it was left. point = nil
@@ -361,7 +436,7 @@ ns.ApplyDefaults = ApplyDefaults
 -- meaning.
 --------------------------------------------------------------------------------
 
-local DB_VERSION = 5
+local DB_VERSION = 6
 
 -- Published so the harness can assert against the stamp rather than against a
 -- copy of the number, which went stale every time this moved.
@@ -490,7 +565,7 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp unlock|r - unlock both trackers for dragging")
     ns.Print("  |cFFC2C6D8/hp scale <watch|mplus> <0.5-1.5>|r - set tracker scale "
         .. "(|cFF8B8FA3or unlock and drag the grip in a panel's bottom-right corner|r)")
-    ns.Print("  |cFFC2C6D8/hp reset [watch|mplus]|r - clear saved position and scale")
+    ns.Print("  |cFFC2C6D8/hp reset [watch|mplus|boons]|r - clear saved position and scale")
     ns.Print("  |cFFC2C6D8/hp mode <auto|own|holder|yield>|r - who positions the trackers")
     ns.Print("  |cFFC2C6D8/hp font <8-30>|r - set every text size at once")
     ns.Print("  |cFFC2C6D8/hp fontface <name>|r - set the LibSharedMedia face by name")
@@ -499,6 +574,8 @@ local function PrintUsage()
         .. "(|cFF8B8FA3one at a time in the options window|r)")
     ns.Print("  |cFFC2C6D8/hp keys [on|off]|r - answer !keys / ?keys in group chat by "
         .. "linking your keystone (|cFF8B8FA3no argument links it now|r)")
+    ns.Print("  |cFFC2C6D8/hp boons [on|off]|r - the Mythic+ boon bar "
+        .. "(|cFF8B8FA3no argument reports what it resolved|r)")
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
     ns.Print("  |cFFC2C6D8/hp store|r - report what this login did to your saved settings")
     ns.Print("  |cFFC2C6D8/hp dump|r - report the geometry the skin measured")
@@ -546,7 +623,15 @@ SlashCmdList["HEROPANEL"] = function(input)
             ns.Print("usage: /hp scale <watch|mplus> <0.5-1.5>")
         end
     elseif cmd == "reset" then
-        ns.ResetPosition(rest ~= "" and rest or nil)
+        -- The boon bar is not one of ns.trackers - it is a frame heroPanel
+        -- creates rather than one it finds - so ns.ResetPosition would look it
+        -- up, find nothing and say nothing. Answered here so both spellings
+        -- work: /hp reset boons and /hp boons reset.
+        if rest == "boons" then
+            if ns.Boons then ns.Boons.ResetPosition() else ns.Print("the boon bar module is not loaded.") end
+        else
+            ns.ResetPosition(rest ~= "" and rest or nil)
+        end
     elseif cmd == "mode" then
         local mode, which = string.match(rest, "^(%S+)%s*(%S*)$")
         if mode and ns.SetOwnership(mode, which ~= "" and which or nil) then
@@ -677,6 +762,24 @@ SlashCmdList["HEROPANEL"] = function(input)
             else
                 ns.Print("could not answer: %s.", tostring(detail))
             end
+        end
+    elseif cmd == "boons" then
+        -- A bare /hp boons reports rather than toggles, which is the opposite
+        -- of what /hp keys does with no argument. The two are different kinds
+        -- of thing: linking your key is an action worth having on a bare
+        -- command, and turning a bar on and off by accident is not.
+        if not ns.Boons then
+            ns.Print("the boon bar module is not loaded.")
+        elseif rest == "on" or rest == "off" then
+            ns.Boons.SetEnabled(rest == "on")
+            if ns.Options then pcall(ns.Options.Sync) end
+            ns.Print("boon bar %s.", rest == "on" and "|cFF79C68Don|r" or "|cFF8B8FA3off|r")
+        elseif rest == "reset" then
+            ns.Boons.ResetPosition()
+        elseif rest ~= "" then
+            ns.Print("usage: /hp boons [on|off|reset]  (no argument reports what it resolved)")
+        else
+            ns.Boons.Dump()
         end
     elseif cmd == "status" then
         ns.PrintStatus()

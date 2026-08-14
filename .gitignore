@@ -21,6 +21,11 @@ CLAUDE.md
 TESTING.md
 tools/
 
+# Research notes written while building a feature. Working documents: they
+# record where data came from and what was ruled out, which is worth keeping
+# locally and is not part of what a player installs.
+*-research-and-prompt*.md
+
 # Packaging output
 /dist/
 /release/
