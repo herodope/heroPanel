@@ -735,41 +735,108 @@ ns.FONT_SIZE_MAX = 30
 --------------------------------------------------------------------------------
 -- Text shadow
 --
--- ns.ApplyTextShadow(fontString, key) puts the configured black outline on one
--- string, or takes it off. key is "watch" or "mplus"; force overrides the
--- setting and is what the two header strings pass, because those have carried a
--- shadow from the start and need one whatever the rest of the panel is doing -
--- they sit in the header band, which is the part of the panel most likely to be
--- over open sky.
+-- ns.ApplyTextShadow(fontString, key) makes one string legible over whatever is
+-- behind it, or hands it back plain. key is "watch" or "mplus"; force overrides
+-- the setting and is what the two header strings pass, because those have
+-- carried a shadow from the start and need one whatever the rest of the panel is
+-- doing - they sit in the header band, which is the part of the panel most
+-- likely to be over open sky.
 --
--- SetShadowOffset is what a FontString has instead of the four-texture outline
--- ns.NewGlyph draws for a texture. It is one offset copy rather than a
--- surround, so it reads as a drop shadow at 1px and as an outline by 3, which
--- is why the size is offered rather than fixed.
+-- Two mechanisms, and the split is the whole point of this rewrite. It used to
+-- be one: a black copy of the glyph offset by the configured 1 to 3 pixels,
+-- described as reading like an outline by 3. It does not. SetShadowOffset draws
+-- ONE copy in ONE direction, so growing it does not close up around the glyph -
+-- it detaches and reads as double vision, and at 1px it is mostly hidden under
+-- the glyph's own body, which is why the feature looked like it did nothing.
 --
--- Clearing it means both a zero offset and a zero alpha. Setting the offset
--- alone leaves a shadow drawn exactly under the glyph, which is not nothing -
--- it thickens the text - and setting the alpha alone leaves an offset behind
--- for the next thing that turns the shadow on.
+-- Every addon on this client that draws legible text over the world splits it
+-- the same way - ElvUI's FontTemplate, MikSBT's animation setup, WeakAuras'
+-- text regions, DeModal's title bar:
+--
+--   * the shadow is a fixed one-pixel drop at full alpha, for depth
+--   * WEIGHT comes from the font's own outline flag, which surrounds the glyph
+--     because the client renders it that way
+--
+-- So thickness now picks a flag: 1 is the drop shadow alone, 2 adds OUTLINE and
+-- 3 THICKOUTLINE. That is the control doing what its label always claimed.
+--
+-- Order matters and is not cosmetic. SetFont throws the shadow away - a
+-- FontString's shadow belongs to the font it is wearing - so the flag is
+-- applied first and the shadow second. Every caller already sets the font
+-- immediately before calling this, for the same reason.
 --------------------------------------------------------------------------------
 
-local SHADOW_ALPHA = 0.9
+local SHADOW_ALPHA  = 1
+local SHADOW_OFFSET = 1
+
+-- Thickness to font flag. Index 1 is the plain drop shadow.
+local OUTLINE_FOR = { [1] = "", [2] = "OUTLINE", [3] = "THICKOUTLINE" }
+
+-- The flags a string wore before heroPanel first touched it, so turning the
+-- setting off gives back what was there rather than a blanket "". It matters for
+-- the tracker's own strings, which heroPanel borrows rather than owns: reading
+-- the current flags back as the baseline would mean the first pass recorded our
+-- outline as theirs and no later pass could take it off. Weak-keyed, because a
+-- pooled row that goes away must not be held here.
+local baseFlags = setmetatable({}, { __mode = "k" })
+
+local function BaseFlags(fontString)
+    local recorded = baseFlags[fontString]
+    if recorded then return recorded end
+
+    local _, _, flags = fontString:GetFont()
+    flags = flags or ""
+    baseFlags[fontString] = flags
+    return flags
+end
+
+-- Re-fonts the string with the wanted outline flag folded into whatever it was
+-- already wearing. Skipped when the flags are already right: SetFont clears the
+-- shadow, so a needless call here would undo the one below it.
+local function SetOutline(fontString, wanted)
+    local base = BaseFlags(fontString)
+    local want = base
+
+    if wanted ~= "" and not string.find(base, wanted, 1, true) then
+        want = (base == "") and wanted or (base .. ", " .. wanted)
+    end
+
+    -- A client that has no flags on a string reports them as nil rather than
+    -- "", so both sides are normalised before the comparison. Without that,
+    -- every restyle of an unoutlined string would re-font it for no change -
+    -- and a needless SetFont here is not free, it clears the shadow set below.
+    local path, size, flags = fontString:GetFont()
+    if not path or not size or (flags or "") == want then return end
+
+    local ok, err = pcall(fontString.SetFont, fontString, path, size, want)
+    if not ok then ns.ReportError("text shadow outline " .. want, err) end
+end
 
 function ns.ApplyTextShadow(fontString, key, force)
     if not fontString or type(fontString.SetShadowOffset) ~= "function" then return end
 
     local saved = ns.db and ns.db.panel and ns.db.panel[key]
     local on    = force or (type(saved) == "table" and saved.textShadow)
+    local size  = math.floor(ns.Clamp((type(saved) == "table" and saved.textShadowSize) or 1, 1, 3))
 
-    if not on then
-        pcall(fontString.SetShadowColor, fontString, 0, 0, 0, 0)
-        pcall(fontString.SetShadowOffset, fontString, 0, 0)
-        return
-    end
+    -- First, because it re-fonts the string and that is what clears the shadow.
+    SetOutline(fontString, on and OUTLINE_FOR[size] or "")
 
-    local size = math.floor(ns.Clamp((type(saved) == "table" and saved.textShadowSize) or 1, 1, 3))
-    pcall(fontString.SetShadowColor, fontString, 0, 0, 0, SHADOW_ALPHA)
-    pcall(fontString.SetShadowOffset, fontString, size, -size)
+    -- Clearing means both a zero offset and a zero alpha. Setting the offset
+    -- alone leaves a shadow drawn exactly under the glyph, which is not nothing
+    -- - it thickens the text - and setting the alpha alone leaves an offset
+    -- behind for the next thing that turns the shadow on.
+    local alpha  = on and SHADOW_ALPHA or 0
+    local offset = on and SHADOW_OFFSET or 0
+
+    -- Reported rather than swallowed. A shadow that silently fails to land is
+    -- indistinguishable from one that landed and cannot be seen, and telling
+    -- those two apart is exactly what took this bug so long to find.
+    local ok, err = pcall(fontString.SetShadowColor, fontString, 0, 0, 0, alpha)
+    if not ok then ns.ReportError("text shadow colour", err) end
+
+    ok, err = pcall(fontString.SetShadowOffset, fontString, offset, -offset)
+    if not ok then ns.ReportError("text shadow offset", err) end
 end
 
 --------------------------------------------------------------------------------

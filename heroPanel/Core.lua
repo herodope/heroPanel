@@ -153,7 +153,9 @@ ns.defaults = {
             -- the rest of the panel and made adjustable, because how much of it
             -- is wanted depends entirely on how transparent the panel was made.
             textShadow     = false,
-            textShadowSize = 1,     -- 1 to 3 px
+            -- 1 is the drop shadow alone; 2 and 3 add the font's OUTLINE and
+            -- THICKOUTLINE flags. See ns.ApplyTextShadow.
+            textShadowSize = 1,
         },
         mplus = {
             bgColor     = "#14161F",

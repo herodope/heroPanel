@@ -1052,7 +1052,7 @@ end
 local function ShadowGroup(parent, y, key)
     local function saved() return PanelSaved(key) end
 
-    y = NewToggle(parent, y, "Text shadow", "black outline behind this panel's text",
+    y = NewToggle(parent, y, "Text shadow", "holds this panel's text against the world behind it",
         function() return saved().textShadow end,
         function(value)
             saved().textShadow = value and true or false
@@ -1066,11 +1066,11 @@ local function ShadowGroup(parent, y, key)
             Apply("text shadow size changed")
         end,
         function(value) return string.format("%d px", Int(value)) end,
-        -- Said out loud because it is not what "thickness" usually means. A
-        -- FontString has one offset copy rather than the four-way surround
-        -- ns.NewGlyph draws for a texture, so this reads as a drop shadow at 1
-        -- and closes up into something like an outline by 3.
-        "1 is a soft drop shadow, 3 is a hard outline")
+        -- Said out loud because the three steps are not one effect getting
+        -- bigger. 1 is the drop shadow on its own; 2 and 3 outline the glyphs
+        -- with the font's own OUTLINE and THICKOUTLINE, which is the only thing
+        -- that actually surrounds a letter. See ns.ApplyTextShadow.
+        "1 is a drop shadow, 2 and 3 outline the letters")
 
     return y
 end
