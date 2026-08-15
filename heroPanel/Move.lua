@@ -687,8 +687,7 @@ ns:On("HEROPANEL_LOCK_CHANGED", ns.SyncResizeGrips)
 -- toggling movability and drag registration, not by rewiring scripts.
 --------------------------------------------------------------------------------
 
-local function OnDragStart(frame)
-    local record = ns.ResolveTracker(frame)
+local function BeginDrag(record)
     if not record or ns.IsLocked() then return end
 
     if ns.GetMode(record.key) == "yield" then
@@ -722,8 +721,7 @@ local function OnDragStart(frame)
     record.movingFrame = mover
 end
 
-local function OnDragStop(frame)
-    local record = ns.ResolveTracker(frame)
+local function EndDrag(record)
     if not record or not record.movingFrame then return end
 
     local mover = record.movingFrame
@@ -740,6 +738,61 @@ local function OnDragStop(frame)
     ns.SavePosition(record.key)
 end
 
+local function OnDragStart(frame) BeginDrag(ns.ResolveTracker(frame)) end
+local function OnDragStop(frame)  EndDrag(ns.ResolveTracker(frame)) end
+
+-- Defined below; SetDragHandle applies the current lock state the moment a
+-- handle is registered, which is normally before the first lock flip.
+local ApplyLockState
+
+-- ns.SetDragHandle(key, handle)  -- handle = nil clears it
+--
+-- Hands a tracker a drag handle of heroPanel's own: a strip the player grabs to
+-- move the tracker, instead of the tracker's whole rectangle.
+--
+-- This is what keeps a skinned tracker click-through. Dragging a frame by
+-- itself means turning its mouse on, and a mouse-enabled tracker eats every
+-- click over the whole panel - you cannot right-click through it to turn the
+-- camera, and you cannot target what is behind it, collapsed or not. A handle
+-- moves that cost onto a strip heroPanel drew and can switch off again, so the
+-- mouse is only ever on while the trackers are unlocked, and only ever over the
+-- header rather than over the whole panel.
+--
+-- The handle must be one of heroPanel's own frames. EnableMouse on it is not
+-- protected, which is what lets the unlocked state land during a fight - the
+-- thing the old always-on-once-unlocked arrangement was bought to preserve.
+--
+-- Registered by the skin and cleared when the skin is turned off, because the
+-- handle is part of the panel the skin draws. Without one the tracker goes back
+-- to being dragged by its own rectangle: there is no heroPanel header on screen
+-- to grab, and an unmovable tracker is not an improvement on a clickable one.
+function ns.SetDragHandle(key, handle)
+    local record = ns.trackers[key]
+    if not record then return false end
+
+    if handle == nil then
+        local old = record.dragHandle
+        record.dragHandle = nil
+        -- Explicitly, because ApplyLockState will not touch it again once it is
+        -- no longer the handle - and it may be live right now.
+        if old then pcall(old.EnableMouse, old, false) end
+        ns.Debug("%s drag handle cleared.", key)
+        ApplyLockState(key)
+        return true
+    end
+
+    if type(handle) ~= "table" or not handle.RegisterForDrag then return false end
+
+    record.dragHandle = handle
+    handle:RegisterForDrag("LeftButton")
+    handle:SetScript("OnDragStart", function() BeginDrag(record) end)
+    handle:SetScript("OnDragStop",  function() EndDrag(record) end)
+
+    ns.Debug("%s drag handle registered.", key)
+    ApplyLockState(key)
+    return true
+end
+
 -- Apply the current lock state to one tracker.
 --
 -- Pushing the whole job through ns.RunWhenSafe came first and meant unlocking
@@ -749,23 +802,52 @@ end
 --
 --   * SetMovable and RegisterForDrag are done once, at hook time, and left
 --     alone. Registering for drag does not by itself let anything move: every
---     drag goes through OnDragStart, which checks the lock first. Whether the
+--     drag goes through BeginDrag, which checks the lock first. Whether the
 --     tracker can be dragged is therefore a flag heroPanel reads, not a piece
 --     of frame state it has to rewrite mid-combat.
---   * EnableMouse is the one genuinely protected call left, and it is only
---     needed when the frame does not already have the mouse. That is a state
---     the frame usually reaches the first time it is unlocked out of combat and
---     then keeps, so unlocking in combat normally has nothing left to do.
+--   * EnableMouse is the one genuinely protected call left - and a tracker with
+--     a drag handle never needs it, because the handle is heroPanel's own frame
+--     and turning its mouse on is not protected at all. That is the whole point
+--     of the handle: the unlocked state lands in combat, and the tracker's own
+--     rectangle stays click-through in every state.
 --
 -- What remains is deferred, and the caller is told whether anything was.
 -- Returns true when the state is fully live now.
-local function ApplyLockState(key)
+function ApplyLockState(key)
     local record = ns.trackers[key]
     local frame  = record and record.mover
     if not frame then return false end
 
     local locked = ns.IsLocked()
+    local handle = record.dragHandle
 
+    if handle then
+        -- One of ours, so neither call here can be refused. Locked means the
+        -- handle takes no clicks either: with the tracker's own mouse never
+        -- turned on, that leaves nothing of the panel in the input path except
+        -- the small controls that have to be there (the lock, the caret, the
+        -- resize grip) and whatever the tracker's own children take - the quest
+        -- title link buttons, which are exactly what must keep working.
+        pcall(handle.EnableMouse, handle, not locked)
+        if not locked then
+            pcall(frame.SetClampedToScreen, frame, true)
+        end
+
+        -- A handle tracker must never be holding the mouse itself. It cannot
+        -- get it from here any more, but a session that was already running when
+        -- the handle arrived can be, so hand it back.
+        if record.mouseEnabledByUs then
+            return ns.RunWhenSafe(function()
+                frame:EnableMouse(false)
+                record.mouseEnabledByUs = false
+            end, "ApplyLockState:" .. key)
+        end
+        return true
+    end
+
+    -- No handle: the tracker is dragged by its own rectangle, so it has to take
+    -- the mouse to be movable at all. Only the Mythic+ tracker is in this state,
+    -- and it is on screen for the length of a key rather than all session.
     if not locked then
         -- Clamping is not protected and is worth having on before a drag.
         pcall(frame.SetClampedToScreen, frame, true)
@@ -780,18 +862,10 @@ local function ApplyLockState(key)
         return true
     end
 
-    -- Locking deliberately leaves the mouse on.
-    --
-    -- Turning it off again is what made unlocking mid-fight do nothing: the mouse
-    -- has to be on before the frame can be dragged, EnableMouse is refused under
-    -- lockdown, and locking is the state you are in when a fight starts.
-    --
-    -- The cost is that the tracker's rectangle stops being click-through once
-    -- it has been unlocked once in a session - you cannot target something
-    -- behind it. That is the trade: click-through in a rectangle you chose to
-    -- put the tracker in, against being able to move it out of the way when it
-    -- is actually in the way. Nothing else changes, because none of heroPanel's
-    -- own overlays ever take the mouse.
+    -- Locking a handle-less tracker deliberately leaves the mouse on: it has to
+    -- be on before the frame can be dragged, EnableMouse is refused under
+    -- lockdown, and locked is the state you are in when a fight starts. Turning
+    -- it off here is what made unlocking mid-fight do nothing.
     --
     -- mouseEnabledByUs is still recorded, so /hp skin off can hand a frame back
     -- exactly as it was found.
@@ -801,6 +875,12 @@ ns.ApplyLockState = ApplyLockState
 
 -- Done once per tracker, at hook time, out of combat. Neither of these needs
 -- redoing when the lock flips - see the note above.
+--
+-- The drag registration stays even on a tracker that has a handle. A frame with
+-- its mouse off receives no drag whatever it is registered for, so this is inert
+-- exactly while the handle is in charge, and it is already in place for the one
+-- case that needs it - the skin being turned off, which takes the handle away
+-- and hands the tracker back its own rectangle.
 local function EnableDragging(frame)
     if not frame then return end
     -- Movable is what makes SetUserPlaced legal, and it does not by itself let
@@ -1010,13 +1090,19 @@ function ns.SetLocked(locked, trackerKey)
     ns.db.frame.locked = locked and true or false
     ClearFightState()   -- the user is actively repositioning; try again
 
-    local live = true
-    if trackerKey and ns.trackers[trackerKey] then
-        live = ApplyLockState(trackerKey) and live
+    -- Which tracker had work deferred, so the warning below can name it. Only a
+    -- tracker without a drag handle can defer anything at all.
+    local live, pending = true, nil
+    local function Apply(key)
+        if ApplyLockState(key) then return end
+        live    = false
+        pending = pending or string.lower(ns.trackers[key].label)
     end
+
+    if trackerKey and ns.trackers[trackerKey] then Apply(trackerKey) end
     for i = 1, #ns.TRACKER_KEYS do
         local key = ns.TRACKER_KEYS[i]
-        if key ~= trackerKey then live = ApplyLockState(key) and live end
+        if key ~= trackerKey then Apply(key) end
     end
 
     ns:Fire("HEROPANEL_LOCK_CHANGED", ns.db.frame.locked)
@@ -1024,7 +1110,8 @@ function ns.SetLocked(locked, trackerKey)
     if ns.db.frame.locked then
         ns.Print("trackers |cFFC2C6D8locked|r.")
     else
-        ns.Print("trackers |cFF79C68Dunlocked|r - drag with the left mouse button.")
+        ns.Print("trackers |cFF79C68Dunlocked|r - drag a panel by its header row "
+            .. "with the left mouse button.")
     end
 
     -- Only warn when something was actually deferred. Being in combat is not by
@@ -1032,8 +1119,9 @@ function ns.SetLocked(locked, trackerKey)
     -- normally has nothing protected left to do, and warning anyway told the
     -- player their tracker was stuck when it was in fact draggable.
     if not live then
-        ns.Warn("the objective tracker needs the mouse turned on, which the game "
-            .. "refuses in combat - it will be draggable the moment you leave combat.")
+        ns.Warn("the %s needs the mouse turned on, which the game refuses in "
+            .. "combat - it will be draggable the moment you leave combat.",
+            pending or "tracker")
     end
     return true
 end

@@ -147,10 +147,18 @@ local function BuildPlate(watch)
     -- Header row
     ------------------------------------------------------------------
 
-    -- Click-to-collapse strip. Deliberately below WatchFrame's frame level so
-    -- the real collapse button, and every quest line, keeps mouse priority.
+    -- The drag handle: the strip you grab to move the whole tracker.
+    --
+    -- Mouse off at build time and only ever turned on while the trackers are
+    -- unlocked - Move.lua's ApplyLockState owns that, because it is the same
+    -- decision as "can this be dragged at all". A permanently live strip is a
+    -- 30px band across the top of the panel that eats every right-click meant
+    -- for the camera, which is the whole complaint this arrangement answers.
+    --
+    -- Deliberately below WatchFrame's frame level, so the real collapse button
+    -- and every quest line keep mouse priority over it even while it is live.
     header.hit = CreateFrame("Frame", nil, plate)
-    header.hit:EnableMouse(true)
+    header.hit:EnableMouse(false)
     header.hit:SetHeight(HEADER_HEIGHT)
 
     header.lock = CreateFrame("Button", nil, plate)
@@ -502,7 +510,8 @@ end
 -- header.hit and header.caretButton are deliberately absent: they carry no art,
 -- and taking their clicks away with the alpha would give a header you can see
 -- and cannot use - the cursor is already over the panel by the time it is
--- visible, which is exactly when you want to click it.
+-- visible, which is exactly when you want to click it. What header.hit takes is
+-- decided by the lock instead, which is a state rather than a hover.
 local headerFade
 local headerAlpha    -- what they are at now, so a tick that changes nothing costs nothing
 
@@ -517,8 +526,17 @@ local function ApplyHeaderAlpha(hovered)
     end
 
     local settings = ns.db and ns.db.header
+
+    -- Unlocked overrides the setting. The header row is the only thing that
+    -- moves the tracker, so a header that has faded out is a tracker with no
+    -- mover on screen - you would be dragging a strip you cannot see, in the one
+    -- state where seeing it is the whole point. It goes back to mouseover the
+    -- moment the trackers are locked; skin.NoteHeaderForced says so in chat.
     local wanted = 1
-    if type(settings) == "table" and settings.mouseover and not hovered then wanted = 0 end
+    if type(settings) == "table" and settings.mouseover and not hovered
+       and ns.IsLocked() then
+        wanted = 0
+    end
 
     if headerAlpha == wanted then return end
     headerAlpha = wanted
@@ -532,6 +550,28 @@ function skin.RefreshHeaderFade()
     if not plate then return end
     headerAlpha = nil
     ApplyHeaderAlpha(plate:IsVisible() and ns.MouseIsOver(plate))
+end
+
+-- Said once per unlock, not once per lock change: locking is the state the
+-- setting is honoured in, so there is nothing to explain on the way back.
+local headerForcedTold = false
+
+function skin.NoteHeaderForced()
+    if ns.IsLocked() then
+        headerForcedTold = false
+        return
+    end
+    if headerForcedTold then return end
+
+    local settings = ns.db and ns.db.header
+    if type(settings) ~= "table" or not settings.show or not settings.mouseover then
+        return
+    end
+
+    headerForcedTold = true
+    ns.Print("the quest header is set to |cFFC2C6D8show on mouseover|r, and is being "
+        .. "held visible while the trackers are unlocked - it is the only thing that "
+        .. "moves the panel. It goes back to mouseover when you lock them.")
 end
 
 local function StylePlate()
@@ -656,10 +696,15 @@ local function LayoutPlate(watch, contentBottom)
     -- over Blizzard's text. A strata step has no floor, so the plate, the hover
     -- tint and the glyphs stay behind the tracker whatever level it picks.
     --
-    -- The lock button is the one thing that goes above the tracker. It has to
-    -- take its own clicks even while the tracker itself is mouse-enabled for
-    -- dragging, and it only covers the header's top-left corner. The collapse
-    -- strip stays below, so an unlocked tracker drags from the header instead.
+    -- Three small controls go above the tracker: the lock, the caret and the
+    -- resize grip. They are the only parts of the panel that must take a click
+    -- in every state, so none of them can be left underneath a frame of
+    -- Blizzard's - the tracker's own collapse button sits in the header band and
+    -- would otherwise swallow whichever of them it overlapped.
+    --
+    -- The drag strip is not one of them. It stays below the tracker on purpose,
+    -- so that even while it is live - unlocked only - a quest line or the real
+    -- collapse button still wins the click.
     local strata = watch:GetFrameStrata() or "LOW"
     local level  = watch:GetFrameLevel() or 1
     plate:SetFrameStrata(STRATA_BELOW[strata] or "BACKGROUND")
@@ -670,16 +715,14 @@ local function LayoutPlate(watch, contentBottom)
     header.lock:SetFrameStrata(strata)
     header.lock:SetFrameLevel(level + 1)
 
-    -- Same treatment as the lock, and for the same reason: an unlocked tracker
-    -- is mouse-enabled across its whole rectangle, so a collapse button left
-    -- below it would stop taking clicks the moment the tracker was first
-    -- unlocked in a session.
+    -- Same treatment as the lock. This one is drawn directly over Blizzard's own
+    -- collapse button, so without the raise the click would land on the button
+    -- underneath rather than on the caret the player can see.
     header.caretButton:SetFrameStrata(strata)
     header.caretButton:SetFrameLevel(level + 1)
 
-    -- The grip is the other thing that has to take its own clicks: an unlocked
-    -- tracker is mouse-enabled across its whole rectangle, and the grip sits
-    -- inside it.
+    -- And the grip, which sits inside the tracker's rectangle and has to take
+    -- its own drag while it is shown.
     if plate.grip then plate.grip:Raise(strata, level) end
 
     local nativeHeader = NativeHeaderHeight(watch)
@@ -746,8 +789,14 @@ local function UpdateHeader(watch)
         RestoreBlizzardChrome()
     end
 
+    -- The drag strip outlives the header row it sits in. Turning the header off
+    -- hides the lock, the label and the caret, but it must not leave the panel
+    -- with nothing to move it by - the strip carries no art, so an unlocked
+    -- tracker with its header off is still draggable along its top edge and
+    -- still looks exactly as the player asked for.
+    if ns.db.header.show or not ns.IsLocked() then header.hit:Show() else header.hit:Hide() end
+
     if ns.db.header.show then
-        header.hit:Show()
         header.lock:Show()
         header.label:Show()
         header.badgeFill:Show()
@@ -760,7 +809,6 @@ local function UpdateHeader(watch)
             if plate.dividerVisible then texture:Show() else texture:Hide() end
         end
     else
-        header.hit:Hide()
         header.lock:Hide()
         header.label:Hide()
         header.badgeFill:Hide()
@@ -884,13 +932,12 @@ skin.Refresh = Refresh
 --     including at the exact moment lockdown begins, which is when "hide in
 --     combat" has to take effect. It is the half that is guaranteed to work.
 --   * The frame is hidden outright, when the client will allow it. Alpha zero
---     takes the tracker off the screen and leaves its rectangle live: a tracker
---     that has been unlocked once in a session keeps the mouse for the rest of
---     it (see Move.lua), and its quest lines and POI buttons take clicks of
---     their own besides - those are Blizzard's, not heroPanel's to switch off
---     one at a time. An invisible frame went on swallowing clicks meant for
---     whatever was behind it. Hide takes the whole subtree out of the input
---     path in one call, which is what makes the region click-through.
+--     takes the tracker off the screen and leaves its rectangle live: the quest
+--     title links and the POI buttons take clicks of their own, and those are
+--     Blizzard's, not heroPanel's to switch off one at a time. An invisible
+--     frame went on swallowing clicks meant for whatever was behind it. Hide
+--     takes the whole subtree out of the input path in one call, which is what
+--     makes the region click-through.
 --
 -- Hide is protected, so it goes through ns.RunWhenSafe - and that split falls
 -- exactly where the two triggers need it. A key starting is not a combat
@@ -1088,9 +1135,9 @@ local function HoverTick()
     end
 
     -- The caret's own button and Blizzard's collapse button, which are the two
-    -- things that reliably collapse the tracker. Hovering the whole header strip
-    -- lit up under a cursor whose click went nowhere, since the strip sits below
-    -- the tracker's frame level once the tracker has taken the mouse.
+    -- things that collapse the tracker. Tinting on the whole header strip came
+    -- first and lit up under a cursor whose click did nothing: the strip is the
+    -- mover, not the collapse control, and most of the time it is not even live.
     local overCollapse = ns.db.header.show
         and ((blizz.collapse and blizz.collapse:IsShown() and ns.MouseIsOver(blizz.collapse))
              or ns.MouseIsOver(header.caretButton))
@@ -1135,9 +1182,20 @@ local function InstallHooks(watch)
         ns.Debug("WatchFrame_Update not found; refreshing from QUEST_LOG_UPDATE instead.")
     end
 
-    header.hit:SetScript("OnMouseUp", function(_, button)
-        if button == "LeftButton" then skin.ToggleCollapse() end
+    -- The header strip carries no click of its own on purpose. Click-to-collapse
+    -- used to live here, and a strip that is both a drag handle and a button
+    -- collapses the tracker every time a drag ends where it started. The caret
+    -- button is the collapse control, and unlike this strip it is live in every
+    -- state. Its drag scripts are Move.lua's, installed by ns.SetDragHandle from
+    -- Enable below.
+    header.hit:SetScript("OnEnter", function(self)
+        if ns.IsLocked() then return end
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOMLEFT")
+        GameTooltip:AddLine("Drag to move the objective tracker", 1, 1, 1)
+        GameTooltip:AddLine("Lock the trackers to put this away.", 0.6, 0.6, 0.7, true)
+        GameTooltip:Show()
     end)
+    header.hit:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     header.caretButton:SetScript("OnClick", function() skin.ToggleCollapse() end)
     -- The tint is left to the hover ticker, which owns it: two things setting
@@ -1190,6 +1248,12 @@ function skin.Enable()
     end
 
     skin.enabled = true
+
+    -- The header row becomes the tracker's mover for as long as the skin is on.
+    -- Move.lua applies the current lock state as it takes the handle, so the
+    -- strip is live or not from here rather than from the next lock flip.
+    ns.SetDragHandle("watch", header.hit)
+
     FadeHeaderBand(watch)
     StylePlate()
 
@@ -1202,6 +1266,12 @@ end
 
 function skin.Disable()
     skin.enabled = false
+
+    -- Handing the tracker back means handing back the way it is moved. With no
+    -- panel on screen there is no header to grab, so Move.lua goes back to
+    -- dragging the tracker by its own rectangle - which is what Blizzard's
+    -- tracker is, once heroPanel has stopped drawing over it.
+    ns.SetDragHandle("watch", nil)
 
     -- Before anything else, and unconditionally: a tracker heroPanel faded out
     -- must not be left faded out by the switch that is supposed to hand it
@@ -1849,7 +1919,15 @@ ns:On("HEROPANEL_TRACKER_FOUND", function(key)
 end)
 
 ns:On("HEROPANEL_LOCK_CHANGED", function()
-    if skin.enabled then UpdateHeader(ns.GetTrackerFrame("watch")) end
+    if not skin.enabled then return end
+    -- Locking takes the mouse off the drag strip, and a frame that loses the
+    -- mouse under the cursor never gets its OnLeave - which would leave its
+    -- tooltip on screen with nothing to dismiss it. Every tooltip the header
+    -- shows is worded for one lock state or the other, so drop it either way.
+    GameTooltip:Hide()
+    UpdateHeader(ns.GetTrackerFrame("watch"))
+    -- After UpdateHeader, which is what re-runs the fade the message describes.
+    skin.NoteHeaderForced()
 end)
 
 ns:On("PLAYER_LOGIN", function()
@@ -1860,6 +1938,9 @@ ns:On("PLAYER_LOGIN", function()
         if not ok then ns.Warn("the skin was not applied: %s.", tostring(reason)) end
     end
     Refresh("login")
+    -- A session that starts unlocked never sees a lock change, and the forced
+    -- header wants explaining then just as much.
+    if skin.enabled then skin.NoteHeaderForced() end
 end)
 
 ns:On("PLAYER_ENTERING_WORLD", function() Refresh("entering world") end)

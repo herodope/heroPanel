@@ -1423,6 +1423,12 @@ local function Build()
             if ns.Skin and ns.Skin.RefreshHeaderFade then
                 pcall(ns.Skin.RefreshHeaderFade)
             end
+            -- Turning it on while the trackers are unlocked has no visible
+            -- effect until they are locked again, so say why rather than
+            -- leaving the toggle looking broken.
+            if ns.Skin and ns.Skin.NoteHeaderForced then
+                pcall(ns.Skin.NoteHeaderForced)
+            end
         end)
 
     -- Getting the tracker out of the way on its own.

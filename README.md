@@ -62,9 +62,17 @@ Type **`/hp`** (or `/heropanel`) to open the options window. It's also under
 **Interface → AddOns → heroPanel**.
 
 **To move a tracker:** click **Unlock** in the options window (or type
-`/hp unlock`), then drag the tracker with your left mouse button. Drag the
-little grip in its bottom-right corner to resize it. Click **Lock** when you're
-happy — that hides the grips and stops you nudging things by accident.
+`/hp unlock`), then drag the panel by its **header row** — the strip with
+`QUESTS` and the padlock in it — with your left mouse button. Drag the little
+grip in its bottom-right corner to resize it. Click **Lock** when you're happy —
+that hides the grips and stops you nudging things by accident.
+
+The header is the only part of the quest panel that takes a click. The rest of
+it is click-through: you can right-click through it to swing the camera and
+left-click an NPC standing behind it, whether the tracker is collapsed or
+expanded. The exceptions are the ones you'd want — the padlock, the collapse
+arrow, the resize grip, and the game's own quest titles, which still open the
+quest log on a left-click and offer share/untrack on a right-click.
 
 **To change how it looks:** everything is in the options window, in four
 groups:
@@ -219,7 +227,10 @@ such limit — that region is properly click-through for the whole run.
 There is a third switch in the same group, **Header on mouseover**, which is
 smaller in scope: the header row — `QUESTS`, the count, the lock and the collapse
 arrow — is only drawn while the cursor is over the panel. The row keeps its
-height, so your quest lines stay exactly where they are.
+height, so your quest lines stay exactly where they are. It is ignored while the
+trackers are unlocked, because the header is also what you drag the panel by and
+you cannot drag what you cannot see; heroPanel says so in chat when it happens,
+and the setting comes back the moment you lock them again.
 
 ## Fonts
 
