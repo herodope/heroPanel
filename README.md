@@ -27,7 +27,7 @@ buried in an inventory slot mid-run. Everything is configured in an in-game
 options window, and changes apply immediately — no reloading to see what a
 setting did.
 
-> **Pre-release (0.2.1).** Feature complete and playable, but still being
+> **Pre-release (0.2.2).** Feature complete and playable, but still being
 > tested. Your settings carry across updates — see
 > [Updating](#updating).
 

@@ -9,7 +9,7 @@
 local ADDON_NAME, ns = ...
 
 ns.name    = ADDON_NAME
-ns.version = "0.2.1"
+ns.version = "0.2.2"
 
 -- Public API surface. Every other file in the addon registers into this table,
 -- and it is what another addon would talk to heroPanel through.
