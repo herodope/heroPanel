@@ -34,4 +34,25 @@
     <Binding name="HEROPANEL_BOON5">
         if HeroPanel and HeroPanel.Boons then HeroPanel.Boons.BindingFallback(5) end
     </Binding>
+
+    <!--
+        The cycle key. One key that fires the next boon you are carrying, left
+        to right along the bar and back to the start, so holding three boons
+        needs one binding rather than three.
+
+        A sixth row rather than a replacement for the five above. The slot keys
+        are direct access - slot 2 is always slot 2 - and this is sequential
+        access; they answer different questions and a player who has already
+        bound the slots does not lose them by updating.
+
+        Its override is installed on a hidden secure button whose bag slot is
+        chosen inside the restricted environment, which is the one place the
+        client will let an attribute change during a fight. See the cycler
+        section in Boons.lua - that indirection is why this key keeps working
+        in combat when the slot keys above are frozen to whatever they pointed
+        at when the pull started.
+    -->
+    <Binding name="HEROPANEL_BOON_CYCLE">
+        if HeroPanel and HeroPanel.Boons then HeroPanel.Boons.BindingFallback("cycle") end
+    </Binding>
 </Bindings>

@@ -6,7 +6,7 @@
     Mythic keystone dungeons on Conquest of Azeroth have Boon Crystals. Clicking
     one hands everybody in line of sight a random "Mythical Boon: X" consumable
     that buffs the whole party for about thirty seconds. They are bind-on-pickup,
-    they expire after about three minutes (Bloodlust, eight), they share a
+    they expire out of the bags after ten minutes, they share a
     cooldown, and using one while its effect is up stacks it to a maximum of
     five. So a boon is something you are carrying, on a timer, that everybody
     benefits from - and the only way to find out what is in your bags is to open
@@ -52,11 +52,34 @@
     becomes clickable when the fight ends. That is a real limitation and it is
     the one the client's own implementation shipped with.
 
-    TODO: the proper fix is to move the binding into the restricted environment
-    with SecureHandlerStateTemplate and RegisterStateDriver, so the attribute is
-    set by secure code the client trusts in combat. That is a bigger piece of
-    work than v1 wants, and doing it badly is worse than deferring, because the
-    failure mode is taint rather than a boon that lights up late.
+    The cycle key is the way out of that
+    ------------------------------------
+    The paragraph above used to end in a TODO saying the proper fix was to move
+    the binding into the restricted environment, where the client trusts secure
+    code to change an attribute mid-fight. The cycler does that.
+
+    It is one hidden secure button carrying the whole list of held boons as
+    attributes, with a snippet wrapped around its OnClick that picks the next
+    entry and writes it into `item` before the click resolves. The snippet runs
+    inside the restricted environment, so it is allowed to do in combat the one
+    thing the fifteen visible buttons cannot: change what it is about to use.
+
+    That does not make the whole bar combat-safe - the *list* is still written
+    from ordinary Lua and so is still frozen at the start of a pull - but it
+    means one key reaches every boon you were holding when the fight started,
+    in order, rather than five keys frozen to five fixed positions. Which of
+    the two paths a client got is reported by /hp boons.
+
+    What else is in here
+    --------------------
+      * Expiry. A boon rots in the bags after ten minutes, and that is the
+        number that decides whether to use one now or hold it for the pull.
+        There is no API for it - it is read off the "Duration:" line of the
+        item's own tooltip, and counted between readings. The bar can glow when
+        a boon is about to go.
+
+      * Shift and left-click says how long a boon has left in party chat
+        instead of using it, for the tank who keeps asking.
 ----------------------------------------------------------------------------]]
 
 local ADDON_NAME, ns = ...
@@ -118,12 +141,121 @@ local UNOWNED_ALPHA = 0.35
 local MELEE_MARK_WIDTH  = 2
 local MELEE_MARK_COLOUR = "chest"
 
+-- Shelved.
+--
+-- The mark is built, styled and wired as before and simply never drawn. Left in
+-- place rather than taken out because the idea is a sound one and the data
+-- behind it is confirmed - the client's own melee-only flags on Piercing and
+-- Adaptation are both right, and Piercing's armour penetration does nothing
+-- whatever for a caster. What it is not is something worth a row in the options
+-- window right now.
+--
+-- This gate rather than only removing that row, because a store that already
+-- had markMelee on would otherwise keep drawing a border with nothing left to
+-- turn it off. The setting stays in the defaults and in the store so nothing is
+-- lost, and it is inert while this is true.
+--
+-- To bring it back: set this false and restore the "Mark melee-only boons"
+-- toggle to the Boons group in Options.lua. Nothing else has to change.
+local MELEE_MARK_SHELVED = true
+
 -- How far below the Mythic+ panel the bar hangs when it is anchored to it.
 local ANCHOR_GAP = 6
 
 -- Keybind slots. Five, because five is more boons than anybody is holding at
 -- once and fifteen rows in the Key Bindings window is a list nobody reads.
 local SLOT_COUNT = 5
+
+--------------------------------------------------------------------------------
+-- The expiry warning
+--
+-- A boon is a three-minute item, and the bar has no way to say so: an icon that
+-- is lit means "you have this", whether it landed ten seconds ago or is about
+-- to evaporate. The glow is that missing half.
+--
+-- The thresholds the options window offers. Zero is off and is the default -
+-- see the note in Core.lua on why an animation is opted into rather than out
+-- of. The rest are the three answers to "how much warning do you want", and
+-- there is no slider because the difference between forty and forty-five
+-- seconds is not a thing anybody has an opinion about.
+--
+-- Declared here with their labels rather than in Options.lua, so the file that
+-- owns the setting owns the set of values it can take - the same arrangement
+-- ns.BOON_ORIENTATIONS has, and for the same reason: two lists of the same
+-- thing in two files is two lists that eventually disagree.
+--------------------------------------------------------------------------------
+
+ns.BOON_EXPIRY_WARNINGS = {
+    { key = 0,   label = "Off"   },
+    { key = 30,  label = "30s"   },
+    { key = 60,  label = "1 min" },
+    { key = 120, label = "2 min" },
+}
+
+-- The top of the range, for the store's rule on the saved value. Read off the
+-- list rather than written down twice.
+ns.BOON_EXPIRY_MAX = ns.BOON_EXPIRY_WARNINGS[#ns.BOON_EXPIRY_WARNINGS].key
+
+-- Sparks marching around the icon's outside edge, action-bar style.
+--
+-- Outside rather than over it: the melee-only mark is already a ring drawn on
+-- the icon's own outer pixels, and two rings in two colours fighting for the
+-- same two pixels is a button that reads as neither. One pixel out puts the
+-- glow clear of it, and a boon can be melee-only *and* about to expire.
+local GLOW_INSET   = -1   -- how far outside the button the sparks orbit
+local GLOW_SPARKS  = 8    -- around the whole perimeter, evenly spaced
+local GLOW_COLOUR  = "expiry"
+
+-- How long one full lap takes, in seconds, at the two ends of the warning.
+-- The lap gets shorter as the boon gets closer to rotting, so the glow reads
+-- as "soon" and then as "now" without needing a second colour to say it.
+local GLOW_LAP_SLOW, GLOW_LAP_FAST = 2.0, 0.6
+
+-- And how bright, over the same span. The bottom end is deliberately low: a
+-- warning that opens at full brightness has nowhere left to go.
+local GLOW_ALPHA_LOW, GLOW_ALPHA_HIGH = 0.45, 1.0
+
+-- How often the remaining lifetimes are re-read. Not the animation rate - that
+-- is a real OnUpdate below, because a spark stepping at five hertz is a spark
+-- that stutters. This is only how often "is it warning yet" is asked, and the
+-- answer changes once per boon per run.
+local EXPIRY_TICK = 0.5
+
+-- And how often the counted clocks are checked back against the tooltip.
+--
+-- Slower than the tick above, because it costs a tooltip scan per held boon to
+-- correct a drift of at most a minute. Two seconds catches the minute-to-minute
+-- transition - the reading that pins a clock exactly - within two seconds of it
+-- happening, and a pinned clock does not drift again.
+local EXPIRY_RESYNC = 2
+
+--------------------------------------------------------------------------------
+-- The chat report
+--
+-- Shift and left-click a boon to say how long it has left in party chat rather
+-- than using it. Throttled, because it goes in somebody else's chat window and the
+-- gesture is one click - a player who mashes it should not be the reason their
+-- group turns heroPanel off.
+--------------------------------------------------------------------------------
+
+local REPORT_THROTTLE = 3
+
+-- Which mouse button a keybind's synthesised click arrives as.
+--
+-- Not LeftButton, and the reason is the shift-click report above. An override
+-- binding does not carry its own modifier state - the client reads the keyboard
+-- at the moment the key fires - so a player whose boon slot is bound to SHIFT-1
+-- presses it with shift genuinely held, and the secure attribute cascade would
+-- find the "shift-type1" that turns a left click into a report. Their keybind
+-- would stop firing boons the moment they switched reporting on.
+--
+-- Sending keybinds through a button the mouse cannot press keeps the two apart.
+-- The cascade for button five is shift-type5, type5, shift-type, type - none of
+-- the first three are ever set, so it lands on "type" and uses the boon,
+-- whatever modifier is being held. The report is then gated on a real
+-- LeftButton in the click hook, so a shift-modified keybind fires its boon and
+-- says nothing.
+local BIND_CLICK = "Button5"
 
 --------------------------------------------------------------------------------
 -- Config
@@ -135,19 +267,21 @@ local SLOT_COUNT = 5
 --------------------------------------------------------------------------------
 
 local DEFAULT_CONFIG = {
-    enabled     = false,
-    orientation = "horizontal",
-    iconSize    = 32,
-    mythicOnly  = true,
-    hideUnowned = false,
-    hideEmpty   = false,
-    markMelee   = false,
-    anchorMplus = false,
-    slotOrder   = false,
-    rawTooltip  = false,
-    scale       = 1.0,
-    x           = 0,
-    y           = 0,
+    enabled        = false,
+    orientation    = "horizontal",
+    iconSize       = 32,
+    mythicOnly     = true,
+    hideUnowned    = false,
+    hideEmpty      = false,
+    markMelee      = false,
+    anchorMplus    = false,
+    slotOrder      = false,
+    rawTooltip     = false,
+    expiryWarn     = 0,
+    reportDuration = false,
+    scale          = 1.0,
+    x              = 0,
+    y              = 0,
 }
 
 local function Config()
@@ -228,19 +362,42 @@ local function ProbeCapabilities()
                          and type(probe.SetAttribute) == "function"
     if ok and type(probe) == "table" and probe.Hide then pcall(probe.Hide, probe) end
 
+    -- Whether the cycle key can work in combat.
+    --
+    -- SecureHandlerWrapScript is what lets a snippet run inside the restricted
+    -- environment before a click resolves, which is the only place an attribute
+    -- may be changed during a fight. It arrived in 3.0 and this client is
+    -- 3.3.5a, so it should always be here - asked anyway, because heroPanel is
+    -- shared publicly and the fallback is real: without it the cycle key is
+    -- re-pointed from ordinary Lua and so freezes on the pull like the slot
+    -- keys do.
+    caps.secureHandlers = type(_G.SecureHandlerWrapScript) == "function"
+
     caps.itemCooldown  = type(_G.GetItemCooldown) == "function"
     caps.spellDesc     = type(_G.C_Spell) == "table"
                          and type(_G.C_Spell.GetSpellDescription) == "function"
     caps.overrideBinds = type(_G.SetOverrideBindingClick) == "function"
                          and type(_G.ClearOverrideBindings) == "function"
 
-    ns.Debug("boons: bag path %s, events %s, cooldowns %s, clickable %s, keybinds %s.",
+    -- Reading an item's remaining lifetime.
+    --
+    -- There is no stock 3.3.5a call for this and the research turned none up on
+    -- Ascension either, so the primary source is heroPanel watching a boon
+    -- arrive and counting from there. A named function is probed all the same,
+    -- because a build that has one would be authoritative where the count is
+    -- only nearly right - and probing costs a type() at login.
+    caps.itemDuration = type(_G.GetContainerItemDurationLeft) == "function"
+
+    ns.Debug("boons: bag path %s, events %s, cooldowns %s, clickable %s, "
+        .. "keybinds %s, in-combat cycling %s, expiry %s.",
         caps.inventoryState and "C_InventoryState" or
             (caps.containerScan and "container scan" or "none"),
         caps.hook and "C_Hook buckets" or "BAG_UPDATE",
         caps.itemCooldown and "yes" or "no",
         caps.secureButtons and "yes" or "no",
-        caps.overrideBinds and "yes" or "no")
+        caps.overrideBinds and "yes" or "no",
+        caps.secureHandlers and "yes" or "no",
+        caps.itemDuration and "client API" or "tracked")
 
     if not caps.secureButtons then
         ns.Warn("this client has no secure action buttons, so the boon bar can "
@@ -378,6 +535,308 @@ local function ScanContainers()
     end
 end
 
+--------------------------------------------------------------------------------
+-- How long a boon has left
+--
+-- A boon evaporates out of the bags after ten minutes, and that is the number
+-- that decides whether to use one now or hold it for the pull. The bar has no
+-- way to say it: a lit icon means "you have this" whether it landed ten seconds
+-- ago or is about to go.
+--
+-- There is no API for it. A stock 3.3.5a client has nothing that returns an
+-- item's remaining lifetime, and the research into Ascension's additions turned
+-- up nothing either - C_InventoryState carries the item and the count and not
+-- this. But the client *draws* it: a boon is a Conjured Item and its tooltip
+-- carries a "Duration: 10 minutes" line, which is a countdown rather than the
+-- item's original span.
+--
+-- So the number is available, off a hidden tooltip, and it is coarse. Above a
+-- minute the client rounds down to whole minutes, so "Duration: 9 minutes"
+-- means somewhere in [9:00, 10:00) - a window, not a value. Below a minute it
+-- switches to seconds and is exact, which is the half that matters most.
+--
+-- The clock is therefore built from both:
+--
+--   counted    A boon seen in a slot gets a start time, and the remaining time
+--              is arithmetic from there. Smooth, which is what the glow's ramp
+--              wants, and what a tooltip read twice a second could not be.
+--
+--   corrected  Every few seconds the tooltip is re-read, and the counted clock
+--              is snapped back if it has drifted outside the window that
+--              reading implies. This is what makes the minute-resolution
+--              reading converge: "10 minutes" becoming "9 minutes" happens at
+--              exactly 9:00, so catching that transition is an exact fix.
+--
+-- Together they handle the case a single read cannot: a boon that was already
+-- in the bags before a /reload, where "first sight" is not "looted" and the
+-- first reading could be most of a minute out.
+--
+-- When the tooltip cannot be read at all, the counted clock runs alone from
+-- BoonData's per-boon lifetime, which is correct for anything looted while the
+-- addon was loaded - nearly everything, since a boon does not live long.
+--
+-- Corrections snap to the *near* end of the window rather than the far one. A
+-- warning that comes a little early costs a boon used a few seconds sooner than
+-- it had to be; one that comes late costs the boon.
+--------------------------------------------------------------------------------
+
+-- The moment the boon in a given bag slot came into existence.
+--
+-- Keyed by item *and* place, because a slot that empties and refills has a
+-- different boon in it with a different clock, and reusing the old one would
+-- show a fresh boon as nearly expired.
+local bornAt = {}
+
+local function SlotKey(itemID, bag, slot)
+    return string.format("%d:%d:%d", Int(itemID), Int(bag), Int(slot))
+end
+
+-- "10 minutes", "10 min", "45 seconds", "2 min 58 sec", "2:58" -> seconds.
+--
+-- The first two are both real: this client writes Bloodlust's line as
+-- "Duration: 10 minutes" and Critical's as "Duration: 10 min". Units are
+-- matched on their first three letters for exactly that reason - one client
+-- does not have to spell a thing one way, and a parser that insisted would
+-- have read one of those two boons and not the other.
+--
+-- Returns nil for anything that is not made of numbers and units of time, which
+-- is what keeps a line like "Requires Level 80 Paladin" from being read as a
+-- duration: the number is there, the word after it is not a unit.
+local function ParseSpan(text)
+    local clockMin, clockSec = string.match(text, "(%d+):(%d%d)")
+    if clockMin then return tonumber(clockMin) * 60 + tonumber(clockSec) end
+
+    local total, found = 0, false
+    for value, unit in string.gmatch(text, "(%d+)%s*(%a+)") do
+        local head = string.sub(unit, 1, 3)
+        if head == "hou" or head == "hrs" or unit == "h" or unit == "hr" then
+            total, found = total + tonumber(value) * 3600, true
+        elseif head == "min" or unit == "m" then
+            total, found = total + tonumber(value) * 60, true
+        elseif head == "sec" or unit == "s" then
+            total, found = total + tonumber(value), true
+        else
+            -- A number followed by a word that is not a unit of time. This is
+            -- not a duration line and reading a span out of part of it would be
+            -- worse than reading none.
+            return nil
+        end
+    end
+
+    return found and total or nil
+end
+
+-- Whether a line is *nothing but* a span.
+--
+-- The gate that matters. "Use: Increases damage by 20% for 30 sec" contains a
+-- perfectly parseable "30 sec" and it is the buff's duration, not the item's
+-- own clock - so a line only counts when taking the numbers and the units out
+-- of it leaves nothing behind.
+local function IsBareSpan(text)
+    local rest = text
+    rest = string.gsub(rest, "%d+", " ")
+    rest = string.gsub(rest, "hours?", " ")
+    rest = string.gsub(rest, "hrs?", " ")
+    rest = string.gsub(rest, "minutes?", " ")
+    rest = string.gsub(rest, "mins?", " ")
+    rest = string.gsub(rest, "seconds?", " ")
+    rest = string.gsub(rest, "secs?", " ")
+    rest = string.gsub(rest, "[%s:%.,]", "")
+    return rest == ""
+end
+
+-- The words a line uses when the span on it is the item's own clock.
+--
+-- "duration" is the one this client actually writes. A boon is a Conjured Item
+-- and its tooltip reads:
+--
+--     Mythical Boon: Critical
+--     Conjured Item
+--     Binds when picked up
+--     Duration: 10 min
+--     Use: This Mythical Boon empowers your party's Critical Strike Chance
+--          by 20% for 30 sec.
+--     1 Charge
+--
+-- "expire" is kept alongside it because it is the other common wording and
+-- costs one string to accept.
+--
+-- Note which line is *not* wanted: "Use: ... for 30 sec" is the buff's
+-- duration, not the item's, and it parses as a span perfectly well. That is
+-- what the gate is for, and why a keyword match beats reading the first number
+-- on the tooltip.
+local DURATION_WORDS = { "duration", "expire" }
+
+local function LineDuration(text)
+    if type(text) ~= "string" or text == "" then return nil end
+    local lower = string.lower(text)
+
+    -- Either the line says what it is, or the line is only a clock. Those are
+    -- the two shapes a client draws an item's remaining time in, and anything
+    -- else on a boon tooltip that contains a number is describing the buff.
+    for i = 1, #DURATION_WORDS do
+        if string.find(lower, DURATION_WORDS[i], 1, true) then
+            return ParseSpan(lower)
+        end
+    end
+
+    if IsBareSpan(lower) then return ParseSpan(lower) end
+    return nil
+end
+
+-- The scanning tooltip. Its own frame, never shown, never anchored to anything
+-- the player can see - SetOwner with ANCHOR_NONE is what makes SetBagItem fill
+-- the text in without drawing a box in the corner of the screen.
+local scanner
+
+local function TooltipRemaining(bag, slot)
+    if not scanner then return nil end
+
+    scanner:SetOwner(UIParent, "ANCHOR_NONE")
+    scanner:ClearLines()
+    if not pcall(scanner.SetBagItem, scanner, bag, slot) then return nil end
+
+    local name  = scanner:GetName()
+    local lines = 0
+    if type(scanner.NumLines) == "function" then
+        local ok, count = pcall(scanner.NumLines, scanner)
+        if ok then lines = tonumber(count) or 0 end
+    end
+
+    local found
+    for i = 1, lines do
+        local left  = _G[name .. "TextLeft" .. i]
+        local right = _G[name .. "TextRight" .. i]
+        for _, fs in ipairs({ left, right }) do
+            if not found and fs and type(fs.GetText) == "function" then
+                local span = LineDuration(fs:GetText())
+                -- Zero is not a remaining time, it is a line that parsed to
+                -- nothing. A boon with no time left is gone from the bags.
+                if span and span > 0 then found = span end
+            end
+        end
+    end
+
+    -- Put away rather than left filled. SetBagItem shows the tooltip it is
+    -- called on, and this one is owned by UIParent with no anchor - which on
+    -- most clients means it draws nothing anywhere, and on the ones where it
+    -- does means a grey box in the corner of the screen that nothing takes
+    -- down again. One call is cheaper than finding out which kind this is.
+    pcall(scanner.Hide, scanner)
+    return found
+end
+
+-- How much of a boon's life has already run, at the moment it is first seen.
+-- Zero when nothing can be read, which is the assumption that it has just been
+-- looted - see the note above on why erring fresh is the right direction.
+local function ElapsedAlready(itemID, bag, slot)
+    local life = ns.BoonData.LifeOf(itemID)
+
+    if caps.itemDuration then
+        local ok, left = pcall(_G.GetContainerItemDurationLeft, bag, slot)
+        if ok and tonumber(left) and tonumber(left) > 0 then
+            return math.max(0, life - tonumber(left))
+        end
+    end
+
+    local left = TooltipRemaining(bag, slot)
+    if left then return math.max(0, life - left) end
+
+    return 0
+end
+
+-- Stamp every held slot with the moment its boon was created, and put the
+-- oldest first.
+--
+-- The order is load-bearing rather than tidy. The button binds to slots[1], so
+-- with two of the same boon in the bags this is what makes the click spend the
+-- one that is about to rot and keep the fresh one - which is what a player
+-- would do by hand, and is the only sensible reading of "use a boon".
+local function NoteLifetimes()
+    local now, present = GetTime(), {}
+
+    for itemID, record in pairs(owned) do
+        for i = 1, #record.slots do
+            local place = record.slots[i]
+            local key   = SlotKey(itemID, place.bag, place.slot)
+            present[key] = true
+
+            if not bornAt[key] then
+                bornAt[key] = now - ElapsedAlready(itemID, place.bag, place.slot)
+            end
+            place.bornAt = bornAt[key]
+        end
+
+        table.sort(record.slots, function(a, b)
+            return (a.bornAt or 0) < (b.bornAt or 0)
+        end)
+    end
+
+    -- Slots that no longer hold a boon. Clearing a key during pairs() is the
+    -- one table mutation Lua defines as safe during traversal.
+    for key in pairs(bornAt) do
+        if not present[key] then bornAt[key] = nil end
+    end
+end
+
+-- What a tooltip reading actually tells us: a window, not a number.
+--
+-- A whole number of minutes is the client rounding down, so the truth is
+-- anywhere in the following minute. Anything else came from the seconds form
+-- and is exact bar the second it was read in.
+local function ReadingWindow(reading)
+    if reading >= 60 and (reading % 60) == 0 then
+        return reading, reading + 60
+    end
+    return reading - 1, reading + 1
+end
+
+-- Re-read the tooltips and correct the counted clocks that have drifted out of
+-- the window their reading implies.
+--
+-- Only slots[1] of each boon, which is the stack the button is bound to and the
+-- only one whose remaining time is ever shown. Reading all of them would be a
+-- tooltip scan per stack per tick to correct a number nothing displays.
+local function ResyncLifetimes()
+    if not scanner then return end
+    local now = GetTime()
+
+    for itemID, record in pairs(owned) do
+        local place = record.slots[1]
+        local key   = place and SlotKey(itemID, place.bag, place.slot)
+        local born  = key and bornAt[key]
+
+        if born then
+            local reading = TooltipRemaining(place.bag, place.slot)
+            if reading then
+                local life = ns.BoonData.LifeOf(itemID)
+                local predicted = born + life - now
+                local low, high = ReadingWindow(reading)
+
+                if predicted < low or predicted > high then
+                    bornAt[key] = now - (life - low)
+                    place.bornAt = bornAt[key]
+                    ns.Debug("boons: %d re-anchored, clock said %.0fs and the "
+                        .. "tooltip said %ds.", Int(itemID), predicted, Int(reading))
+                end
+            end
+        end
+    end
+end
+
+-- Seconds until this boon rots out of the bags, or nil when it is not held.
+-- The oldest stack, because that is the one the button is bound to.
+local function RemainingLife(itemID)
+    local record = itemID and owned[itemID]
+    if not (record and record.slots[1] and record.slots[1].bornAt) then return nil end
+
+    local left = record.slots[1].bornAt + ns.BoonData.LifeOf(itemID) - GetTime()
+    if left <= 0 then return 0 end
+    return left
+end
+
+boons.RemainingLife = RemainingLife
+
 local function RebuildOwned()
     owned, ownedCount = {}, 0
 
@@ -387,6 +846,7 @@ local function RebuildOwned()
         ScanContainers()
     end
 
+    NoteLifetimes()
     return ownedCount
 end
 
@@ -399,6 +859,21 @@ local buttons  = {}   -- index -> button, in bar order, fixed at build
 local byItem   = {}   -- itemID -> button, rebuilt whenever a spare is assigned
 local tooltip         -- the compact in-combat tooltip
 local ticker          -- cooldown poller
+
+-- What the last layout decided, so the combat-safe resize can follow it
+-- without re-running arithmetic that is only legal out of combat.
+local layout = { vertical = false, thickness = 0, minExtent = 0 }
+
+-- Forward declaration. RefreshVisuals has to ask whether the bar is packing to
+-- know which buttons it may reveal, and the answer lives with the layout code a
+-- long way below it. Declared rather than duplicated: there are now four
+-- callers of this and they must all get the same answer - see the note above
+-- OwnedOnly itself.
+local OwnedOnly
+local cycler          -- the hidden secure button the cycle key clicks
+local expiryTicker    -- re-reads remaining lifetimes
+local glowDriver      -- OnUpdate frame that marches the expiry sparks
+local glowing  = {}   -- button -> how urgent, 0..1, for the ones warning now
 
 -- Set while a piece of secure work is already waiting on the end of combat.
 --
@@ -623,6 +1098,162 @@ local function PollCooldowns()
 end
 
 --------------------------------------------------------------------------------
+-- The expiry glow
+--
+-- Sparks marching around the outside of an icon whose boon is about to rot.
+-- The action bar idiom, because it is the one animation a player of this game
+-- already reads without being told what it means.
+--
+-- Two things move, and both are driven by how close the boon is to going
+-- rather than by a tier: the lap gets shorter and the sparks get brighter as
+-- the remaining time runs from the configured threshold down to zero. A tiered
+-- version came out worse - three discrete steps read as three unrelated
+-- effects, where a ramp reads as one thing getting more urgent, which is what
+-- it is.
+--
+-- Textures, alpha and points are all unprotected, so every line below is safe
+-- in combat. That matters more here than anywhere else on the bar: a boon
+-- expiring during a boss fight is the exact case this exists for.
+--
+-- The animation is a real OnUpdate rather than one of ns.NewTicker's slots.
+-- The shared ticker floors at five hertz, which is fine for asking "is this
+-- warning yet" - that is what expiryTicker does - and is not fine for moving a
+-- spark, which at five hertz visibly hops instead of travelling. The driver is
+-- hidden whenever nothing is glowing, so it costs nothing the rest of the time.
+--------------------------------------------------------------------------------
+
+-- Where one spark sits, given how far round the lap it is.
+--
+-- The orbit is the button's rectangle pushed out by GLOW_INSET, walked
+-- clockwise from the top-left corner. Anchored to the button's TOPLEFT rather
+-- than sized and centred, so it follows the icon size slider with nothing
+-- having to reposition it.
+local function PlaceSpark(button, spark, progress)
+    local size = button:GetWidth() or 0
+    if size <= 0 then return end
+
+    local low  = GLOW_INSET
+    local high = size - GLOW_INSET
+    local edge = high - low
+    if edge <= 0 then return end
+
+    local along = (progress - math.floor(progress)) * edge * 4
+    local x, y
+
+    if along < edge then
+        x, y = low + along, low
+    elseif along < edge * 2 then
+        x, y = high, low + (along - edge)
+    elseif along < edge * 3 then
+        x, y = high - (along - edge * 2), high
+    else
+        x, y = low, high - (along - edge * 3)
+    end
+
+    spark:ClearAllPoints()
+    spark:SetPoint("CENTER", button, "TOPLEFT", x, -y)
+end
+
+local function ShowGlow(button)
+    local size  = button:GetWidth() or 32
+    -- Proportional to the icon, floored at two pixels: one pixel at any size is
+    -- a spark that reads as a rendering artefact rather than as a warning.
+    local spark = math.max(2, math.floor(size / 10))
+
+    for i = 1, GLOW_SPARKS do
+        local texture = button.glow[i]
+        texture:SetWidth(spark)
+        texture:SetHeight(spark)
+        texture:Show()
+    end
+    button.glowPhase = button.glowPhase or 0
+end
+
+local function HideGlow(button)
+    for i = 1, GLOW_SPARKS do button.glow[i]:Hide() end
+end
+
+local function GlowOnUpdate(_, elapsed)
+    local running = false
+
+    for button, urgency in pairs(glowing) do
+        running = true
+
+        -- Phase is accumulated rather than taken from GetTime() modulo the lap
+        -- length. The lap length changes as the boon gets closer to expiring,
+        -- and a modulo of a changing period makes the sparks jump backwards
+        -- every time the urgency is re-read.
+        local lap = GLOW_LAP_SLOW + (GLOW_LAP_FAST - GLOW_LAP_SLOW) * urgency
+        local phase = (button.glowPhase or 0) + (elapsed / lap)
+        button.glowPhase = phase - math.floor(phase)
+
+        local alpha = GLOW_ALPHA_LOW + (GLOW_ALPHA_HIGH - GLOW_ALPHA_LOW) * urgency
+
+        for i = 1, GLOW_SPARKS do
+            local texture = button.glow[i]
+            PlaceSpark(button, texture, button.glowPhase + (i - 1) / GLOW_SPARKS)
+            texture:SetAlpha(alpha)
+        end
+    end
+
+    if not running then glowDriver:Hide() end
+end
+
+-- Which buttons are warning, and how hard. Called off expiryTicker rather than
+-- per frame: a remaining time only crosses the threshold once.
+local function UpdateGlow()
+    if not bar then return end
+
+    local threshold = tonumber(Config().expiryWarn) or 0
+
+    for i = 1, #buttons do
+        local button  = buttons[i]
+        local urgency = nil
+
+        -- A hidden button is not warning about anything. That covers both the
+        -- unowned icons in a full bar and the whole bar when it is off, so
+        -- nothing has to ask about either case separately.
+        if threshold > 0 and button.itemID and owned[button.itemID] and button:IsShown() then
+            local left = RemainingLife(button.itemID)
+            if left and left <= threshold then
+                urgency = ns.Clamp(1 - (left / threshold), 0, 1)
+            end
+        end
+
+        if urgency then
+            -- Re-sized on every tick rather than only on the way in, so a glow
+            -- that is already running follows the icon size slider. Eight
+            -- SetWidth calls twice a second on the one or two icons that are
+            -- warning is not a cost worth tracking a transition to avoid.
+            ShowGlow(button)
+            glowing[button] = urgency
+        elseif glowing[button] then
+            glowing[button] = nil
+            HideGlow(button)
+        end
+    end
+
+    if glowDriver then
+        if next(glowing) then glowDriver:Show() else glowDriver:Hide() end
+    end
+end
+
+-- What the expiry ticker actually runs. Two jobs at two rates: the glow is
+-- re-decided every tick and the clocks are checked against the tooltips a good
+-- deal less often, because one is arithmetic and the other is a tooltip scan
+-- per held boon.
+local lastResync = 0
+
+local function ExpiryTick()
+    local now = GetTime()
+    if (now - lastResync) >= EXPIRY_RESYNC then
+        lastResync = now
+        ResyncLifetimes()
+    end
+    UpdateGlow()
+end
+
+--------------------------------------------------------------------------------
 -- Visuals
 --
 -- Everything in here is safe in combat: SetAlpha, SetDesaturated,
@@ -631,14 +1262,51 @@ end
 -- it is the whole of what can run then.
 --------------------------------------------------------------------------------
 
+-- Growing the bar around whatever is currently revealed.
+--
+-- The bar itself is a plain frame, so its size is not protected and this can
+-- run mid-fight - which is the point. A boon revealed by the alpha pass below
+-- would otherwise be drawn outside the bar's own rectangle.
+local function SizeBarToRevealed()
+    if not (bar and layout.thickness > 0) then return end
+
+    -- Never in combat. The bar not changing size under the player mid-pull is
+    -- a rule this module is shaped by, and it outranks tidiness: a boon
+    -- revealed during a fight is drawn at its parked place and may sit a little
+    -- past the bar's own edge until the fight ends, which is a great deal
+    -- better than the icon not being there at all. The next out-of-combat
+    -- layout re-packs it properly.
+    if InCombatLockdown() then return end
+
+    local reach = 0
+    for i = 1, #buttons do
+        local button = buttons[i]
+        if button.layoutEdge and button:IsShown() and (button:GetAlpha() or 1) > 0 then
+            if button.layoutEdge > reach then reach = button.layoutEdge end
+        end
+    end
+
+    local extent = (reach > 0) and (reach + BAR_PAD) or layout.minExtent
+    if layout.vertical then bar:SetHeight(extent) else bar:SetWidth(extent) end
+end
+
 local function RefreshVisuals()
     if not bar then return end
     local cfg = Config()
+    local packing = OwnedOnly()
 
     for i = 1, #buttons do
         local button = buttons[i]
         local record = button.itemID and owned[button.itemID]
         local entry  = button.entry
+
+        -- The whole button, not the icon: this is what reveals a boon looted
+        -- mid-fight, when Show and SetPoint are refused and SetAlpha is not.
+        -- Sampled buttons are the placement-preview stand-ins and are meant to
+        -- be seen while unowned, so they keep theirs.
+        if button.itemID and not button.sampled then
+            button:SetAlpha((packing and not record) and 0 or 1)
+        end
 
         button.icon:SetDesaturated(not record)
 
@@ -650,7 +1318,8 @@ local function RefreshVisuals()
         -- bags, so it is drawn on an unowned melee boon too - faded with the
         -- icon it is around, or it would be the brightest thing on a button
         -- that is otherwise greyed out.
-        local marked = cfg.markMelee and entry and entry.melee and button.itemID ~= nil
+        local marked = not MELEE_MARK_SHELVED
+            and cfg.markMelee and entry and entry.melee and button.itemID ~= nil
         for _, edge in pairs(button.meleeMark) do
             if marked then
                 edge:SetAlpha(alpha)
@@ -671,6 +1340,59 @@ local function RefreshVisuals()
     end
 
     PollCooldowns()
+    UpdateGlow()
+
+    -- Last, so it measures what the alpha pass above just decided.
+    SizeBarToRevealed()
+end
+
+-- A boon was just spent. Shared by the icon's own click and by the cycle key,
+-- which fire the same item through two different buttons and must leave the
+-- addon in the same state afterwards.
+--
+-- Returns false when the click cannot have used anything, which is what the
+-- cycler needs to know before it counts a press as a use.
+local function NoteUsed(button)
+    local record = button and button.itemID and owned[button.itemID]
+    if not record then return false end
+
+    if caps.itemCooldown then
+        local ok, start, duration, enable = pcall(_G.GetItemCooldown, button.itemID)
+        -- A boon that is already on cooldown was not used, so there is nothing
+        -- to propagate and nothing to take out of the bags. The 0.01 window is
+        -- the reference's: a cooldown that started this instant is the one this
+        -- click just caused.
+        if ok and duration and duration > 0 and (GetTime() - (start or 0)) >= 0.01 then
+            return false
+        end
+        if ok then PropagateCooldown(start, duration, enable) end
+    end
+
+    -- Taken out of the local picture without waiting for the bag event, so the
+    -- icon goes grey on the click rather than a tenth of a second later. The
+    -- next rebuild is authoritative either way, so being wrong here costs one
+    -- refresh and not a stuck button.
+    --
+    -- slots[1] rather than any slot, and slots are sorted oldest first, so two
+    -- of the same boon spend the one that was about to rot.
+    if #record.slots <= 1 then
+        owned[button.itemID] = nil
+        ownedCount = math.max(0, ownedCount - 1)
+    else
+        local place = table.remove(record.slots, 1)
+        record.count = math.max(1, record.count - 1)
+        if place then bornAt[SlotKey(button.itemID, place.bag, place.slot)] = nil end
+    end
+
+    RefreshVisuals()
+
+    -- Deliberately not a full Refresh. That would re-read the bags, and the
+    -- server has not taken the boon out of them yet - so the icon would light
+    -- straight back up and go out again a tenth of a second later when the bag
+    -- event lands. QueueSecure runs inline when the player is not fighting, so
+    -- the button is unbound now either way.
+    QueueSecure("boon used")
+    return true
 end
 
 --------------------------------------------------------------------------------
@@ -736,12 +1458,25 @@ local function ApplyVisibility()
         bar:Hide()
     end
 
-    if ticker then
-        if show and not ticker:IsRunning() then
-            ticker:Start()
-        elseif not show and ticker:IsRunning() then
-            ticker:Stop()
+    -- Both pollers follow the bar. A hidden bar has nothing to draw a swipe on
+    -- and nothing to glow, and a boon that expires while the bar is away is one
+    -- the next Refresh will notice.
+    for _, poller in ipairs({ ticker, expiryTicker }) do
+        if poller then
+            if show and not poller:IsRunning() then
+                poller:Start()
+            elseif not show and poller:IsRunning() then
+                poller:Stop()
+            end
         end
+    end
+
+    if not show then
+        for button in pairs(glowing) do
+            glowing[button] = nil
+            HideGlow(button)
+        end
+        if glowDriver then glowDriver:Hide() end
     end
 end
 
@@ -763,10 +1498,42 @@ end
 --               the cost of the bar rearranging itself as boons are looted and
 --               spent. Recomputed out of combat only, like everything else
 --               that moves a secure button.
+--
+-- Anchoring implies slot order
+-- ----------------------------
+-- A bar hanging under the Mythic+ panel is a strip of the panel rather than a
+-- thing of its own, and fifteen icons is wider than that panel. So anchoring
+-- also packs: only the boons you are holding are drawn, hard against the
+-- panel's left edge, which makes the nth icon the nth keybind slot and the nth
+-- step of the cycle key. That is the whole of what "slots 1-5" means here - the
+-- positions are the slots.
+--
+-- It is stated as a consequence of anchoring rather than as a fourth checkbox
+-- because the two are the same request: somebody who wants the bar tucked under
+-- the panel wants it panel-sized, and a version where they had to find and tick
+-- two more boxes to get that would be a version where the anchor setting looks
+-- broken on its own.
+--
+-- Nothing is capped at five. Five is what the keybinds reach and what anybody
+-- ever holds, but a sixth boon still gets an icon: hiding a boon the player is
+-- carrying, on the bar whose job is to say what they are carrying, would be the
+-- one failure this feature cannot afford.
 --------------------------------------------------------------------------------
 
+-- Whether held boons come first. Read through a function rather than off the
+-- config directly because there are now two ways to ask for it, and three
+-- callers that must all get the same answer.
+local function SlotOrdered()
+    return (Config().slotOrder and true or false) or boons.IsAnchored()
+end
+
+-- Whether unowned boons are drawn at all.
+function OwnedOnly()
+    return (Config().hideUnowned and true or false) or boons.IsAnchored()
+end
+
 local function BarOrder()
-    if not Config().slotOrder then return buttons end
+    if not SlotOrdered() then return buttons end
 
     local order, rest = {}, {}
     for i = 1, #buttons do
@@ -781,6 +1548,20 @@ local function BarOrder()
     return order
 end
 
+-- The held boons, left to right, which is what the cycle key walks. Empty when
+-- nothing is held, and that is a state the cycler has to be told about rather
+-- than left to guess - see LoadCycler.
+local function CycleOrder()
+    local order, held = BarOrder(), {}
+    for i = 1, #order do
+        local button = order[i]
+        if button.itemID and owned[button.itemID] then
+            table.insert(held, button)
+        end
+    end
+    return held
+end
+
 -- The button each keybind slot fires, or nil for a slot with nothing behind it.
 --
 -- In slot order a slot is only ever given a boon that is in the bags, so slot 3
@@ -793,7 +1574,7 @@ end
 local function SlotButtons()
     local order, slots = BarOrder(), {}
 
-    if Config().slotOrder then
+    if SlotOrdered() then
         for i = 1, #order do
             local button = order[i]
             if button.itemID and owned[button.itemID] then
@@ -824,19 +1605,66 @@ end
 local function Layout()
     if not bar or InCombatLockdown() then return end
 
-    local cfg        = Config()
-    local size       = ns.Clamp(cfg.iconSize or 32, ICON_MIN, ICON_MAX)
-    local vertical   = (cfg.orientation == "vertical")
-    local hideUnowned = cfg.hideUnowned and true or false
-    local slotOrder  = cfg.slotOrder and true or false
+    local cfg         = Config()
+    local size        = ns.Clamp(cfg.iconSize or 32, ICON_MIN, ICON_MAX)
+    local vertical    = (cfg.orientation == "vertical")
+    local hideUnowned = OwnedOnly()
+    local slotOrder   = SlotOrdered()
+
+    -- Sample slots, while the Mythic+ panel is in placement preview.
+    --
+    -- Anchoring packs the bar down to the boons you are actually holding, and
+    -- outside a key you are holding none - so the anchored bar drew nothing at
+    -- exactly the moment it most needs to be seen. Preview exists to place this
+    -- stuff from a capital city; an anchored bar that is invisible there cannot
+    -- be placed at all, and reads as the anchor setting being broken.
+    --
+    -- The panel already fakes a run for this, so the bar fakes a hand of boons
+    -- to match. Five, because five is what the keybinds reach and so is the
+    -- width the bar has in the case worth positioning for. They draw greyed,
+    -- like any boon you are not carrying, which is what says they are stand-ins
+    -- rather than a bar that has gone wrong.
+    local sample = 0
+    if boons.IsAnchored() and ownedCount == 0
+        and ns.Mplus and ns.Mplus.IsPreview and ns.Mplus.IsPreview() then
+        sample = SLOT_COUNT
+    end
 
     local order = BarOrder()
     local offset, lastGroup, placed = BAR_PAD, nil, 0
+
+    -- Placing one button. Records how far it reaches along the bar, because
+    -- that is what the combat-safe resize below measures - it cannot re-run any
+    -- of this arithmetic while the player is fighting.
+    local function Place(button, group)
+        if lastGroup and group ~= lastGroup then offset = offset + GROUP_GAP end
+        lastGroup = group
+
+        button:ClearAllPoints()
+        if vertical then
+            button:SetPoint("TOPLEFT", bar, "TOPLEFT", BAR_PAD, -offset)
+        else
+            button:SetPoint("TOPLEFT", bar, "TOPLEFT", offset, -BAR_PAD)
+        end
+        button:Show()
+
+        button.layoutEdge = offset + size
+        offset = offset + size + ICON_GAP
+    end
+
+    local parked = {}
 
     for i = 1, #order do
         local button  = order[i]
         local visible = button.itemID ~= nil
             and (not hideUnowned or owned[button.itemID] ~= nil)
+
+        if not visible and button.itemID and placed < sample then
+            visible = true
+            button.sampled = true
+        else
+            button.sampled = nil
+        end
 
         button:SetWidth(size)
         button:SetHeight(size)
@@ -853,34 +1681,75 @@ local function Layout()
             else
                 group = button.entry and button.entry.cat or 0
             end
-            if lastGroup and group ~= lastGroup then offset = offset + GROUP_GAP end
-            lastGroup = group
 
-            button:ClearAllPoints()
-            if vertical then
-                button:SetPoint("TOPLEFT", bar, "TOPLEFT", BAR_PAD, -offset)
-            else
-                button:SetPoint("TOPLEFT", bar, "TOPLEFT", offset, -BAR_PAD)
-            end
-            button:Show()
-
-            offset = offset + size + ICON_GAP
+            Place(button, group)
+            button:SetAlpha(1)
+            pcall(button.EnableMouse, button, true)
             placed = placed + 1
+
+        elseif hideUnowned and button.itemID then
+            -- Parked, not hidden. See the note above the parked pass.
+            parked[#parked + 1] = button
         else
+            button.layoutEdge = nil
             button:Hide()
         end
     end
 
-    -- The trailing gap belongs to a button that is not there.
-    if placed > 0 then offset = offset - ICON_GAP end
-    local extent = offset + BAR_PAD
+    -- Where the bar ends as far as the player is concerned: the run of boons
+    -- actually being drawn. Taken before the parked pass, which continues the
+    -- same row past it.
+    local visibleOffset = offset
+    if placed > 0 then visibleOffset = visibleOffset - ICON_GAP end
+
+    ----------------------------------------------------------------
+    -- The parked pass
+    --
+    -- Hide-unowned used to call button:Hide() on everything you were not
+    -- carrying, and that is why a boon looted mid-fight did not appear. Hide
+    -- and SetPoint are both refused on a SecureActionButtonTemplate under
+    -- lockdown, so the bar could not draw the new boon until the fight ended -
+    -- what the player got was heroPanel's empty rectangle and no icon, while
+    -- everything unprotected about the boon updated correctly underneath. It
+    -- read as a missing texture and was nothing of the kind: the art has been
+    -- on the button since login.
+    --
+    -- So the buttons stay shown and positioned, and alpha does the hiding.
+    -- SetAlpha is not protected, which means RefreshVisuals can reveal a boon
+    -- the instant it is looted, in the middle of a pull, with its real icon.
+    --
+    -- They are parked in bar order immediately after the drawn run, so the
+    -- first one revealed lands where the next boon belongs rather than out on
+    -- its own. The bar is still sized to the drawn run, so none of this shows
+    -- until something is revealed - and then the resize below grows it.
+    --
+    -- Mouse off while parked, because an invisible button that still takes
+    -- clicks is a boon you can fire by clicking empty screen. It comes back
+    -- with the next out-of-combat pass, which is also when the secure
+    -- attributes that make the button do anything are set.
+    ----------------------------------------------------------------
+    for i = 1, #parked do
+        local button = parked[i]
+        Place(button, "rest")
+        button:SetAlpha(0)
+        pcall(button.EnableMouse, button, false)
+    end
+
+    local extent = visibleOffset + BAR_PAD
     local thickness = size + BAR_PAD * 2
 
     -- A bar with nothing in it still needs a rectangle, or the drag handle and
     -- the resize grip have nothing to sit on. This is what "hide unowned" plus
     -- an empty bag comes out as, and it is reachable on purpose: the player can
     -- still find and move the bar.
-    if placed == 0 then extent = size + BAR_PAD * 2 end
+    local minExtent = size + BAR_PAD * 2
+    if placed == 0 then extent = minExtent end
+
+    -- Kept for the combat-safe resize, which has no other way to know the shape
+    -- the bar was last laid out in.
+    layout.vertical  = vertical
+    layout.thickness = thickness
+    layout.minExtent = minExtent
 
     if vertical then
         bar:SetWidth(thickness)
@@ -951,6 +1820,218 @@ local function AbbreviateKey(key)
     return short
 end
 
+--------------------------------------------------------------------------------
+-- The cycle key
+--
+-- One key that fires the next boon you are carrying, left to right along the
+-- bar and round to the start again. Five slot keys are direct access - slot 2
+-- is always slot 2 - and this is sequential: press it, get a boon, press it
+-- again, get the next one. Holding three boons then needs one key rather than
+-- three, and the key does not have to be re-learned when the bar reorders.
+--
+-- Why it needs its own button
+-- ---------------------------
+-- The obvious implementation is to re-point the override binding at whichever
+-- icon is next, from ordinary Lua, on every press. That works out of combat and
+-- is useless in it: SetOverrideBindingClick is protected, so the key would
+-- freeze on whatever it pointed at when the pull started, and boons are used in
+-- combat.
+--
+-- So the key is bound once, to one hidden secure button that never moves, and
+-- the *choice* is made inside it. The button carries the whole list of held
+-- boons as attributes - boonSlot1..n, each a "<bag> <slot>" string - plus a
+-- count and the index it last fired. A snippet wrapped around its OnClick reads
+-- those, picks the next non-empty entry and writes it into `item` before the
+-- click resolves.
+--
+-- That snippet runs in the restricted environment, which is the one place the
+-- client permits SetAttribute during combat. This is the piece of work the
+-- header comment used to carry as a TODO.
+--
+-- What is still frozen
+-- --------------------
+-- The list itself. Writing boonSlot1..n is ordinary Lua and so is refused in
+-- combat like everything else, which means the cycle key reaches every boon you
+-- were holding when the fight started and not one looted during it. That is the
+-- same limitation the rest of the bar has and it is a much smaller one than
+-- five keys frozen to five positions.
+--
+-- A boon spent mid-fight leaves its bag slot empty and the snippet goes on
+-- offering it. In practice that costs nothing: boons share a cooldown, so by
+-- the time a second press is worth making the index has moved on to a slot that
+-- is still full, and the dead entry is only reached again after a full lap.
+--------------------------------------------------------------------------------
+
+local CYCLE_SNIPPET = [[
+    local count = tonumber(self:GetAttribute("boonCount")) or 0
+    if count < 1 then
+        self:SetAttribute("type", "")
+        self:SetAttribute("item", "")
+        return
+    end
+
+    local index = tonumber(self:GetAttribute("boonIndex")) or 0
+
+    for step = 1, count do
+        local try = index + step
+        while try > count do
+            try = try - count
+        end
+
+        local place = self:GetAttribute("boonSlot" .. try)
+        if place and place ~= "" then
+            self:SetAttribute("boonIndex", try)
+            self:SetAttribute("type", "item")
+            self:SetAttribute("item", place)
+            return
+        end
+    end
+
+    self:SetAttribute("type", "")
+    self:SetAttribute("item", "")
+]]
+
+-- What the cycler was last loaded with. Compared rather than blindly rewritten
+-- so that a bag event which does not change the boon list - moving a potion
+-- around, on the BAG_UPDATE path where every change costs a rebuild - does not
+-- reset the cycle position back to the first boon.
+local cycleSignature
+
+local function LoadCycler()
+    if not cycler or InCombatLockdown() then return end
+
+    local held, places = CycleOrder(), {}
+    for i = 1, #held do
+        local record = owned[held[i].itemID]
+        local place  = record and record.slots[1]
+        places[i] = place and string.format("%d %d", Int(place.bag), Int(place.slot)) or ""
+    end
+
+    -- Cleared past the end as well as written up to it, or a list that has just
+    -- got shorter would leave the tail of the previous one behind and the
+    -- snippet would eventually offer a boon that has been gone for a minute.
+    for i = 1, #buttons do
+        SetSecureAttribute(cycler, "boonSlot" .. i, places[i] or "")
+    end
+    SetSecureAttribute(cycler, "boonCount", #held)
+
+    local signature = table.concat(places, "|")
+    if signature ~= cycleSignature then
+        cycleSignature = signature
+        SetSecureAttribute(cycler, "boonIndex", 0)
+    end
+end
+
+-- Which icon the cycle key would fire next.
+--
+-- Read back off the button rather than tracked alongside it, because in combat
+-- the snippet is the only thing that moves the index and its attribute is the
+-- only record of where it got to. Reading an attribute is not protected.
+local function CycleNextButton()
+    local held = CycleOrder()
+    if #held == 0 then return nil end
+
+    local index = 0
+    if cycler then
+        local ok, value = pcall(cycler.GetAttribute, cycler, "boonIndex")
+        if ok then index = tonumber(value) or 0 end
+    end
+
+    local target = index + 1
+    while target > #held do target = target - #held end
+    return held[target]
+end
+
+-- Which icon the cycle key just fired. The snippet leaves the index it chose
+-- behind in the attribute, so after a press that is where it landed.
+local function CycleFiredButton()
+    if not cycler then return nil end
+
+    local held = CycleOrder()
+    local ok, value = pcall(cycler.GetAttribute, cycler, "boonIndex")
+    local index = (ok and tonumber(value)) or 0
+
+    if index < 1 or index > #held then return nil end
+    return held[index]
+end
+
+-- A thin accent bar under the icon the cycle key would fire next.
+--
+-- Under rather than around: the icon already carries a border for the melee
+-- mark and an orbit for the expiry glow, and a third ring would be a button
+-- with three frames on it. Drawn only when the key is actually bound - a marker
+-- for a key nobody has set is a mark on the bar that means nothing.
+local function ApplyCycleMark()
+    local target = GetBindingKey("HEROPANEL_BOON_CYCLE") and CycleNextButton() or nil
+
+    for i = 1, #buttons do
+        local button = buttons[i]
+        if button.cycleMark then
+            if button == target then button.cycleMark:Show() else button.cycleMark:Hide() end
+        end
+    end
+end
+
+local function BuildCycler()
+    if not caps.secureButtons then return end
+
+    -- SecureHandlerBaseTemplate is what SecureHandlerWrapScript needs to attach
+    -- a snippet to. Asked for only when the client has the wrap function, so a
+    -- build without it gets a plain secure button and the out-of-combat
+    -- fallback rather than a frame that fails to create.
+    local template = caps.secureHandlers
+        and "SecureActionButtonTemplate,SecureHandlerBaseTemplate"
+        or  "SecureActionButtonTemplate"
+
+    local ok, button = pcall(CreateFrame, "Button", "HeroPanelBoonCycler", UIParent, template)
+    if not (ok and type(button) == "table" and type(button.SetAttribute) == "function") then
+        ns.Debug("boons: the cycle button would not build; the cycle key will "
+            .. "fall back to the first held boon.")
+        return
+    end
+
+    cycler = button
+
+    -- Present but invisible and unclickable. It exists to be clicked by the
+    -- binding system and by nothing else, so it takes no mouse and draws
+    -- nothing - but it is left shown, because it is a click target and hiding
+    -- click targets is how they stop being ones.
+    cycler:SetWidth(1)
+    cycler:SetHeight(1)
+    cycler:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", 0, 0)
+    cycler:SetAlpha(0)
+    cycler:EnableMouse(false)
+    pcall(cycler.RegisterForClicks, cycler, "AnyUp")
+    SetSecureAttribute(cycler, "type", "")
+    SetSecureAttribute(cycler, "item", "")
+    SetSecureAttribute(cycler, "boonCount", 0)
+    SetSecureAttribute(cycler, "boonIndex", 0)
+
+    if caps.secureHandlers then
+        cycler.snippet = pcall(_G.SecureHandlerWrapScript,
+            cycler, "OnClick", cycler, CYCLE_SNIPPET)
+        if not cycler.snippet then
+            ns.Debug("boons: the cycle snippet would not install; the cycle key "
+                .. "will not advance during combat.")
+        end
+    end
+
+    -- The insecure half of a press. The snippet has already chosen and fired by
+    -- the time this runs, and it left the index it used behind - so the button
+    -- that went off is the one at that index, and the bookkeeping the icon's
+    -- own click does has to happen here too.
+    pcall(cycler.HookScript, cycler, "PostClick", function(self)
+        -- The snippet blanks `type` when it could not find a boon to fire, so
+        -- this is how a press that did nothing is told from one that spent
+        -- something. Without it, pressing the key with an empty bar would count
+        -- as a use and take a boon out of the local picture that was never
+        -- there.
+        local ok, kind = pcall(self.GetAttribute, self, "type")
+        if ok and kind == "item" then NoteUsed(CycleFiredButton()) end
+        ApplyCycleMark()
+    end)
+end
+
 local function ApplyBindings()
     if not (bar and caps.secureButtons) or InCombatLockdown() then return end
 
@@ -972,21 +2053,61 @@ local function ApplyBindings()
             if caps.overrideBinds then
                 if key1 then
                     pcall(_G.SetOverrideBindingClick, bar, true, key1,
-                        button:GetName(), "LeftButton")
+                        button:GetName(), BIND_CLICK)
                 end
                 if key2 then
                     pcall(_G.SetOverrideBindingClick, bar, true, key2,
-                        button:GetName(), "LeftButton")
+                        button:GetName(), BIND_CLICK)
                 end
             end
         end
     end
+
+    ----------------------------------------------------------------------
+    -- The cycle key.
+    --
+    -- Bound to the cycler, once, and never re-pointed: the choice of which
+    -- boon it fires is made inside the button by the snippet, which is what
+    -- lets it keep working through a fight.
+    --
+    -- Without a snippet - a client with no SecureHandlerWrapScript, or one
+    -- where the wrap refused - the key is pointed straight at the leftmost
+    -- held boon instead. That still cycles out of combat, because a boon
+    -- that is used leaves the bags and the next one becomes leftmost; it
+    -- simply stops advancing once a fight starts, exactly like the five
+    -- slot keys do.
+    ----------------------------------------------------------------------
+
+    local target = (cycler and cycler.snippet) and cycler or CycleNextButton()
+
+    if caps.overrideBinds and target then
+        local key1, key2 = GetBindingKey("HEROPANEL_BOON_CYCLE")
+        if key1 then
+            pcall(_G.SetOverrideBindingClick, bar, true, key1,
+                target:GetName(), BIND_CLICK)
+        end
+        if key2 then
+            pcall(_G.SetOverrideBindingClick, bar, true, key2,
+                target:GetName(), BIND_CLICK)
+        end
+    end
+
+    ApplyCycleMark()
 end
 
 -- Reached from Bindings.xml when a bound key fires without an override behind
 -- it, which means the bar is off. Public because the XML calls it by name.
 function boons.BindingFallback(index)
     if boons.IsEnabled() then
+        -- The one case that reaches here with the bar switched on and is not a
+        -- fault: the cycle key on a client with no snippet, with nothing in the
+        -- bags to point it at. There is no override installed because there is
+        -- no boon for it to fire.
+        if index == "cycle" and ownedCount == 0 then
+            ns.Debug("boons: the cycle key fired with no boons held.")
+            return
+        end
+
         -- An override should have caught this. Say so rather than nothing: it
         -- means the binding was installed while the key was already down, or
         -- the client has no override binding API at all.
@@ -995,6 +2116,101 @@ function boons.BindingFallback(index)
     end
     ns.Print("the boon bar is off - turn it on in |cFFC2C6D8/hp|r, or with "
         .. "|cFFC2C6D8/hp boons on|r.")
+end
+
+--------------------------------------------------------------------------------
+-- Saying it in chat
+--
+-- Shift and left-click a boon and heroPanel says how long that boon has before
+-- it expires, instead of using it. The question the gesture answers is the one
+-- that gets asked out loud in a key - "how long have you got" - and the answer
+-- is worth more to the party than to the person holding the boon.
+--
+-- The expiry and not the shared use cooldown. They are two different clocks and
+-- only one of them is anybody else's business: the cooldown is already drawn as
+-- a swipe on the icon in front of you, while how long your boon has left is the
+-- thing nobody else can see.
+--
+-- The click is stopped by the secure attribute set in ApplySecure, not here.
+-- This runs from the ordinary hook afterwards, by which point the client has
+-- already declined to use anything.
+--
+-- Throttled, and the throttle is not optional: this is one click, it goes in
+-- four other people's chat windows, and a feature that lets somebody flood
+-- their own group by holding shift is a feature that gets the addon banned from
+-- the group rather than turned off.
+--------------------------------------------------------------------------------
+
+local lastReport = 0
+
+-- The same pair Keys.lua carries, for the same reason and with the same
+-- precedence: a player in a raid is in a party too, and PARTY would reach four
+-- of the forty. Local copies rather than a shared helper because they are three
+-- lines each and the alternative is Boons.lua depending on Keys.lua loading.
+local function GroupSize(fn)
+    if type(fn) ~= "function" then return 0 end
+    local ok, count = pcall(fn)
+    if not ok then return 0 end
+    return tonumber(count) or 0
+end
+
+local function ReplyChannel()
+    if GroupSize(_G.GetNumRaidMembers) > 0 then return "RAID" end
+    return "PARTY"
+end
+
+local function InGroup()
+    return GroupSize(_G.GetNumPartyMembers) > 0
+        or GroupSize(_G.GetNumRaidMembers) > 0
+end
+
+-- Seconds as something a person reads at a glance. Bare seconds under a minute,
+-- because "0:47" is a stopwatch and "47s" is an answer.
+local function FormatSpan(seconds)
+    seconds = math.max(0, math.floor((tonumber(seconds) or 0) + 0.5))
+    if seconds < 60 then return string.format("%ds", seconds) end
+    return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+-- Returns sent, detail - the same shape Keys.Announce uses, so the slash
+-- command and the debug line can both say why nothing happened.
+local function ReportDuration(button)
+    local entry = button and button.entry
+    local name  = (entry and entry.name) or "Mythical Boon"
+
+    -- How long the boon has before it expires, which is the whole of what this
+    -- reports. Not the shared use cooldown: that is a different clock and a
+    -- different question, and the swipe on the icon already answers it for the
+    -- person holding the boon.
+    --
+    -- Said plainly when it is not known rather than guessed at or left off. A
+    -- report that silently drops the number reads as the boon having no timer,
+    -- which is the one wrong idea this must not put in four other people's chat.
+    local life = button and RemainingLife(button.itemID)
+    local message = life
+        and string.format("Boons: %s expires in %s", name, FormatSpan(life))
+        or  string.format("Boons: %s, duration unknown", name)
+
+    local now = GetTime()
+    if lastReport > 0 and (now - lastReport) < REPORT_THROTTLE then
+        return false, "throttled"
+    end
+    lastReport = now
+
+    if InGroup() and type(SendChatMessage) == "function" then
+        if pcall(SendChatMessage, message, ReplyChannel()) then
+            return true, message
+        end
+        -- The send refused. Say it locally rather than silently: the player
+        -- made a deliberate gesture and got nothing back.
+        ns.Print(message)
+        return false, "SendChatMessage refused"
+    end
+
+    -- Solo, or a client with no SendChatMessage. Still worth answering - the
+    -- gesture is also how you ask yourself.
+    ns.Print(message)
+    return true, message
 end
 
 --------------------------------------------------------------------------------
@@ -1040,6 +2256,8 @@ function ApplySecure(reason)
 
     AssignSpares()
 
+    local reporting = Config().reportDuration and true or false
+
     for i = 1, #buttons do
         local button = buttons[i]
         local record = button.itemID and owned[button.itemID]
@@ -1057,12 +2275,35 @@ function ApplySecure(reason)
             SetSecureAttribute(button, "type", "")
             SetSecureAttribute(button, "item", "")
         end
+
+        ----------------------------------------------------------------
+        -- Shift and left-click reports instead of using.
+        --
+        -- Done by taking the action away from that one combination rather
+        -- than by trying to stop the click in Lua, which cannot be done:
+        -- the secure OnClick is the client's and it uses the item before
+        -- any hook of ours is reached.
+        --
+        -- "shift-type1" is the attribute the client looks up first for
+        -- shift plus button one - the cascade is prefix+name+suffix, then
+        -- name+suffix, then prefix+name, then name - so an empty string
+        -- there is a shift-click that resolves to no action at all, while
+        -- a plain left click still falls through to "type" and fires the
+        -- boon. Cleared to nil when the setting is off, so the cascade
+        -- goes back to finding nothing and the modifier stops mattering.
+        --
+        -- The client cannot tell left shift from right shift here, and
+        -- neither can IsShiftKeyDown. Either one reports.
+        ----------------------------------------------------------------
+        SetSecureAttribute(button, "shift-type1", reporting and "" or nil)
     end
+
+    LoadCycler()
 
     Layout()
     -- After the layout, because anchoring to the Mythic+ panel puts the bar's
-    -- TOP against that panel's BOTTOM and the bar's height is what Layout has
-    -- just decided.
+    -- TOPLEFT against that panel's BOTTOMLEFT and the bar's height is what
+    -- Layout has just decided.
     boons.RestorePosition()
     ApplyBindings()
 
@@ -1169,8 +2410,16 @@ function boons.RestorePosition()
             -- Mythic+ panel when that is moved, rescaled or redrawn taller by a
             -- dungeon with more bosses - without heroPanel having to watch for
             -- any of it.
+            --
+            -- Corner to corner rather than TOP to BOTTOM. Centring was the
+            -- first version and it is wrong for a bar whose width changes:
+            -- holding one boon put a single icon under the middle of the panel,
+            -- holding three slid all three sideways to keep the group centred,
+            -- and an icon that moves every time you loot is an icon you have to
+            -- look for. Pinned to the panel's left edge, the first slot is
+            -- always in the same place and the bar grows to the right.
             bar:ClearAllPoints()
-            bar:SetPoint("TOP", anchor, "BOTTOM", 0, -ANCHOR_GAP)
+            bar:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -ANCHOR_GAP)
             return true
         end
         -- Nothing to hang off yet. Fall through to the saved position, so the
@@ -1329,6 +2578,36 @@ local function BuildButton(index, entry)
         button.meleeMark[edge] = texture
     end
 
+    -- The expiry sparks. Built at load with everything else and left hidden,
+    -- because a texture created on the frame a boon starts expiring is a
+    -- texture created in combat - allowed, unlike a secure button, but a
+    -- needless allocation at the worst moment on the worst frame.
+    --
+    -- No points set here: PlaceSpark anchors them every frame while they run,
+    -- and where they sit depends on the icon size, which the slider can change.
+    button.glow = {}
+    for i = 1, GLOW_SPARKS do
+        local spark = button:CreateTexture(nil, "OVERLAY")
+        ns.SetTextureFile(spark, ns.SOLID)
+        spark:SetVertexColor(ns.HexToRGB(ns.PALETTE[GLOW_COLOUR]))
+        spark:Hide()
+        button.glow[i] = spark
+    end
+    button.glowPhase = 0
+
+    -- The cycle key's "next up" mark: a bar across the bottom edge.
+    --
+    -- Anchored to the button's own corners so it tracks the icon size, and two
+    -- pixels tall for the same reason the melee ring is - one pixel reads as
+    -- the edge of the button at 32px.
+    button.cycleMark = button:CreateTexture(nil, "OVERLAY")
+    ns.SetTextureFile(button.cycleMark, ns.SOLID)
+    button.cycleMark:SetVertexColor(ns.HexToRGB(ns.PALETTE.accentLight))
+    button.cycleMark:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 0, 0)
+    button.cycleMark:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 0, 0)
+    button.cycleMark:SetHeight(2)
+    button.cycleMark:Hide()
+
     button.highlight = button:CreateTexture(nil, "HIGHLIGHT")
     button.highlight:SetAllPoints(button)
     ns.SetTextureFile(button.highlight, ns.SOLID)
@@ -1367,42 +2646,25 @@ local function BuildButton(index, entry)
     -- HookScript rather than SetScript. SecureActionButtonTemplate installs its
     -- own OnClick and that is the one that actually uses the item; replacing it
     -- would leave a button that looks right and does nothing.
-    button:HookScript("OnClick", function(self)
-        local record = self.itemID and owned[self.itemID]
-        if not record then return end
-
-        if caps.itemCooldown then
-            local ok, start, duration, enable = pcall(_G.GetItemCooldown, self.itemID)
-            -- A boon that is already on cooldown was not used, so there is
-            -- nothing to propagate and nothing to take out of the bags. The
-            -- 0.01 window is the reference's: a cooldown that started this
-            -- instant is the one this click just caused.
-            if ok and duration and duration > 0 and (GetTime() - (start or 0)) >= 0.01 then
-                return
-            end
-            if ok then PropagateCooldown(start, duration, enable) end
+    button:HookScript("OnClick", function(self, click)
+        -- Shift and left-click reports rather than uses. The secure attribute
+        -- set in ApplySecure has already stopped the client using anything, so
+        -- all that is left is to answer - and to return before the bookkeeping
+        -- below, which would otherwise take a boon out of the local picture
+        -- that is still very much in the bags.
+        --
+        -- Gated on a real left click. A keybind arrives here as BIND_CLICK, and
+        -- a slot bound to a shift-modified key arrives with shift genuinely
+        -- held - so without this, using that keybind would fire the boon *and*
+        -- announce it. See the note on BIND_CLICK.
+        if click == "LeftButton" and Config().reportDuration and IsShiftKeyDown()
+           and self.itemID and owned[self.itemID] then
+            local sent, detail = ReportDuration(self)
+            if not sent then ns.Debug("boons: not reported - %s.", tostring(detail)) end
+            return
         end
 
-        -- Taken out of the local picture without waiting for the bag event, so
-        -- the icon goes grey on the click rather than a tenth of a second
-        -- later. The next rebuild is authoritative either way, so being wrong
-        -- here costs one refresh and not a stuck button.
-        if #record.slots <= 1 then
-            owned[self.itemID] = nil
-            ownedCount = math.max(0, ownedCount - 1)
-        else
-            table.remove(record.slots, 1)
-            record.count = math.max(1, record.count - 1)
-        end
-
-        RefreshVisuals()
-
-        -- Deliberately not a full Refresh. That would re-read the bags, and the
-        -- server has not taken the boon out of them yet - so the icon would
-        -- light straight back up and go out again a tenth of a second later
-        -- when the bag event lands. QueueSecure runs inline when the player is
-        -- not fighting, so the button is unbound now either way.
-        QueueSecure("boon used")
+        NoteUsed(self)
     end)
 
     button.entry  = entry
@@ -1467,6 +2729,20 @@ local function BuildBar()
     tooltip = (gotTooltip and type(frame) == "table" and type(frame.AddLine) == "function")
         and frame or nil
 
+    -- The expiry scanner. A third tooltip, never shown and never anchored to
+    -- anything visible, because reading an item's remaining lifetime means
+    -- filling a tooltip with its text and looking at the lines - and doing that
+    -- to either of the two tooltips a player can see would blank whatever they
+    -- were reading at the time.
+    local gotScanner, scan = pcall(CreateFrame, "GameTooltip",
+        "HeroPanelBoonScanner", UIParent, "GameTooltipTemplate")
+    scanner = (gotScanner and type(scan) == "table" and type(scan.SetBagItem) == "function")
+        and scan or nil
+    if not scanner then
+        ns.Debug("boons: no scanning tooltip; expiry will be counted from when "
+            .. "heroPanel first saw each boon.")
+    end
+
     local index = 0
     for i = 1, #ns.BoonData.ORDER do
         index = index + 1
@@ -1477,10 +2753,22 @@ local function BuildBar()
         buttons[index] = BuildButton(index, nil)
     end
 
-    ticker = ns.NewTicker(COOLDOWN_TICK, PollCooldowns)
+    BuildCycler()
 
-    ns.Debug("boons: built %d button(s) (%d known, %d spare).",
-        #buttons, #ns.BoonData.ORDER, SPARE_SLOTS)
+    ticker       = ns.NewTicker(COOLDOWN_TICK, PollCooldowns)
+    expiryTicker = ns.NewTicker(EXPIRY_TICK, ExpiryTick)
+
+    -- The glow's own driver. Hidden until something is warning, which is most
+    -- of the time - see the note on the expiry glow for why this is not one of
+    -- ns.NewTicker's slots.
+    glowDriver = CreateFrame("Frame", "HeroPanelBoonGlowDriver", UIParent)
+    glowDriver:Hide()
+    glowDriver:SetScript("OnUpdate", GlowOnUpdate)
+
+    ns.Debug("boons: built %d button(s) (%d known, %d spare), cycling %s.",
+        #buttons, #ns.BoonData.ORDER, SPARE_SLOTS,
+        (cycler and cycler.snippet) and "in the restricted environment"
+            or (cycler and "out of combat only" or "unavailable"))
     return bar
 end
 
@@ -1502,6 +2790,11 @@ _G.BINDING_HEADER_HEROPANEL = "heroPanel"
 for i = 1, SLOT_COUNT do
     _G["BINDING_NAME_HEROPANEL_BOON" .. i] = string.format("Boon slot %d", i)
 end
+
+-- A sixth row, and the one most people will bind. Named for what it does
+-- rather than for what it is - "Cycle boons" says the whole feature, where
+-- "Boon cycle button" would say the implementation.
+_G.BINDING_NAME_HEROPANEL_BOON_CYCLE = "Cycle boons"
 
 --------------------------------------------------------------------------------
 -- Bag events
@@ -1671,6 +2964,14 @@ function boons.Dump()
                 and "|cFF8B8FA3anchored, but the Mythic+ panel is not up|r"
                 or "free-placed"))
 
+    local warn = tonumber(Config().expiryWarn) or 0
+    ns.Print("  expiry warning: %s; expiry read from |cFFC2C6D8%s|r",
+        warn > 0 and ("|cFFC2C6D8" .. FormatSpan(warn) .. "|r") or "|cFF8B8FA3off|r",
+        caps.itemDuration and "the client"
+            or (scanner and "the item tooltip, else first sight" or "first sight"))
+    ns.Print("  shift-click reports: %s",
+        Config().reportDuration and "|cFF79C68Don|r" or "|cFF8B8FA3off|r")
+
     -- Which boon each key would actually fire. The whole point of the slots is
     -- that the answer changes, so it has to be reportable.
     local slots = SlotButtons()
@@ -1684,20 +2985,102 @@ function boons.Dump()
         end
     end
 
+    -- The cycle key, and - the part worth reporting - whether it will keep
+    -- advancing once a fight starts. That is the whole difference between the
+    -- snippet path and the fallback, and it is invisible until it matters.
+    do
+        local key   = GetBindingKey("HEROPANEL_BOON_CYCLE")
+        local next_ = CycleNextButton()
+        ns.Print("  cycle: %s%s",
+            key and ("|cFFC2C6D8" .. key .. "|r") or "|cFF8B8FA3no key bound|r",
+            (cycler and cycler.snippet)
+                and " - |cFF79C68Dadvances in combat|r"
+                or  " - |cFF8B8FA3out of combat only|r")
+        ns.Print("    next: %s",
+            (next_ and next_.entry) and next_.entry.name or "|cFF8B8FA3nothing held|r")
+    end
+
     if ownedCount == 0 then
         ns.Print("  |cFF8B8FA3no boons in your bags|r")
     else
         for itemID, record in pairs(owned) do
             local entry = ns.BoonData.BY_ID[itemID]
-            ns.Print("  |cFFC2C6D8%s|r (%d) x%d - bag %d slot %d",
+            local life  = RemainingLife(itemID)
+            ns.Print("  |cFFC2C6D8%s|r (%d) x%d - bag %d slot %d, expires in %s",
                 entry and entry.name or "unknown", Int(itemID), Int(record.count),
-                Int(record.slots[1].bag), Int(record.slots[1].slot))
+                Int(record.slots[1].bag), Int(record.slots[1].slot),
+                life and FormatSpan(life) or "|cFF8B8FA3unknown|r")
         end
     end
 
     for i = 1, #unknownIDs do
         ns.Warn("  itemID %d is a boon heroPanel does not know about - "
             .. "worth adding to BoonData.lua.", unknownIDs[i])
+    end
+end
+
+-- /hp boons expiry - every line of every held boon's tooltip, and what the
+-- parser made of each one.
+--
+-- This exists because the expiry warning is built on a string nobody has read
+-- yet. There is no API for an item's remaining lifetime, so the tooltip is the
+-- only place the number is written down, and which line it is on and how it is
+-- worded is a thing this client knows and heroPanel is guessing at. The
+-- fallback - counting from when a boon was first seen - is correct for a boon
+-- looted during the session, so the guess only has to be right to survive a
+-- /reload mid-run.
+--
+-- Run it with boons in the bags and the answer is in front of you: if a line
+-- carries the remaining time and reads "no", LineDuration wants widening.
+function boons.DumpExpiry()
+    if not scanner then
+        ns.Print("boon expiry: |cFF8B8FA3no scanning tooltip on this client|r - "
+            .. "expiry is counted from when heroPanel first saw each boon.")
+        return
+    end
+
+    if ownedCount == 0 then
+        ns.Print("boon expiry: |cFF8B8FA3no boons in your bags to read|r")
+        return
+    end
+
+    ns.Print("boon expiry - raw tooltip lines:")
+
+    for itemID, record in pairs(owned) do
+        local entry = ns.BoonData.BY_ID[itemID]
+        local place = record.slots[1]
+
+        ns.Print("  |cFFC2C6D8%s|r - bag %d slot %d, heroPanel says %s",
+            entry and entry.name or ("item " .. Int(itemID)),
+            Int(place.bag), Int(place.slot),
+            RemainingLife(itemID) and FormatSpan(RemainingLife(itemID)) or "unknown")
+
+        scanner:SetOwner(UIParent, "ANCHOR_NONE")
+        scanner:ClearLines()
+        if pcall(scanner.SetBagItem, scanner, place.bag, place.slot) then
+            local name  = scanner:GetName()
+            local lines = 0
+            local ok, count = pcall(scanner.NumLines, scanner)
+            if ok then lines = tonumber(count) or 0 end
+
+            for i = 1, lines do
+                for _, side in ipairs({ "TextLeft", "TextRight" }) do
+                    local fs = _G[name .. side .. i]
+                    local text = fs and type(fs.GetText) == "function" and fs:GetText()
+                    if text and text ~= "" then
+                        local span = LineDuration(text)
+                        ns.Print("    %d%s: %s |cFF8B8FA3[%s]|r", i,
+                            side == "TextRight" and "R" or "", text,
+                            span and (FormatSpan(span) .. " - read as a duration")
+                                or "no")
+                    end
+                end
+            end
+        else
+            ns.Print("    |cFF8B8FA3the tooltip refused that bag slot|r")
+        end
+
+        pcall(scanner.Hide, scanner)
     end
 end
 
@@ -1778,4 +3161,21 @@ ns:On("HEROPANEL_TRACKER_FOUND", function(key)
     if key ~= "mplus" or not bar then return end
     if not Config().anchorMplus then return end
     ns.RunWhenSafe(function() boons.RestorePosition() end, "Boons:anchor")
+end)
+
+-- Placement preview turning on or off changes both where an anchored bar hangs
+-- and what it draws - the sample slots in Layout only exist while previewing.
+-- Nothing else fires here outside a key, so without this the bar would sit on
+-- its old layout for as long as the player is stood in a city placing things.
+-- Placement preview turning on or off changes both where an anchored bar hangs
+-- and what it draws - the sample slots in Layout only exist while previewing.
+-- Nothing else fires here outside a key, so without this the bar would sit on
+-- its old layout for as long as the player is stood in a city placing things.
+--
+-- Refreshed inline rather than deferred: Mplus fires this from its own redraw,
+-- so the plate is already drawn or hidden and IsAnchored gets a straight answer.
+ns:On("HEROPANEL_MPLUS_PREVIEW", function()
+    if not (bar and Config().anchorMplus) then return end
+    ns.RunWhenSafe(function() boons.Refresh("mplus preview toggled") end,
+        "Boons:preview")
 end)

@@ -25,8 +25,32 @@
         values are self-references, so the column's entire effect is to get one
         of fifteen tooltips wrong. A boon is always described by its own ID.
 
-      * Skulking (2104934) and Bloodlust (2104935) are newer than the client's
-        table, which has thirteen rows.
+        Confirmed since: Inquisition's own item text reads "Causing a Mythical
+        Barrier to surround all party members dealing damage to all nearby
+        enemies lasting for 20 sec", which is the boon. Following the column
+        would have replaced that with the "0 targets" line.
+
+      * 2104934 and Bloodlust (2104935) are newer than the client's table,
+        which has thirteen rows.
+
+    What has been checked against the live client
+    --------------------------------------------
+    All fifteen, read off their item tooltips in game. Every one says
+    "Duration: 10 min", and every summary below matches the client's own text.
+
+    One thing is still open, and it is the one thing the client cannot answer:
+    how fast Sanctified actually heals. Its string is broken - see the note on
+    its row - so its summary says what the boon does without saying how much.
+
+    Worth knowing how this table got here, because it shapes what to trust if
+    a sixteenth boon turns up. It was first built from research notes, and
+    those notes were wrong three times in a consistent pattern: right about
+    every effect they transcribed, wrong about nearly everything they inferred.
+    They had the lifetimes at three minutes and Bloodlust's at eight - it is
+    ten for all fifteen - and they guessed 2104934 was called "Skulking" when
+    the client calls it "Test". Not one summary was wrong. So a described
+    effect is worth taking on trust and a number is worth reading off a
+    tooltip.
 
     What is deliberately not here
     -----------------------------
@@ -45,10 +69,13 @@
     Note that a placeholder icon is not a reliable tell. Adaptation (2104930)
     legitimately draws on spell_paladin_clarityofpurpose too.
 
-    Skulking's description is byte-for-byte Phasewalk's and it shares
-    Phasewalk's icon. They stay two entries. Whether they behave identically on
-    the server is not something the client can answer, and merging two things
-    that only look the same is not a decision this file gets to make.
+    2104934's description is byte-for-byte Phasewalk's and it shares
+    Phasewalk's icon - confirmed off both live tooltips, which read identically
+    down to "for up to 10 sec, allowing you and your allies to walk past
+    enemies unnoticed". They stay two entries, and the client settles why:
+    2104934 is called "Mythical Boon: Test". It is a developer's copy of
+    Phasewalk sitting inside the block, which is a thing to name accurately
+    rather than a thing to merge away or to assume out of existence.
 ----------------------------------------------------------------------------]]
 
 local ADDON_NAME, ns = ...
@@ -90,17 +117,34 @@ data.CATEGORY_NAMES = {
 --            The client flags these and heroPanel offers to dim them.
 --   summary  a hand-written one-liner for the in-combat tooltip.
 --
+-- There is no lifetime column. Every boon lives ten minutes in the bags, so it
+-- is one constant below rather than the same number written fifteen times. A
+-- future boon that differs gets `life = n` on its own line and LifeOf will
+-- prefer it.
+--
 -- The summaries are written out rather than parsed from
 -- C_Spell:GetSpellDescription, which is what the reference does. That parse
 -- pulls the |cXXXXXXXX|r coloured runs out of the live string, and the live
 -- strings are not consistent enough to build a tooltip on:
 --
---   * Sanctified reads "Restoring 1% health every 0.20 milliseconds", which is
---     not a rate anything could have. The wiki says 3% per second.
---   * Piercing's text mentions armour penetration only; the expertise the wiki
---     documents is not in the string, though the client's own melee-only flag
---     on this boon suggests it is real.
---   * Skulking's text is Phasewalk's, word for word.
+--   * Sanctified reads, in full and verbatim off the live client: "This
+--     Mythical Boon empowers your party Restoring 1% health every 0.20
+--     milliseconds for 20 sec." One percent every fifth of a millisecond is
+--     five thousand percent a second, which is not a rate anything has. The
+--     likeliest reading is that the period is 0.20 *seconds* and the unit
+--     label is what is broken - a spell period is stored in milliseconds and
+--     something has converted it once and labelled it twice - which would make
+--     it 5% a second and a full heal over the twenty. That is a guess, so the
+--     summary does not state a rate. See the note on its row.
+--   * 2104934's text is Phasewalk's, word for word, and 2104934 is named
+--     "Test".
+--
+-- Piercing used to be the third entry on this list, on the strength of a wiki
+-- claim that it grants expertise as well as armour penetration. The live client
+-- says "your party's Armor Penetration by 15% for 30 sec" and nothing else, and
+-- armour penetration on its own is reason enough for the client's melee-only
+-- flag - it does nothing for a caster. The string is right and the wiki was
+-- adding something. Its summary is the client's text, and matches.
 --
 -- So the live description is a fallback rather than the source, and it is
 -- still reachable: boons.rawTooltip puts the full client text back for anyone
@@ -109,6 +153,8 @@ data.CATEGORY_NAMES = {
 --------------------------------------------------------------------------------
 
 local SPELLS, BUFFS, DEFENSE = data.CATEGORY.SPELLS, data.CATEGORY.BUFFS, data.CATEGORY.DEFENSE
+
+local MINUTE = 60
 
 data.BOONS = {
     { id = 2104920, name = "Ascension",    cat = SPELLS,  melee = false, summary = "+20% damage and healing, 30s" },
@@ -119,14 +165,56 @@ data.BOONS = {
     { id = 2104926, name = "Bountiful",    cat = BUFFS,   melee = false, summary = "+20% Str, Agi, Sta, Spi and Int, 30s" },
     { id = 2104927, name = "Piercing",     cat = BUFFS,   melee = true,  summary = "+15% armor penetration, 30s" },
     { id = 2104928, name = "Critical",     cat = SPELLS,  melee = false, summary = "+20% critical strike chance, 30s" },
-    { id = 2104929, name = "Sanctified",   cat = DEFENSE, melee = false, summary = "Restores about 3% health a second, 20s" },
+    -- No rate in the summary, deliberately.
+    --
+    -- The client's own string is broken - see the note above - and the 3% a
+    -- second this used to claim came from a wiki rather than from anything the
+    -- game says. A hand-written summary exists to be more trustworthy than the
+    -- client's text, and inventing a number to replace a wrong one is not that.
+    -- The twenty seconds is confirmed; the rate is not, so it is left out until
+    -- somebody measures it in a dungeon.
+    { id = 2104929, name = "Sanctified",   cat = DEFENSE, melee = false, summary = "Restores party health steadily, 20s" },
     { id = 2104930, name = "Adaptation",   cat = SPELLS,  melee = true,  summary = "Spell power from 20% of attack power, 30s" },
     { id = 2104931, name = "Ruthlessness", cat = BUFFS,   melee = false, summary = "+20% critical damage and healing, 30s" },
     { id = 2104932, name = "Wrathful",     cat = BUFFS,   melee = false, summary = "+170 spell damage, +220 attack power, 30s" },
     { id = 2104933, name = "Phasewalk",    cat = DEFENSE, melee = false, summary = "Party phases out, walk past enemies, 10s" },
-    { id = 2104934, name = "Skulking",     cat = DEFENSE, melee = false, summary = "Party phases out, walk past enemies, 10s" },
+    -- Named "Mythical Boon: Test" on the live client, and that is not a
+    -- placeholder for a name heroPanel failed to look up - it is the name. The
+    -- research notes called it "Skulking", having only ever seen the ID, and
+    -- flagged the row Unknown. So this is what the game says, not what the
+    -- notes guessed.
+    --
+    -- It is kept as a row rather than deleted as a developer's leftover. It has
+    -- a duration, a description and an icon of its own, and the notes have
+    -- already been wrong three times about this block - about every duration,
+    -- about Bloodlust's, and about this name. Inferring that an item does not
+    -- exist is exactly the kind of guess that produced those. The cost of
+    -- keeping it is one greyed icon on a bar; the cost of dropping it is a boon
+    -- in somebody's bags with no summary behind it.
+    { id = 2104934, name = "Test",         cat = DEFENSE, melee = false, summary = "Party phases out, walk past enemies, 10s" },
     { id = 2104935, name = "Bloodlust",    cat = BUFFS,   melee = false, summary = "Grants the party Bloodlust" },
 }
+
+-- How long a boon survives in the bags. Ten minutes, for all fifteen.
+--
+-- Not the buff's duration, which is the number in the summaries above - a boon
+-- buffs the party for thirty seconds and then sits in your bags for ten
+-- minutes, and it is the sitting that decides whether to use one now or hold it
+-- for the pull.
+--
+-- Read off the live client, on Bloodlust and on Critical, which write it two
+-- different ways: "Duration: 10 minutes" and "Duration: 10 min". The feature's
+-- research notes said three minutes with Bloodlust at eight, and were wrong on
+-- both counts - which is why this is written down from what the client says
+-- rather than from what the notes claimed.
+--
+-- It is a fallback, not the source. Boons.lua reads the real remaining time off
+-- that same "Duration:" line, and this number only decides what happens on a
+-- client where the tooltip cannot be read at all. It also cancels out of the
+-- arithmetic entirely when the tooltip can be read - see the lifetimes section
+-- in Boons.lua - so a boon whose real lifetime differs is wrong here and still
+-- correct on screen.
+data.DEFAULT_LIFE = 10 * MINUTE
 
 --------------------------------------------------------------------------------
 -- Detecting a boon that is not in the table
@@ -204,4 +292,14 @@ end
 -- data.Count() -> how many boons this build knows about.
 function data.Count()
     return #data.BOONS
+end
+
+-- data.LifeOf(itemID) -> how long that boon survives in the bags, in seconds.
+--
+-- Answers for a boon the table does not have as well, which is the case that
+-- matters: the expiry warning has to do something sensible for a boon a later
+-- build adds, and DEFAULT_LIFE is the number fourteen of fifteen rows agree on.
+function data.LifeOf(itemID)
+    local entry = data.BY_ID[itemID]
+    return (entry and entry.life) or data.DEFAULT_LIFE
 end

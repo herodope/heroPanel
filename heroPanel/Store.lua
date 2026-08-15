@@ -97,6 +97,21 @@ MIGRATIONS[6] = function(db)
     end
 end
 
+-- boons.reportCooldown became boons.reportDuration.
+--
+-- The same case again: a rename, so without a step the old key is pruned and
+-- anybody who had the report turned on would find it off. The name was wrong -
+-- what the gesture answers is how long the boon has before it expires, which is
+-- a duration and not a cooldown - and the report itself now says only that. The
+-- answer to "do you want shift-click to report instead of use" is unchanged, so
+-- the value carries straight across.
+MIGRATIONS[7] = function(db)
+    if type(db.boons) == "table" and db.boons.reportCooldown ~= nil then
+        db.boons.reportDuration = db.boons.reportCooldown and true or false
+        db.boons.reportCooldown = nil
+    end
+end
+
 --------------------------------------------------------------------------------
 -- The rules
 --
@@ -181,6 +196,15 @@ local RULES = {
                               max = function() return ns.BOON_ICON_MAX end },
     ["boons.orientation"] = { type = "string",
                               values = function() return ns.BOON_ORIENTATIONS end },
+
+    -- The expiry warning threshold, in seconds, with 0 for off. A range rather
+    -- than the closed set of four the options window offers, because the number
+    -- is compared against a remaining time and every value in the range means
+    -- something: a store carrying 45 warns at forty-five seconds, correctly,
+    -- and merely lights none of the four buttons. `values` would be the wrong
+    -- rule here anyway - Validate only consults it for strings.
+    ["boons.expiryWarn"]  = { type = "number", min = 0,
+                              max = function() return ns.BOON_EXPIRY_MAX end },
 
     ["panel.*.bgColor"]        = COLOUR,
     ["panel.*.borderColor"]    = COLOUR,

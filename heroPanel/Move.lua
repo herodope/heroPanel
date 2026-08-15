@@ -275,6 +275,10 @@ end
 
 local FIGHT_LIMIT, FIGHT_WINDOW = 8, 3
 
+-- Trackers whose scale another addon has been seen to hold, so the warning is
+-- said once rather than on every notch of a grip drag.
+local scaleHeldWarned = {}
+
 local fightCounts  = {}
 local fightGivenUp = {}
 
@@ -420,6 +424,34 @@ function ns.SetScale(key, scale)
     ns.RunWhenSafe(function()
         target:SetScale(scale)
 
+        -- Did it stick?
+        --
+        -- Another addon can hold a frame's scale the same way one can hold its
+        -- anchor - MoveAnything hooks SetScale on the widget metatable and
+        -- rescales straight back to its own number. The anchor hooks below
+        -- notice that happening to a position and degrade the mode for it;
+        -- nothing was ever watching the scale, so the resize grip simply did
+        -- nothing and said nothing, which reads as heroPanel being broken.
+        --
+        -- Read back rather than hooked, because a hook would fire on our own
+        -- call and on every other addon's, and telling those apart is the
+        -- problem this avoids entirely: what matters is only whether the number
+        -- we asked for is the number the frame ended up with.
+        local ok, actual = pcall(target.GetScale, target)
+        if ok and actual and math.abs(actual - scale) > 0.001 then
+            if not scaleHeldWarned[key] then
+                scaleHeldWarned[key] = true
+                ns.Warn("another addon is controlling the %s's size - heroPanel asked "
+                    .. "for %.2f and it came back %.2f. Use that addon's own controls, "
+                    .. "or release the frame there.",
+                    string.lower(ns.trackers[key] and ns.trackers[key].label or key),
+                    scale, actual)
+            end
+            ns.Debug("%s scale rejected: asked %.2f, got %.2f", key, scale, actual)
+        else
+            scaleHeldWarned[key] = nil
+        end
+
         -- Re-pin the mover's top-left corner. Offsets are stored in UIParent
         -- space and converted using the mover's own effective scale, so this
         -- only actually changes anything when the mover and the scaled frame
@@ -435,7 +467,18 @@ function ns.SetScale(key, scale)
     return true, scale
 end
 
+-- Yield means yield, and that has to include the scale.
+--
+-- This used to re-assert heroPanel's scale whatever the mode was, and it runs
+-- from the tracker's OnShow - so a player who had explicitly handed the frame
+-- to another addon still got heroPanel writing SetScale to it every time the
+-- tracker was shown. Against MoveAnything, which locks scale and puts its own
+-- number straight back, that is an endless silent argument over a frame the
+-- player already said was not ours. Position has always been gated here; scale
+-- was simply missed.
 function ns.RestoreScale(key)
+    if ns.GetMode(key) == "yield" then return false end
+
     local target = ScaleTarget(key)
     local saved  = GetSaved(key)
     if not target or not saved then return false end
@@ -793,6 +836,25 @@ local function NoteHolder(key, candidate)
     if record.holderFrame == candidate then return end
 
     local candidateName = NameOf(candidate)
+
+    -- Never one of heroPanel's own frames.
+    --
+    -- This whole function is about noticing that *another* addon has docked the
+    -- tracker somewhere. A heroPanel frame in that position is not another
+    -- addon cooperating - it is heroPanel's own panel, and adopting it would be
+    -- heroPanel deciding it had lost an argument with itself and handing
+    -- positioning to a frame it positions.
+    --
+    -- It is reachable: the Mythic+ placement preview anchors the tracker to its
+    -- own plate for two statements to convert a dragged position into offsets
+    -- without doing scale arithmetic by hand, and the SetPoint hook that calls
+    -- this fires on that anchor before the next line can undo it. Guarded here
+    -- rather than there, because "heroPanel's frames are not holders" is true
+    -- of every caller and not just that one.
+    if type(candidateName) == "string"
+       and string.sub(candidateName, 1, 9) == "HeroPanel" then
+        return
+    end
     record.holderFrame = candidate
     record.holderName  = candidateName
     ns.Debug("%s holder observed: %s", key, candidateName)

@@ -226,14 +226,11 @@ ns.defaults = {
         -- Piercing and Adaptation do nothing for a caster, so they can be
         -- marked with a border in a colour nothing else on the bar uses.
         --
-        -- A border rather than dimming them, which is what this did first.
-        -- Dimming says "you do not have this one" - it is what an unowned boon
-        -- already looks like - so a dimmed melee boon you were holding read as
-        -- one you were not. A border adds a signal instead of subtracting one.
-        --
-        -- Off by default all the same: heroPanel does not know what the player
-        -- is playing, and marking two icons on a hybrid's bar is worse than
-        -- marking none.
+        -- Shelved, and off. The feature has no row in the options window and
+        -- Boons.lua gates the border off whatever this says - see
+        -- MELEE_MARK_SHELVED there. The key is kept so a store round-trips
+        -- unchanged and so bringing the feature back is one line rather than a
+        -- migration.
         markMelee   = false,
 
         -- Hang the bar off the bottom of the Mythic+ panel instead of leaving
@@ -252,6 +249,22 @@ ns.defaults = {
         -- summary. See the note on the summaries in BoonData.lua - three of the
         -- fifteen live strings are wrong, which is why this is not the default.
         rawTooltip  = false,
+
+        -- How many seconds before a boon rots in the bags its icon starts to
+        -- glow. 0 is off, and off is the default for the same reason marking
+        -- melee boons is: an animation nobody asked for, running on a bar in
+        -- the middle of a timed run, is a thing to be opted into.
+        --
+        -- The values the options window offers are 0, 30, 60 and 120. Stored as
+        -- a number rather than a name because it is a threshold and the code
+        -- compares it against a remaining time.
+        expiryWarn  = 0,
+
+        -- Shift and left-click a boon to say how long it has left in party chat
+        -- instead of using it. Off by default: it puts a line in somebody else's
+        -- chat window, and a click that used to fire a boon quietly changing
+        -- what it does is not something to do to a player who has not asked.
+        reportDuration = false,
 
         point = nil, x = 0, y = 0, scale = 1.0,
     },
@@ -378,6 +391,13 @@ ns.PALETTE = {
     chest       = "#ECCE82",   -- highest eligible chest tier
     chestTime   = "#C9A95F",   -- the tier's remaining window
     forces      = "#CFD3E5",   -- "Enemy Forces" label
+
+    -- The boon bar's expiry glow. Warm and outside the rest of the palette on
+    -- purpose: gold is already spoken for on that bar - it is the melee-only
+    -- mark - and a warning drawn in a colour that means something else is a
+    -- warning that has to be read rather than noticed. Nothing else in
+    -- heroPanel is this colour, which is the whole point of it.
+    expiry      = "#E2724F",   -- boon about to rot in your bags
 }
 
 -- Alphas that go with the tokens above.
@@ -436,7 +456,7 @@ ns.ApplyDefaults = ApplyDefaults
 -- meaning.
 --------------------------------------------------------------------------------
 
-local DB_VERSION = 6
+local DB_VERSION = 7
 
 -- Published so the harness can assert against the stamp rather than against a
 -- copy of the number, which went stale every time this moved.
@@ -574,12 +594,14 @@ local function PrintUsage()
         .. "(|cFF8B8FA3one at a time in the options window|r)")
     ns.Print("  |cFFC2C6D8/hp keys [on|off]|r - answer !keys / ?keys in group chat by "
         .. "linking your keystone (|cFF8B8FA3no argument links it now|r)")
-    ns.Print("  |cFFC2C6D8/hp boons [on|off]|r - the Mythic+ boon bar "
-        .. "(|cFF8B8FA3no argument reports what it resolved|r)")
+    ns.Print("  |cFFC2C6D8/hp boons [on|off|expiry]|r - the Mythic+ boon bar "
+        .. "(|cFF8B8FA3no argument reports what it resolved; expiry dumps the "
+        .. "tooltip lines the warning reads|r)")
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
     ns.Print("  |cFFC2C6D8/hp store|r - report what this login did to your saved settings")
     ns.Print("  |cFFC2C6D8/hp dump|r - report the geometry the skin measured")
-    ns.Print("  |cFFC2C6D8/hp mplus|r - report what the Mythic+ panel resolved, and from where")
+    ns.Print("  |cFFC2C6D8/hp mplus [preview]|r - report what the Mythic+ panel resolved "
+        .. "(|cFF8B8FA3preview draws it outside a key so you can place it|r)")
     ns.Print("  |cFFC2C6D8/hp probe [all]|r - report what else draws inside the panel; |cFF8B8FA3all|r adds heroPanel's own")
     ns.Print("  |cFFC2C6D8/hp frame <name>|r - everything about one named frame (use the name /framestack gives)")
     ns.Print("  |cFFC2C6D8/hp texture <path>|r - put any texture in the caret's slot, untinted (no path resets)")
@@ -776,8 +798,16 @@ SlashCmdList["HEROPANEL"] = function(input)
             ns.Print("boon bar %s.", rest == "on" and "|cFF79C68Don|r" or "|cFF8B8FA3off|r")
         elseif rest == "reset" then
             ns.Boons.ResetPosition()
+        elseif rest == "expiry" then
+            -- The one diagnostic that cannot be answered from the code. How
+            -- long a boon has left is only written down in its tooltip, and
+            -- which line that is on is this client's business - so this prints
+            -- the lines and what the parser made of each, which is the whole of
+            -- what is needed to fix a warning that fires at the wrong time.
+            ns.Boons.DumpExpiry()
         elseif rest ~= "" then
-            ns.Print("usage: /hp boons [on|off|reset]  (no argument reports what it resolved)")
+            ns.Print("usage: /hp boons [on|off|reset|expiry]  "
+                .. "(no argument reports what it resolved)")
         else
             ns.Boons.Dump()
         end
@@ -808,10 +838,22 @@ SlashCmdList["HEROPANEL"] = function(input)
             ns.Print("the skin module is not loaded.")
         end
     elseif cmd == "mplus" then
-        if ns.Mplus and ns.Mplus.Dump then
-            ns.Mplus.Dump()
-        else
+        -- A bare /hp mplus reports, the way /hp boons does, and for the same
+        -- reason: it is a diagnostic and turning a panel on by accident is not
+        -- what a diagnostic should do.
+        if not (ns.Mplus and ns.Mplus.Dump) then
             ns.Print("the Mythic+ module is not loaded.")
+        elseif rest == "preview" then
+            -- The switch is also in the options window. It is here as well
+            -- because placing a panel means dragging it, and the options window
+            -- is a 300px rectangle sitting in the middle of the screen you are
+            -- trying to drag it across.
+            ns.Mplus.SetPreview(not ns.Mplus.IsPreview())
+            if ns.Options then pcall(ns.Options.Sync) end
+        elseif rest ~= "" then
+            ns.Print("usage: /hp mplus [preview]  (no argument reports what it resolved)")
+        else
+            ns.Mplus.Dump()
         end
     elseif cmd == "probe" then
         if ns.Skin and ns.Skin.Probe then

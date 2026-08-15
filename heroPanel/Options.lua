@@ -1465,6 +1465,25 @@ local function Build()
     ------------------------------------------------------------------
 
     y = GroupLabel(body, y + GROUP_GAP, "Mythic+ tracker", true)
+
+    -- Placement preview.
+    --
+    -- First in the group, above the colours and the fonts, because it is what
+    -- makes the rest of the group usable: the panel only exists during a
+    -- keystone run, so every control below this one is otherwise being set
+    -- blind and judged a week later, thirty seconds into a timed key.
+    --
+    -- Not stored. The switch reads and writes the module's own session flag, so
+    -- a reload puts it back off - see the preview section in Mplus.lua for why
+    -- a preview that survived a login would read as a bug rather than a switch.
+    y = NewToggle(body, y, "Show panel for placement",
+        { "draws it outside a key, with sample data",
+          "drag to place; turns itself off in a real key" },
+        function() return ns.Mplus and ns.Mplus.IsPreview() end,
+        function(value)
+            if ns.Mplus then ns.Mplus.SetPreview(value) end
+        end)
+
     y = PanelGroup(body, y, "mplus")
 
     y = NewFontSlider(body, y, "Header font size", "mplusHeader",
@@ -1609,18 +1628,39 @@ local function Build()
             BoonsRefresh("boon hide-empty toggled")
         end)
 
-    y = NewToggle(body, y, "Mark melee-only boons",
-        "gold border on Piercing and Adaptation",
-        function() return BoonsSaved().markMelee end,
-        function(value)
-            BoonsSaved().markMelee = value and true or false
-            BoonsRefresh("boon melee marking toggled")
-        end)
+    -- "Mark melee-only boons" was here, and is shelved. Boons.lua keeps the
+    -- code and gates it off; see MELEE_MARK_SHELVED there, which is also the
+    -- one line to change to bring this row back.
+
+    -- The expiry warning.
+    --
+    -- Sits with the appearance rows because it is one, and above the two
+    -- settings that move things. Four buttons rather than a slider: the
+    -- question is how much warning you want and the difference between forty
+    -- and forty-five seconds is not a thing anybody has an opinion about.
+    --
+    -- Off is first and is the default. See the note in Core.lua on why an
+    -- animation is a thing to opt into.
+    y = NewSegmented(body, y, "Expiry glow",
+        ns.BOON_EXPIRY_WARNINGS or { { key = 0, label = "Off" } },
+        function() return tonumber(BoonsSaved().expiryWarn) or 0 end,
+        function(key)
+            BoonsSaved().expiryWarn = key
+            BoonsRefresh("boon expiry warning changed")
+        end,
+        62)
 
     -- Anchoring, and then the slot order, are the two settings that move things
     -- rather than colour them, so they sit below the appearance rows.
+    --
+    -- The sublabel has to carry the packing as well as the anchoring, because
+    -- anchoring does both: a bar hanging under that panel draws only the boons
+    -- you are holding, hard against the panel's left edge, so the nth icon is
+    -- the nth keybind slot. Two separate checkboxes for one request would be a
+    -- version where this one looks broken on its own.
     y = NewToggle(body, y, "Anchor under Mythic+ panel",
-        "follows that panel; you cannot drag it",
+        { "follows that panel; you cannot drag it",
+          "packs held boons into slots 1-5, bottom left" },
         function() return BoonsSaved().anchorMplus end,
         function(value)
             BoonsSaved().anchorMplus = value and true or false
@@ -1637,6 +1677,25 @@ local function Build()
         function(value)
             BoonsSaved().slotOrder = value and true or false
             BoonsRefresh("boon slot order toggled")
+        end)
+
+    -- Shift-click reporting.
+    --
+    -- The sublabel says both halves because the setting changes what a click
+    -- does, and a player who ticks this and then wonders why shift-clicking a
+    -- boon stopped using it has been told something the box did not say.
+    --
+    -- Routed through BoonsRefresh rather than saved and forgotten, unlike the
+    -- tooltip toggle below it: this one is a secure attribute on fifteen
+    -- buttons, so it does not take effect until the next secure pass, and the
+    -- next secure pass has to be now rather than whenever a bag changes.
+    y = NewToggle(body, y, "Shift-click reports remaining duration",
+        { "says how long your boon has left, in party chat",
+          "that click no longer uses the boon" },
+        function() return BoonsSaved().reportDuration end,
+        function(value)
+            BoonsSaved().reportDuration = value and true or false
+            BoonsRefresh("boon shift-click reporting toggled")
         end)
 
     -- The in-combat tooltip is a one-line summary heroPanel writes, because
@@ -1656,10 +1715,20 @@ local function Build()
     -- Where the keys are. Not a control, and worth a row anyway: the bindings
     -- live in the client's own Key Bindings window rather than in here, and
     -- nothing else in this group would say so.
+    --
+    -- Two lines, because there are now two kinds of key and the difference
+    -- between them is the thing worth saying: the slot keys are direct access
+    -- and the cycle key is sequential. "Cycle boons" is the one most people
+    -- want and it is named second only because the slots came first.
     do
         local note = NewText(body, -2, TEXT_MUTED,
             "Keys: Key Bindings \194\183 heroPanel \194\183 Boon slot 1-5")
         note:SetPoint("TOPLEFT", body, "TOPLEFT", PAD_X, -y)
+        y = y + 16
+
+        local cycle = NewText(body, -2, TEXT_MUTED,
+            "or \194\183 Cycle boons \194\183 one key, next boon each press")
+        cycle:SetPoint("TOPLEFT", body, "TOPLEFT", PAD_X, -y)
         y = y + 22
     end
 
@@ -2117,17 +2186,12 @@ local function BuildInterfaceCategory()
         options.Show()
     end)
 
-    -- Selecting the category opens the real window as well. Deferred by a frame
-    -- because hiding the interface options from inside its own OnShow is asking
-    -- the client to close a panel it is in the middle of opening.
-    category:SetScript("OnShow", function()
-        ns.After(0, function()
-            if type(_G.InterfaceOptionsFrame) == "table" and _G.InterfaceOptionsFrame:IsShown() then
-                _G.InterfaceOptionsFrame:Hide()
-            end
-            options.Show()
-        end)
-    end)
+    -- No OnShow handler here on purpose. Opening the real window from OnShow
+    -- looks harmless but traps the player: the interface frame reopens on
+    -- whichever category was selected last, so once heroPanel has been visited
+    -- every later Esc -> Interface immediately closes Blizzard's frame and
+    -- throws up /hp instead, and no other category can be reached again. The
+    -- button above is the only way in, which is what "signpost" means.
 
     _G.InterfaceOptions_AddCategory(category)
     options.category = category

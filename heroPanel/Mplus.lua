@@ -341,6 +341,43 @@ local lastRead                  -- what the last refresh resolved, for /hp mplus
 -- the only thing that writes it; StyleStatic clears it.
 local tierSize
 
+--------------------------------------------------------------------------------
+-- Placement preview
+--
+-- The panel only exists during a keystone run, which is the worst possible time
+-- to be positioning it: the tracker is hidden the rest of the week, so the
+-- first chance anybody gets to see where they put it is thirty seconds into a
+-- timed key, with a pull incoming.
+--
+-- Preview draws the panel over sample data so it can be placed and styled from
+-- a capital city.
+--
+-- It is not a second panel. It is this panel, drawn by the same layout code
+-- against a made-up read - so what is on screen in preview is what will be on
+-- screen in a key, and the two cannot drift apart. What it leaves out is the
+-- half of the panel that is not heroPanel's to draw: the required boss row and
+-- the extra-bosses heading are Ascension's own font strings, restyled where the
+-- tracker put them, and with the tracker hidden there is nothing there to
+-- restyle. Preview draws its boss list out of heroPanel's own sub-row pool
+-- instead, which is the same art the extra bosses always use.
+--
+-- Session only, deliberately. A preview that survived a reload would be a panel
+-- showing a dungeon you are not in, with no obvious cause, and the first
+-- thought would be that the addon is broken rather than that a switch is on. It
+-- also stands down the moment a real key starts - see Redraw.
+--------------------------------------------------------------------------------
+
+local preview = false
+
+-- Forward declarations, for the same reason Refresh has one: Redraw is the
+-- thing that decides a preview is wanted and it is defined a long way above the
+-- code that draws one. Without these, the names inside Redraw would resolve to
+-- globals rather than to these locals, and the preview would silently be nil.
+local DrawPreview
+local SyncPreviewMouse
+
+function mplus.IsPreview() return preview end
+
 function mplus.GetPlate() return plate end
 
 -- Whether a keystone run is under way, as of the last refresh.
@@ -964,6 +1001,16 @@ local function BuildPlate(tracker)
     plate:Hide()
     plate:SetWidth(PANEL_MIN_WIDTH)
     plate:SetHeight(HEADER_HEIGHT)
+
+    -- Draggable, but not mouse-enabled. The plate only ever takes the mouse
+    -- while the placement preview is up - see SyncPreviewMouse - because the
+    -- panel sits one strata below the tracker precisely so it can never take a
+    -- click the tracker wanted, and a permanently mouse-enabled plate would
+    -- throw that away. The movable flag and the drag registration are harmless
+    -- without the mouse and are set once here rather than toggled.
+    plate:SetMovable(true)
+    plate:SetClampedToScreen(true)
+    plate:RegisterForDrag("LeftButton")
 
     ns.BuildPlateChrome(plate)
 
@@ -1925,11 +1972,26 @@ end
 -- event.
 --------------------------------------------------------------------------------
 
-local function Redraw()
+local function DoRedraw()
     if not mplus.enabled or not plate then return end
 
     local tracker = ns.GetTrackerFrame("mplus")
     if not tracker then return end
+
+    if preview then
+        -- A real run wins, always. Standing the preview down here rather than
+        -- off an event means it cannot be missed: whatever put a key on screen,
+        -- the next draw is the one that notices, and the panel goes straight to
+        -- showing the run rather than a made-up one.
+        if tracker:IsVisible() and CallApi("IsKeystoneActive") then
+            preview = false
+            SyncPreviewMouse()
+            ns.Print("Mythic+ placement preview off - a keystone is running.")
+        else
+            DrawPreview(tracker)
+            return
+        end
+    end
 
     if not tracker:IsVisible() then
         plate:Hide()
@@ -2116,6 +2178,260 @@ local function Redraw()
     ns.Debug("mplus panel refreshed (%d boss row(s)).", #data.bosses)
 end
 
+-- Announcing a change of preview state, once the panel is actually in it.
+--
+-- The boon bar anchors under this panel and what it draws depends on which of
+-- the two states the panel is in, so it has to be told. Told from here rather
+-- than from SetPreview because by this point the plate has been drawn or
+-- hidden: a listener that measures the panel gets the state it is in now, not
+-- the one it was in before this frame's draw. Announcing it from SetPreview
+-- instead meant the bar asked whether the panel was up a frame before it was,
+-- got "no", and laid itself out as an unanchored bar.
+--
+-- It also covers the one transition SetPreview never sees: DoRedraw stands the
+-- preview down by itself when a real key starts.
+local previewNotified = false
+
+local function Redraw()
+    DoRedraw()
+
+    if preview ~= previewNotified then
+        previewNotified = preview
+        ns:Fire("HEROPANEL_MPLUS_PREVIEW", preview)
+    end
+end
+
+--------------------------------------------------------------------------------
+-- The preview draw
+--
+-- Sample numbers chosen to exercise the parts of the panel that are hardest to
+-- judge empty: a dungeon name long enough that the short-name table has
+-- something to do, a clock inside a chest tier so the threshold pair and the
+-- tier colour are both drawn, a forces percentage part-way along its bar, and
+-- enough boss rows to show the list and its scroll wheel.
+--------------------------------------------------------------------------------
+
+local PREVIEW_LIST_GAP = 8   -- forces bar to the first sample boss row
+
+local function PreviewData()
+    -- Written out on every call rather than kept as a constant, because
+    -- LayoutTimer and LayoutForces are free to read whatever they like off this
+    -- and a shared table would carry a previous draw's leftovers into the next.
+    return {
+        dungeon   = "Dire Maul - North",
+        level     = 20,
+
+        -- 28:53 of 40:00 is 72% remaining, which is inside the +3 threshold on
+        -- the default percentages - so the tier readout and its gold have
+        -- something to draw rather than sitting blank.
+        timeLeft  = 1733,
+        totalTime = 2400,
+
+        trashDead     = 49,
+        trashRequired = 100,
+
+        -- No affixes. They are real icons off the client's own affix table and
+        -- inventing IDs would draw either the wrong art or the question mark
+        -- fallback, neither of which helps anybody judge a layout. The affix
+        -- row is the one part of the panel that has to be seen in a key.
+        affixes = nil,
+
+        bosses = {
+            { text = "Guard Mol'dar (02:58)", done = true  },
+            { text = "Stomper Kreeg",         done = false },
+            { text = "Guard Fengus",          done = false },
+            { text = "Guard Slip'kik",        done = false },
+            { text = "Captain Kromcrush",     done = false },
+            { text = "Cho'Rush the Observer", done = false },
+        },
+    }
+end
+
+function DrawPreview(tracker)
+    local data = PreviewData()
+
+    -- Nothing of Ascension's is touched, read, faded or restored in here. Only
+    -- heroPanel's own boss-row decorations and chevron are cleared, because the
+    -- preview draws neither and they would otherwise be left over the rows of
+    -- whatever the last real draw saw.
+    --
+    -- Calling RestoreChrome here was the first version and it was wrong. The
+    -- enemy-forces row is hidden rather than faded - see HideArt - and its Show
+    -- is hooked to re-hide it for as long as the skin is on. So restoring it
+    -- put the row back for one frame, the hook took it away again, and the
+    -- record of "this was shown" was wiped in between. The next real draw then
+    -- recorded the row as having been hidden all along, and Disable could never
+    -- give it back. Leaving Ascension's chrome exactly as the last real draw
+    -- left it costs nothing: the panel is still drawn over it either way.
+    HideRowsFrom(1)
+    ui.expandCaret:Hide()
+
+    local width = LayoutPlate(tracker, nil)
+    plate:Show()
+    LayoutHeader()
+
+    ui.dungeon:SetText(mplus.ShortName(data.dungeon) or "Mythic+")
+    ui.keystone:SetText("(" .. data.level .. ")")
+    ui.keystone:Show()
+
+    -- Design values throughout. The squeeze exists to clear Ascension's first
+    -- boss row, and in preview there is no such row - so squeezing here would
+    -- show a tighter panel than a real key ever draws.
+    SqueezeGaps(0)
+    LayoutAffixes(data.affixes)
+    LayoutPlate(tracker, nil)
+
+    local width2 = width
+    local barBottom = LayoutTimer(data, width2)
+
+    -- The list goes under the forces block, which is the one thing between it
+    -- and the threshold bar. Measured off TimerBarBottom and the same constants
+    -- LayoutPlate sizes an empty panel from, so preview and the real thing
+    -- agree about where that block ends.
+    local listTop = TimerBarBottom()
+        - gap.forces - FORCES_LABEL_H - FORCES_BAR_TOP - FORCES_BAR_H
+        - PREVIEW_LIST_GAP
+
+    local listBottom = LayoutSubList(data.bosses, listTop)
+
+    local plateTop = plate:GetTop()
+    local contentBottom = plateTop and (plateTop + listBottom) or nil
+
+    LayoutForces(data, width2, barBottom, nil)
+    LayoutPlate(tracker, contentBottom)
+
+    ui.rule:ClearAllPoints()
+    ui.rule:SetPoint("BOTTOMLEFT", plate, "BOTTOMLEFT", HEADER_PAD_X, PAD_BOTTOM + FOOTER_HEIGHT)
+    ui.rule:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", -HEADER_PAD_X, PAD_BOTTOM + FOOTER_HEIGHT)
+    ui.rule:SetHeight(1)
+    ui.rule:Show()
+
+    ui.mark:ClearAllPoints()
+    ui.mark:SetPoint("BOTTOMRIGHT", plate, "BOTTOMRIGHT", -HEADER_PAD_X, PAD_BOTTOM)
+    ui.mark:Show()
+end
+
+--------------------------------------------------------------------------------
+-- Moving the preview
+--
+-- The panel is normally moved by dragging the tracker: Ascension's frame is the
+-- mover, it is unprotected, and Move.lua owns the whole business of saving
+-- where it ended up. None of that works here, because the tracker is hidden -
+-- a frame nobody can see is a frame nobody can grab.
+--
+-- So in preview the plate takes the mouse instead, and hands the result back to
+-- Move.lua rather than working out a position itself. On drop it anchors the
+-- *tracker* to the plate and calls ns.SavePosition("mplus"), which reads the
+-- tracker's offsets and re-anchors it to UIParent exactly as an ordinary drag
+-- would. Nothing here computes a coordinate, which matters: the plate carries
+-- the tracker's scale, and hand-rolled arithmetic between two scaled frames is
+-- how a panel ends up half a screen away at 0.8 scale.
+--
+-- The plate takes the mouse *only* while previewing and unlocked. It must not
+-- the rest of the time: the whole panel is built one strata below the tracker
+-- precisely so it can never take a click the tracker wanted, and a plate left
+-- mouse-enabled would undo that.
+--------------------------------------------------------------------------------
+
+function SyncPreviewMouse()
+    if not plate then return end
+
+    local wanted = preview and not ns.IsLocked()
+    plate:EnableMouse(wanted and true or false)
+
+    -- Dropped mid-drag by a lock, so the plate does not carry on following the
+    -- cursor with nothing left to stop it.
+    if not wanted and plate.previewMoving then
+        plate.previewMoving = nil
+        pcall(plate.StopMovingOrSizing, plate)
+    end
+end
+
+local function PreviewOnDragStart(self)
+    if not preview then return end
+
+    if ns.IsLocked() then
+        ns.Warn("the Mythic+ panel is locked. Click the padlock in its header, "
+            .. "or |cFFC2C6D8/hp unlock|r.")
+        return
+    end
+
+    self:StartMoving()
+    self.previewMoving = true
+end
+
+local function PreviewOnDragStop(self)
+    if not self.previewMoving then return end
+    self.previewMoving = nil
+    pcall(self.StopMovingOrSizing, self)
+
+    local tracker = ns.GetTrackerFrame("mplus")
+    if not tracker then return end
+
+    -- Pin the plate to UIParent first. StopMovingOrSizing normally leaves it
+    -- there anyway, but it has to be certain: the next line anchors the tracker
+    -- to the plate, and a plate still anchored to the tracker would make that
+    -- pair circular and the client would refuse the point.
+    local x, y = ns.GetUIOffsets(self)
+    if x then ns.ApplyUIOffsets(self, x, y) end
+
+    -- The tracker is hung off the plate for exactly two statements, and then
+    -- put straight back onto UIParent.
+    --
+    -- The anchor is how the PAD_LEFT offset gets resolved without any
+    -- arithmetic: the plate is drawn that much wider than the tracker on the
+    -- left - see LayoutPlate - and letting the client apply it as an anchor
+    -- offset means it lands in the tracker's own scale, which hand-rolled maths
+    -- between two scaled frames reliably gets wrong.
+    --
+    -- Putting it back immediately is not tidiness. Move.lua decides who owns a
+    -- tracker partly by what it is anchored to, and a tracker anchored to a
+    -- frame that is not UIParent reads as another addon having taken it - so a
+    -- tracker left hanging off heroPanel's own plate makes heroPanel conclude
+    -- it has lost the argument with itself and switch to holder mode. Nothing
+    -- can observe the intermediate state, because nothing yields between here
+    -- and the re-anchor.
+    tracker:ClearAllPoints()
+    tracker:SetPoint("TOPLEFT", self, "TOPLEFT", PAD_LEFT, 0)
+
+    local tx, ty = ns.GetUIOffsets(tracker)
+    if tx then ns.ApplyUIOffsets(tracker, tx, ty) end
+
+    ns.SavePosition("mplus")
+    Refresh("preview moved")
+end
+
+--------------------------------------------------------------------------------
+-- The switch
+--------------------------------------------------------------------------------
+
+function mplus.SetPreview(on)
+    on = on and true or false
+    if on == preview then return preview end
+
+    if on and not mplus.enabled then
+        ns.Warn("the Mythic+ skin is off, so there is no panel to place. "
+            .. "Turn it on first.")
+        return false
+    end
+
+    preview = on
+    SyncPreviewMouse()
+
+    if not preview and plate then plate:Hide() end
+    Refresh(on and "preview on" or "preview off")
+    -- Nothing is announced here on purpose; Redraw does it once the panel is
+    -- actually drawn. See the note on previewNotified.
+
+    ns.Print("Mythic+ placement preview %s.%s",
+        on and "|cFF79C68Don|r" or "|cFF8B8FA3off|r",
+        on and (ns.IsLocked()
+                    and " Unlock the trackers to drag it."
+                    or  " Drag the panel to place it.")
+            or "")
+    return preview
+end
+
 function Refresh(reason)
     if queued then return end
     queued = true
@@ -2225,6 +2541,19 @@ local function InstallHooks(tracker)
     end)
     ui.lock:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
+    -- The placement preview's drag. Inert until SyncPreviewMouse turns the
+    -- plate's mouse on, which only happens while previewing and unlocked.
+    plate:SetScript("OnDragStart", PreviewOnDragStart)
+    plate:SetScript("OnDragStop", PreviewOnDragStop)
+
+    -- The preview follows the same padlock as everything else, so locking mid-
+    -- placement takes the drag away rather than leaving a panel that moves
+    -- while the lock says it should not.
+    ns:On("HEROPANEL_LOCK_CHANGED", function()
+        SyncPreviewMouse()
+        if preview then Refresh("lock changed") end
+    end)
+
     ns.Debug("mplus hooks installed.")
 end
 
@@ -2257,6 +2586,11 @@ end
 function mplus.Disable()
     mplus.enabled = false
     if ticker then ticker:Stop() end
+
+    -- The preview goes with it. It is a view of this panel, and a panel that
+    -- has been switched off has no view to leave on screen.
+    preview = false
+    SyncPreviewMouse()
 
     RestoreChrome()
     HideRowsFrom(1)

@@ -98,6 +98,18 @@ quest they belong to instead of hanging off the left edge.
 level in the header, a large timer, the chest/threshold bar, the enemy forces
 meter and the boss rows.
 
+**Placing the Mythic+ panel without being in a key.** That panel only exists
+during a keystone run, so normally the first chance you get to see where you put
+it is thirty seconds into a timed pull. Turn on *Show panel for placement* in the
+Mythic+ tracker group — or type `/hp mplus preview` — and it draws itself over
+sample data anywhere in the world. Drag it where you want it and it saves exactly
+as an ordinary drag does.
+
+It turns itself off the moment a real keystone starts, and it doesn't survive a
+`/reload`, so it can't be left on by accident. The affix row is the one thing it
+can't show you: those are real icons off the client's own affix table, and
+inventing them would draw art that doesn't match what you'll get in a key.
+
 **Text you can read over anything.** Turn the panel down to nearly transparent
 and the header still reads over snow or open sky. There's an optional text
 shadow (1–3 px) if you want more.
@@ -106,7 +118,8 @@ shadow (1–3 px) if you want more.
 
 Mythic keystone dungeons have Boon Crystals. Clicking one hands everybody nearby
 a random **Mythical Boon**, which is a consumable that buffs the whole party for
-about thirty seconds. They share a cooldown, they expire after a few minutes,
+about thirty seconds. They share a cooldown, they rot out of your bags after ten
+minutes,
 and the only way to see what you are holding is to open your bags — in the
 middle of a timed run.
 
@@ -122,13 +135,26 @@ Worth knowing:
 
 * By default it only appears in a Mythic dungeon. Turn *Only in Mythic
   dungeons* off to place it.
-* **Keybinds** are five slots under **Key Bindings → heroPanel**. A slot is a
-  position on the bar; turn on *Line boons up in slots 1-5* and the boons you
-  are actually carrying move to the front, so a bound key always fires one. The
-  key you bound is drawn in the corner of the icon.
+* **One key for everything** — bind *Cycle boons* under **Key Bindings →
+  heroPanel** and each press fires the next boon you are holding, left to right
+  along the bar and round again. A small accent bar under an icon shows which
+  one is next. This is the binding most people want.
+* **Or five direct keys** — *Boon slot 1-5*, in the same place, still there
+  alongside it. A slot is a position on the bar; turn on *Line boons up in slots
+  1-5* and the boons you are actually carrying move to the front, so a bound key
+  always fires one. The key you bound is drawn in the corner of the icon.
 * It can hang under the Mythic+ panel instead of sitting where you drag it —
-  *Anchor under Mythic+ panel*.
-* Two boons only help melee. *Mark melee-only boons* puts a gold border on them.
+  *Anchor under Mythic+ panel*. Anchored, it pins to the panel's bottom-left
+  corner and draws only the boons you are holding, packed left, so the first
+  icon is always in the same place and the nth icon is the nth slot.
+* **Expiry glow** — boons rot in your bags, and that is the number that decides
+  whether to use one now or hold it. Set *Expiry glow* to 30s, 1 min or 2 min
+  and an icon that is about to go grows an orbit of sparks, faster and brighter
+  the closer it gets. The time is read off the item's own `Duration:` line.
+* **Shift-click to ask, not to use** — turn on *Shift-click reports remaining
+  duration* and holding shift while you left-click a boon puts how long that
+  boon has left in party chat instead of using it. Your keybinds are unaffected,
+  including shift-modified ones.
 * Hovering a boon out of combat shows its real item tooltip, with the expiry.
   In combat you get a one-line summary instead, so you are not reading a wall of
   text mid-pull.
@@ -138,8 +164,21 @@ bag slot while you are in combat. So a boon looted mid-fight lights up on the
 bar straight away, but does not become clickable until the fight ends. Nothing
 is lost — it is there waiting.
 
-`/hp boons` on its own reports what it found: which boons are in your bags,
-which key fires which slot, and whether the bar thinks it is in a key.
+The cycle key is the exception. It is bound to a hidden button that chooses its
+boon inside the game's own restricted environment, which is the one place an
+addon may change what a button will use during a fight — so it keeps advancing
+through the boons you were holding when the pull started, while every other key
+on the bar is frozen. `/hp boons` says which of the two paths your client got.
+
+`/hp boons` on its own reports what it found: which boons are in your bags and
+how long each has left, which key fires which slot, what the cycle key would
+fire next, and whether the bar thinks it is in a key.
+
+`/hp boons expiry` is the one to run if the glow fires at the wrong time. There
+is no API for an item's remaining lifetime, so heroPanel reads the `Duration:`
+line off the item's tooltip — coarse above a minute, exact below one — and runs
+a smooth clock between readings, correcting it as the reading ticks over. This
+prints the tooltip lines and what it made of each.
 
 ## Party key checks
 
@@ -221,7 +260,8 @@ Everything below is also in the options window, except where noted.
 | `/hp font <8-30>` | Set every text size at once |
 | `/hp fontface <name>` | Pick a font by name |
 | `/hp keys [on\|off]` | Answer `?keys` in group chat — no argument posts your key now |
-| `/hp boons [on\|off\|reset]` | The Mythic+ boon bar — no argument reports what it found |
+| `/hp boons [on\|off\|reset\|expiry]` | The Mythic+ boon bar — no argument reports what it found; `expiry` dumps the tooltip lines the glow reads |
+| `/hp mplus [preview]` | Report what the Mythic+ panel resolved — `preview` draws it outside a key so you can place it |
 | `/hp mode <auto\|own\|holder\|yield>` | Who positions the trackers |
 | `/hp skin [on\|off]` | Style the trackers, or hand them back to the game |
 | `/hp status` | Report what heroPanel found and hooked |
