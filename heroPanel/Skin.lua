@@ -267,13 +267,50 @@ end
 -- The original alpha is recorded once; the fade itself is re-applied every
 -- time. A region heroPanel has already seen can be shown again by the tracker's
 -- next update, and an early return on "we know this one" would leave it there.
+--
+-- blizz.fadedNow is what this pass decided, and it is what makes the fade
+-- reversible - see UnfadeStrays.
 local function FadeRegion(region)
     if not region or type(region.SetAlpha) ~= "function" then return end
     if blizz.alpha[region] == nil then
         local ok, alpha = pcall(region.GetAlpha, region)
         blizz.alpha[region] = (ok and alpha) or 1
     end
+    if blizz.fadedNow then blizz.fadedNow[region] = true end
     pcall(region.SetAlpha, region, 0)
+end
+
+-- Giving back anything this pass did not fade.
+--
+-- The fade used to be one-way: a region heroPanel faded stayed faded for the
+-- session, because every pass only ever set alphas to zero and the record was
+-- cleared only when the skin was switched off. That is fine for as long as the
+-- band is measured correctly every single time, and it is not - the tracker's
+-- own top edge and the lines under it disagree for a frame whenever the game
+-- repositions the frame while its contents are being rebuilt, which is what a
+-- reload is. One pass in that window put the band over the quest lines, faded
+-- them, and nothing afterwards could put them back: the tracker stayed blank
+-- with its POI arrows still on it, and only a skin toggle recovered it.
+--
+-- So a pass now owns the whole set. What it faded stays faded, and what it did
+-- not fade is given back and forgotten, which makes a bad frame cost one frame
+-- rather than the session.
+--
+-- Only regions that are currently shown are handed back. A hidden one is
+-- invisible either way, and leaving it recorded keeps the tracker from flashing
+-- its own chrome in the gap between the client showing a region again and the
+-- next pass deciding it is header after all.
+local function UnfadeStrays()
+    if not blizz.fadedNow then return end
+    for region, alpha in pairs(blizz.alpha) do
+        if not blizz.fadedNow[region] then
+            local ok, shown = pcall(region.IsShown, region)
+            if ok and shown then
+                pcall(region.SetAlpha, region, alpha)
+                blizz.alpha[region] = nil
+            end
+        end
+    end
 end
 
 -- Bottom edge of the tracker's header band, in screen coordinates.
@@ -358,6 +395,8 @@ local function FadeHeaderBand(watch)
     blizz.headerCount = 0
     blizz.headerFrames = blizz.headerFrames or {}
     wipe(blizz.headerFrames)
+    blizz.fadedNow = blizz.fadedNow or {}
+    wipe(blizz.fadedNow)
 
     ns.WalkFrameTree(watch, function(region, info)
         if info.kind ~= "region" then return end
@@ -392,6 +431,9 @@ local function FadeHeaderBand(watch)
     -- only while the button is shown and measurable. This is the belt-and-braces
     -- pass for the one widget heroPanel draws over itself.
     EachButtonTexture(blizz.collapse, FadeRegion)
+
+    -- Last, so it sees everything this pass claimed.
+    UnfadeStrays()
 end
 
 local function RestoreBlizzardChrome()
@@ -402,6 +444,7 @@ local function RestoreBlizzardChrome()
     blizz.bandCount   = 0
     blizz.headerCount = 0
     if blizz.headerFrames then wipe(blizz.headerFrames) end
+    if blizz.fadedNow then wipe(blizz.fadedNow) end
 end
 
 --------------------------------------------------------------------------------
