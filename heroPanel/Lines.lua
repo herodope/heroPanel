@@ -62,7 +62,7 @@ local originals = {}   -- FontString -> { path, size, flags, r, g, b, a }
 local decorated = {}   -- FontString -> { raw, shown }
 local dashAlpha = {}   -- FontString -> original alpha
 local moved     = {}   -- object -> { points, width, height } for art tucked back in
-local placed    = {}   -- POI button -> what the last placement decided, for /hp dump
+local placed    = {}   -- title marker -> what the last placement decided, for /hp dump
 
 local blocks    = {}   -- quest blocks built by the last Apply
 local wrappers  = {}   -- pool of hover frames
@@ -460,16 +460,60 @@ end
 
 local POI_GAP = 5   -- between the end of the title and the arrow
 
+local function ObjectName(object)
+    if not object or type(object.GetName) ~= "function" then return nil end
+    local ok, name = pcall(object.GetName, object)
+    if not ok or type(name) ~= "string" then return nil end
+    return string.lower(name)
+end
+
 -- Named rather than measured. The name is the only thing that separates the
 -- arrow from the question mark: they are the same size, on the same row, and
 -- both hang off the left. A client that names it something else keeps the old
 -- behaviour - the arrow tucks into the left margin as before - rather than
 -- having heroPanel guess from geometry and get the two the wrong way round.
 local function IsQuestPoi(object)
-    if not object or type(object.GetName) ~= "function" then return false end
-    local ok, name = pcall(object.GetName, object)
-    if not ok or type(name) ~= "string" then return false end
-    return string.find(string.lower(name), "poi", 1, true) == 1
+    local name = ObjectName(object)
+    return name ~= nil and string.find(name, "poi", 1, true) == 1
+end
+
+-- The super-track indicator - WatchFrameLinkButton<n>SuperTrackIndicator on
+-- this client - wants the same placement as the POI arrow, and fails in a way
+-- the tuck cannot see.
+--
+-- The client anchors it just past the end of the quest title, measured in the
+-- font the client laid that title out in. heroPanel sets the player's font on
+-- those titles a few lines above this walk, so a title redrawn wider than the
+-- client measured it runs out from under its own marker: the glyph ends up
+-- sitting on top of the quest name instead of after it. That is what the
+-- stray "2", "?" and diamond over the quest names are - the client's own art,
+-- still where the client put it, with a longer name now drawn underneath.
+--
+-- The containment test says nothing about this. The marker is well inside the
+-- panel, so TuckVerdict returns "already inside" and leaves it alone, which is
+-- correct as far as it goes and no help at all. Only re-anchoring it from the
+-- string as drawn puts it back after the name.
+--
+-- It only exists while the client has an objective to point at, which is why
+-- this shows up as an effect of the "Show Quest Objectives" map option: with
+-- that off the indicator is never drawn and there is nothing to misplace.
+--
+-- Matched on the whole suffix rather than a substring so the indicator's own
+-- art - ...SuperTrackIndicatorTrackedIcon and ...InRangeIcon - is not taken
+-- for a second marker. Those are anchored to the indicator and come along.
+local SUPER_TRACK_SUFFIX = "supertrackindicator"
+
+local function IsSuperTrackIndicator(object)
+    local name = ObjectName(object)
+    return name ~= nil
+       and #name >= #SUPER_TRACK_SUFFIX
+       and string.sub(name, -#SUPER_TRACK_SUFFIX) == SUPER_TRACK_SUFFIX
+end
+
+-- Anything the client anchors to the end of a quest title, and so anything
+-- heroPanel has to re-anchor after it has re-fonted that title.
+local function IsTitleMarker(object)
+    return IsQuestPoi(object) or IsSuperTrackIndicator(object)
 end
 
 -- A quest title that is taller than the font it is set in has wrapped onto a
@@ -530,27 +574,77 @@ local function TitleOnRow(top, bottom)
             if labelTop and top > labelBottom and bottom < labelTop then
                 local height = (labelTop - labelBottom) / labelScale
                 return TextRight(label, labelLeft, labelRight, height, labelScale),
-                       labelTop, labelBottom
+                       labelTop, labelBottom, label
             end
         end
     end
     return nil
 end
 
+-- How far along each title's row this pass has already placed something.
+--
+-- A client can hang more than one marker off the same quest name - a POI
+-- button and a super-track indicator both anchor to the end of it - and
+-- placing each one from the text alone lands them in the same spot, one
+-- hidden under the other. Wiped at the top of every walk, because it is a
+-- record of this pass and nothing else.
+local rowEnd = {}   -- title FontString -> right edge of the last marker placed
+
+-- Where a row's clamped markers start.
+--
+-- The clamp keeps a marker inside the panel when the quest name is long enough
+-- to push it out. What it cannot do is make room that is not there, and on a
+-- row carrying two markers it put both of them against the same inner edge -
+-- so a long name traded one bug for another and drew the arrow on top of the
+-- indicator. Once the row is pinned, the next marker is placed to the *left* of
+-- the last rather than on top of it, and the row fills back inward.
+local rowClamp = {}   -- title FontString -> left edge to build back from
+
 local function PlaceBesideTitle(object, plate)
     local left, right, top, bottom, scale = ScreenRect(object)
     local panelLeft, panelRight, panelTop, _, panelScale = ScreenRect(plate)
     if not (left and panelLeft) then return "unmeasured" end
 
+    -- A rect that measures backwards is not a reason to give up on the object.
+    -- It is the reason to re-anchor it.
+    --
+    -- The client re-anchors its own POI buttons on a tracker update, and it does
+    -- that with SetPoint rather than ClearAllPoints first - so a button carries
+    -- heroPanel's single TOPLEFT *and* the client's TOPRIGHT at once, the two
+    -- cross, and it reports a right edge to the left of its own left edge.
+    -- `poiWatchFrameLines3_1` came back as 1234..1105 in the game.
+    --
+    -- Bailing out on that measurement was worse than doing nothing, because it
+    -- was not a pass that skipped the button - it was every pass that skipped
+    -- it. Nothing else re-anchors these, so a button that crossed its anchors
+    -- once stayed crossed and kept its turn-in question mark sitting on top of
+    -- the quest name for the rest of the session. The guard meant to skip an
+    -- object that could not be measured instead locked out the one object that
+    -- most needed fixing.
+    --
+    -- The declared size is still good in that state, and one anchor replacing
+    -- two is exactly the repair, so fall back to it and go on.
     local width  = (right - left) / scale
     local height = (top - bottom) / scale
+    if width  <= 0 then width  = (object.GetWidth  and object:GetWidth())  or 0 end
+    if height <= 0 then height = (object.GetHeight and object:GetHeight()) or 0 end
     if width <= 0 or height <= 0 then return "empty" end
     if width > ICON_MAX or height > ICON_MAX then
         return string.format("too big %.0fx%.0f", width, height)
     end
 
-    local titleRight, labelTop, labelBottom = TitleOnRow(top, bottom)
+    -- The row is read off the vertical span, so that has to be sane too. A
+    -- crossed anchor can invert it the same way, and then the object belongs to
+    -- no row and the placement gives up one step later than it used to.
+    if bottom >= top then bottom = top - height * scale end
+
+    local titleRight, labelTop, labelBottom, label = TitleOnRow(top, bottom)
     if not titleRight then return "no title on this row" end
+
+    -- Past whatever else is already on this row, if that is further along than
+    -- the name itself ends.
+    local taken = rowEnd[label]
+    if taken and taken > titleRight then titleRight = taken end
 
     if not SaveGeometry(object) then return "no anchor to restore" end
 
@@ -564,11 +658,26 @@ local function PlaceBesideTitle(object, plate)
     -- panel, which is the problem this is meant to fix rather than move.
     local targetLeft = titleRight + POI_GAP * panelScale
     local maxLeft    = panelRight - ICON_MARGIN * panelScale - width * scale
-    if targetLeft > maxLeft then targetLeft = maxLeft end
+    local clamped    = targetLeft > maxLeft
+
+    if clamped then
+        -- Pinned. Build back inward from wherever this row's last clamped
+        -- marker started, so a second marker lands beside the first instead of
+        -- under it, and never past the panel's own left margin.
+        local edge = rowClamp[label] or (panelRight - ICON_MARGIN * panelScale)
+        targetLeft = edge - width * scale
+
+        local floor = panelLeft + ICON_MARGIN * panelScale
+        if targetLeft < floor then targetLeft = floor end
+
+        rowClamp[label] = targetLeft - POI_GAP * panelScale
+    end
 
     -- Centred on the title rather than left at its own height, so it lines up
     -- with the text it is marking whatever the tracker did with it.
     local targetTop = (labelTop + labelBottom) / 2 + (height * scale) / 2
+
+    rowEnd[label] = targetLeft + width * scale
 
     object:ClearAllPoints()
     object:SetPoint("TOPLEFT", plate, "TOPLEFT",
@@ -605,9 +714,12 @@ local function TuckStrayArt(watch)
     -- the skin refreshes when combat ends, so it catches up on its own.
     if InCombatLockdown() then return end
 
+    wipe(rowEnd)
+    wipe(rowClamp)
+
     ns.WalkFrameTree(watch, function(object, info)
         if info.objectType == "FontString" then return end
-        if IsQuestPoi(object) then
+        if IsTitleMarker(object) then
             placed[object] = PlaceBesideTitle(object, plate)
             -- Do not descend: its own art is anchored to it and comes along.
             return false
@@ -617,6 +729,20 @@ local function TuckStrayArt(watch)
 end
 
 -- What the tuck walk saw, and what it decided about each thing it saw.
+--
+-- Collected first and printed after, rather than printed as the walk goes.
+-- Printing inline spends the budget in walk order, and walk order is the worst
+-- possible order to spend it in: the tracker's first few lines each carry four
+-- named-but-hidden textures - Icon, ImportantIcon, Border, Important - so a
+-- tracker with seven quests on it burnt twenty of twenty-six lines on hidden
+-- art belonging to line 2 and never reached the marker on line 6 at all. The
+-- one object whose verdict was being asked for was the one object the dump
+-- could not show.
+--
+-- So the budget goes to what was asked for. Title markers and anything
+-- heroPanel has moved are always printed, however many there are; everything
+-- else fills what is left, and what did not fit is counted rather than dropped
+-- silently.
 local TUCK_DUMP_LIMIT = 26
 
 function lines.DumpTuck()
@@ -624,50 +750,96 @@ function lines.DumpTuck()
     local plate = ns.Skin.GetPlate()
     if not (watch and plate) then return end
 
-    ns.Print("  tuck walk (depth %.0f, panel %.0f..%.0f):",
-        TUCK_DEPTH, plate:GetLeft() or 0, plate:GetRight() or 0)
+    -- The panel in screen pixels, because that is what every verdict this walk
+    -- produces is measured in. Printing the panel in UI units beside a verdict
+    -- quoting screen pixels put two different coordinate spaces on adjacent
+    -- lines with nothing to say so, which is the confusion this file has
+    -- already been bitten by once.
+    local panelLeft, panelRight = ScreenRect(plate)
 
-    local count, listed = 0, 0
+    ns.Print("  tuck walk (depth %.0f, panel %.0f..%.0f, screen px):",
+        TUCK_DEPTH, panelLeft or 0, panelRight or 0)
+
+    local count, always, rest, undrawn = 0, {}, {}, 0
+
     ns.WalkFrameTree(watch, function(object, info)
         if info.objectType == "FontString" then return end
         count = count + 1
 
-        -- A POI button is not tucked and its tuck verdict would be a lie - it
-        -- reads "already inside" of an arrow that was placed there deliberately.
+        -- A title marker is not tucked and its tuck verdict would be a lie - it
+        -- reads "already inside" of art that was placed there deliberately.
         -- What the placement itself decided is reported instead.
-        local verdict = IsQuestPoi(object)
-            and (placed[object] or "POI, not placed this pass")
-            or TuckVerdict(object, plate)
+        -- A marker's own art shares its name, so the name test calls it a
+        -- marker too - and it reported six lines of "title marker, not placed
+        -- this pass" about `poiWatchFrameLines3_1IconNumber` and friends, which
+        -- is true, meaningless, and was crowding the listing. The walk stops at
+        -- the marker itself; anything under one is carried, not placed.
+        local carried = IsTitleMarker(info.parent)
+        local marker  = not carried and IsTitleMarker(object)
+
+        local verdict
+        if carried then
+            verdict = "art of " .. tostring((info.parent.GetName and info.parent:GetName())
+                or "a marker") .. ", carried"
+        elseif marker then
+            verdict = placed[object] or "|cFFFFAA00title marker, not placed this pass|r"
+        else
+            verdict = TuckVerdict(object, plate)
+        end
         local name = (object.GetName and object:GetName()) or nil
 
-        -- Anything named, and anything heroPanel has moved, is always listed.
-        -- Filtering on the verdict alone suppressed exactly the object whose
-        -- verdict was wanted: a named frame that came back "already inside" or
-        -- "hidden" is the interesting case, because it is the one that explains
-        -- why nothing happened. Only unnamed clutter is dropped.
-        if moved[object] and not IsQuestPoi(object) then
+        local wanted = marker or moved[object] ~= nil
+        if moved[object] and not marker then
             verdict = "|cFF79C68Dtucked|r, now " .. verdict
         elseif moved[object] then
             verdict = "|cFF79C68Dplaced|r, " .. verdict
-        elseif not name and (verdict == "already inside" or verdict == "not drawn") then
+
+        -- Art that draws nothing is counted, not listed, however well named it
+        -- is. The old rule kept every named object on the grounds that a named
+        -- frame reading "already inside" is the interesting case - which is
+        -- true, and is about "already inside", not about "not drawn". A hidden
+        -- texture cannot be the thing sitting on top of a quest name, so it can
+        -- never be the answer to the question this dump gets asked, and the
+        -- tracker has four of them on every single line.
+        elseif verdict == "not drawn" then
+            undrawn = undrawn + 1
+            return
+        elseif not name and verdict == "already inside" then
             return
         end
-        if listed >= TUCK_DUMP_LIMIT then return end
-        listed = listed + 1
 
-        ns.Print("    d%.0f %s %s %.0fx%.0f at %.0f..%.0f: |cFFC2C6D8%s|r",
+        local left, right = ScreenRect(object)
+        local entry = string.format("    d%.0f %s %s %.0fx%.0f at %.0f..%.0f: |cFFC2C6D8%s|r",
             info.depth,
             tostring(name or "unnamed"),
             tostring(info.objectType),
             object.GetWidth and object:GetWidth() or 0,
             object.GetHeight and object:GetHeight() or 0,
-            (object.GetLeft and object:GetLeft()) or 0,
-            (object.GetRight and object:GetRight()) or 0,
+            left or 0, right or 0,
             tostring(verdict))
+
+        table.insert(wanted and always or rest, entry)
     end, { maxDepth = TUCK_DEPTH, includeRegions = true })
 
-    ns.Print("    %.0f object(s) visited, %.0f interesting, %.0f currently moved",
-        count, listed, (function() local n = 0 for _ in pairs(moved) do n = n + 1 end return n end)())
+    for i = 1, #always do ns.Print(always[i]) end
+
+    local room = TUCK_DUMP_LIMIT - #always
+    local shown = 0
+    for i = 1, #rest do
+        if shown >= room then break end
+        ns.Print(rest[i])
+        shown = shown + 1
+    end
+
+    local hidden = #rest - shown
+    if hidden > 0 then
+        ns.Print("    |cFFC2C6D8...and %.0f more, not markers and not moved|r", hidden)
+    end
+
+    ns.Print("    %.0f object(s) visited, %.0f marker(s)/moved, %.0f other listed, "
+        .. "%.0f drawing nothing, %.0f currently moved",
+        count, #always, shown, undrawn,
+        (function() local n = 0 for _ in pairs(moved) do n = n + 1 end return n end)())
 end
 
 local function FadeDash(dash)
