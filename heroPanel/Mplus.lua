@@ -696,41 +696,34 @@ end
 --------------------------------------------------------------------------------
 -- CHEST TIERS
 --
--- The fraction of the timer that has to still be on the clock at the end to
--- earn each upgrade: 60% for +3, 40% for +2. Under that the key still counts
--- if it beat the timer at all, but the design does not show +1.
+-- MYTHIC_PLUS_BONUS_LEVEL_PERCENT is the fraction of the timer that has to be
+-- *left* to earn each upgrade: { 0.55, 0.4 } on this client, so +3 needs 55%
+-- of the run still on the clock at the end and +2 needs 40%.
 --
--- Written out here rather than read from the client's own
--- MYTHIC_PLUS_BONUS_LEVEL_PERCENT, because that constant does not hold them.
--- It is { 0.55, 0.4 }: the 0.4 is the real +2 boundary, and the 0.55 matches
--- no boundary the server pays out on. Every consumer in the client is five
--- points wrong about +3 in one direction or the other:
+-- Computed here rather than read off the tracker's own TimeLeft2 / TimeLeft3
+-- strings, which are wrong: Ascension works them out from (1 - PERCENT[n]),
+-- so at a 30 minute key its "+3" field counts down to 18:00 remaining instead
+-- of 16:30, and the two fields are swapped against the notches they are
+-- coloured to match. The thresholds themselves are read from the client's own
+-- constant, so if Ascension retunes them the panel follows.
 --
---   * MythicPlusCompleteBanner and MythicPlusUtil.GetCompletionInfo award the
---     third chest at 55% left, five points early;
---   * the tracker's TimeLeft2 / TimeLeft3 strings work from (1 - PERCENT[n])
---     and cross the indices, so the field labelled "+3" counts down to 60%
---     left - right, but by accident and off the +2 constant - while the one
---     labelled "+2" counts down to 45%, five points late;
---   * PlusThreeNotch is pinned at 0.55 of the bar, under the banner's error.
---
--- heroPanel read the constant at face value and so inherited the banner's
--- version of it, holding the +3 window open five points of the timer too long -
--- 90 seconds on a 30 minute key, spent telling the party they are still on for
--- three chests after they have lost it. The 60/40 here is what the server
--- actually awards, which is also what players without the addon have been
--- reading off the one native field that happens to land on it.
---
--- Not read from the constant at all, rather than read with the +3 value
--- patched: a table that is demonstrably wrong about one of its two entries is
--- not a source to follow if Ascension retunes it.
+-- 60% for +3 was tried here and reverted. The case for it was a wiki page
+-- reading "within 60% ... three caches", which lines up with the one native
+-- field that happens to land on 0.60 - but that field only gets there through
+-- the (1 - PERCENT[n]) error above, off the +2 constant, and taking it at face
+-- value means believing four other consumers are wrong instead of one. The
+-- completion banner, MythicPlusUtil.GetCompletionInfo, the bar's colour tiers
+-- and PlusThreeNotch all read the constant straight, as this does.
 --------------------------------------------------------------------------------
 
--- +3, then +2. The order ChestTier walks them in.
-local THRESHOLDS = { 0.60, 0.40 }
+local FALLBACK_THRESHOLDS = { 0.55, 0.4 }
 
 local function Thresholds()
-    return THRESHOLDS
+    local percents = _G.MYTHIC_PLUS_BONUS_LEVEL_PERCENT
+    if type(percents) ~= "table" then return FALLBACK_THRESHOLDS end
+    local three = tonumber(percents[1]) or FALLBACK_THRESHOLDS[1]
+    local two   = tonumber(percents[2]) or FALLBACK_THRESHOLDS[2]
+    return { three, two }
 end
 
 -- The best tier still reachable, and how long is left to reach it.
@@ -2697,9 +2690,9 @@ function mplus.Dump()
     end
 
     local percents = Thresholds()
-    ns.Print("  thresholds: +3 at |cFFECCE82%.0f%%|r, +2 at |cFFC9A95F%.0f%%|r time remaining"
-        .. " |cFF8B8FA3(heroPanel's own - the client constant is wrong about +3)|r",
-        percents[1] * 100, percents[2] * 100)
+    ns.Print("  thresholds: +3 at |cFFECCE82%.0f%%|r, +2 at |cFFC9A95F%.0f%%|r time remaining%s",
+        percents[1] * 100, percents[2] * 100,
+        _G.MYTHIC_PLUS_BONUS_LEVEL_PERCENT and "" or " |cFFFFAA00(client constant missing, using defaults)|r")
 
     local data = mplus.Read()
     if not data then return end
