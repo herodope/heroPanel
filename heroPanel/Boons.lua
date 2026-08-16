@@ -102,6 +102,55 @@ ns.BOON_ORIENTATIONS = { "horizontal", "vertical" }
 local ICON_GAP  = 4    -- between two buttons in the same category
 local GROUP_GAP = 12   -- between categories, so the three groups read apart
 local BAR_PAD   = 6    -- container edge to the first button
+local ROW_GAP   = 4    -- between one row of icons and the next, when the bar wraps
+
+--------------------------------------------------------------------------------
+-- Captions
+--
+-- A word under - or over - each icon saying what the boon does. Off by default,
+-- because the bar's own claim is that you aim at a position rather than read it,
+-- and fifteen captions is a bar you read. It is on offer because that claim only
+-- holds once the positions have been learned, and the run where you are still
+-- learning them is a run where "Dmg" beats "Ascension" by a distance.
+--
+-- The words are BoonData's, not this file's: what a boon does is a property of
+-- the boon. See the note on the label column there for why they are not the
+-- names shortened.
+--------------------------------------------------------------------------------
+
+ns.BOON_LABEL_ANCHORS = { "above", "below" }
+
+-- Between the icon's edge and the caption. Two rather than nothing, because the
+-- expiry sparks orbit one pixel outside the button and a caption flush against
+-- that edge would have them running through it.
+local LABEL_GAP = 2
+
+-- The caption's own colour. The bright token rather than the accent one: the
+-- accent is what the hotkey and the cycle mark are drawn in, and a third thing
+-- in that colour on a 32px button is a button with no hierarchy left.
+local LABEL_COLOUR = "bright"
+
+--------------------------------------------------------------------------------
+-- Wrapping
+--
+-- Fifteen known boons plus four spares is a row about seven hundred pixels wide
+-- at the default icon size, which is a third of a 1920 screen laid across the
+-- middle of it. Wrapping cuts that in half.
+--
+-- Stated as "start a new row after n icons" rather than as "split into two
+-- rows", and the difference is worth knowing because the request was the second
+-- one. A fixed split into two has to answer what happens when the bar is nine
+-- icons and n is three, and every answer is a surprise: either the second row
+-- is six long against a first of three, or the setting quietly stops meaning
+-- what it says. Wrapping has no such case - it is two rows for any n at or past
+-- half the bar, which is every sensible setting, and it degrades into a tidy
+-- grid rather than into a lopsided pair for the rest.
+--
+-- The floor is 2 because a row of one is a vertical bar, which the orientation
+-- control already offers. The ceiling is the button pool: a row longer than the
+-- bar can never wrap, and a slider whose top half does nothing reads as broken.
+local ROW_MIN = 2
+ns.BOON_ROW_MIN = ROW_MIN
 
 -- Spare buttons for boons this build does not know about.
 --
@@ -114,6 +163,10 @@ local BAR_PAD   = 6    -- container edge to the first button
 -- Four, because the reserved block is five and a build that has fallen five
 -- boons behind is a build to update rather than to paper over.
 local SPARE_SLOTS = 4
+
+-- The top of the row-length slider: every button the bar can ever draw. Read off
+-- the pool rather than written down, so adding a boon to BoonData moves it.
+ns.BOON_ROW_MAX = #ns.BoonData.ORDER + SPARE_SLOTS
 
 -- How often the cooldown swipes are re-read while the bar is on screen. The
 -- swipe animates itself once set; this only has to notice a cooldown starting
@@ -270,6 +323,10 @@ local DEFAULT_CONFIG = {
     enabled        = false,
     orientation    = "horizontal",
     iconSize       = 32,
+    labels         = false,
+    labelAnchor    = "above",
+    splitRows      = false,
+    rowSize        = 8,
     mythicOnly     = true,
     hideUnowned    = false,
     hideEmpty      = false,
@@ -862,7 +919,10 @@ local ticker          -- cooldown poller
 
 -- What the last layout decided, so the combat-safe resize can follow it
 -- without re-running arithmetic that is only legal out of combat.
-local layout = { vertical = false, thickness = 0, minExtent = 0 }
+--
+-- Both axes, since the bar can wrap: a revealed boon can land on a row that was
+-- not there before, which grows the bar across as well as along.
+local layout = { vertical = false, minExtent = 0, minThickness = 0 }
 
 -- Forward declaration. RefreshVisuals has to ask whether the bar is packing to
 -- know which buttons it may reveal, and the answer lives with the layout code a
@@ -1267,8 +1327,14 @@ end
 -- The bar itself is a plain frame, so its size is not protected and this can
 -- run mid-fight - which is the point. A boon revealed by the alpha pass below
 -- would otherwise be drawn outside the bar's own rectangle.
+--
+-- This is also where Layout finishes, rather than Layout sizing the bar itself
+-- and this second-guessing it afterwards. Two pieces of code measuring the same
+-- grid two different ways is two answers that eventually disagree, and the
+-- disagreement shows up as the bar changing size on a refresh that moved
+-- nothing.
 local function SizeBarToRevealed()
-    if not (bar and layout.thickness > 0) then return end
+    if not (bar and layout.minThickness > 0) then return end
 
     -- Never in combat. The bar not changing size under the player mid-pull is
     -- a rule this module is shaped by, and it outranks tidiness: a boon
@@ -1278,16 +1344,25 @@ local function SizeBarToRevealed()
     -- layout re-packs it properly.
     if InCombatLockdown() then return end
 
-    local reach = 0
+    local reach, across = 0, 0
     for i = 1, #buttons do
         local button = buttons[i]
         if button.layoutEdge and button:IsShown() and (button:GetAlpha() or 1) > 0 then
             if button.layoutEdge > reach then reach = button.layoutEdge end
+            if (button.layoutCross or 0) > across then across = button.layoutCross end
         end
     end
 
-    local extent = (reach > 0) and (reach + BAR_PAD) or layout.minExtent
-    if layout.vertical then bar:SetHeight(extent) else bar:SetWidth(extent) end
+    local extent    = (reach  > 0) and (reach  + BAR_PAD) or layout.minExtent
+    local thickness = (across > 0) and (across + BAR_PAD) or layout.minThickness
+
+    if layout.vertical then
+        bar:SetHeight(extent)
+        bar:SetWidth(thickness)
+    else
+        bar:SetWidth(extent)
+        bar:SetHeight(thickness)
+    end
 end
 
 local function RefreshVisuals()
@@ -1313,6 +1388,12 @@ local function RefreshVisuals()
         local alpha = record and 1 or UNOWNED_ALPHA
         button.icon:SetAlpha(alpha)
         button.border:SetAlpha(record and 1 or 0.5)
+
+        -- The caption fades with the icon it names. Left at full brightness it
+        -- would be the most legible thing on a button that is greyed out
+        -- precisely to say you are not carrying it, so the row of words would
+        -- read as the row of boons you have.
+        button.label:SetAlpha(alpha)
 
         -- The mark is a property of the boon rather than of what is in the
         -- bags, so it is drawn on an unowned melee boon too - faded with the
@@ -1600,7 +1681,43 @@ end
 -- them - the categories are how a player thinks about which boon to reach for,
 -- and fifteen evenly spaced icons is a row you have to read rather than one you
 -- can aim at. Unknown boons form a fourth group on the end.
+--
+-- Laid out in cells rather than in icons. A cell is one icon plus the band its
+-- caption sits in, and it is what wraps, what the gaps go between and what the
+-- bar is measured in. Doing it that way is what keeps the captions, the row
+-- wrap and the two orientations from each needing their own arithmetic: a
+-- caption grows the cell across the bar in one orientation and along it in the
+-- other, and every line below that number is the same either way.
 --------------------------------------------------------------------------------
+
+-- Whether the captions are drawn, and how much room they need.
+--
+-- Asked through functions rather than read off the config at each site, because
+-- the layout, the sizing and the restyle all have to get the same answer, and
+-- the height is arithmetic on a font size the options window can change under
+-- any of them.
+local function LabelsOn()
+    return Config().labels and true or false
+end
+
+local function LabelFontSize()
+    return ns.GetFontSize(-2, "mplusBody")
+end
+
+-- The band one caption occupies across the cell: the text plus its gap to the
+-- icon. Zero when the captions are off, which is what makes every piece of
+-- geometry below fall back to what it was before this existed.
+local function LabelBand()
+    if not LabelsOn() then return 0 end
+    return Int(LabelFontSize()) + 2 + LABEL_GAP
+end
+
+-- How many icons go in a row before the bar wraps, or nil for one long row.
+local function RowLength()
+    local cfg = Config()
+    if not cfg.splitRows then return nil end
+    return Int(ns.Clamp(cfg.rowSize or 8, ROW_MIN, ns.BOON_ROW_MAX))
+end
 
 local function Layout()
     if not bar or InCombatLockdown() then return end
@@ -1610,6 +1727,11 @@ local function Layout()
     local vertical    = (cfg.orientation == "vertical")
     local hideUnowned = OwnedOnly()
     local slotOrder   = SlotOrdered()
+
+    local labels      = LabelsOn()
+    local labelBand   = LabelBand()
+    local labelAbove  = (cfg.labelAnchor ~= "below")
+    local perRow      = RowLength()
 
     -- Sample slots, while the Mythic+ panel is in placement preview.
     --
@@ -1631,25 +1753,77 @@ local function Layout()
     end
 
     local order = BarOrder()
-    local offset, lastGroup, placed = BAR_PAD, nil, 0
 
-    -- Placing one button. Records how far it reaches along the bar, because
-    -- that is what the combat-safe resize below measures - it cannot re-run any
-    -- of this arithmetic while the player is fighting.
+    ------------------------------------------------------------------
+    -- The cell
+    --
+    -- A caption in a vertical bar sits where the next icon in the column would
+    -- be, so it makes the cell longer. The same caption in a horizontal bar is
+    -- beside the row rather than in it, so it makes the cell thicker instead.
+    -- That is the only place the two orientations differ here.
+    ------------------------------------------------------------------
+
+    local cellMain  = vertical and (size + labelBand) or size
+    local cellCross = vertical and size or (size + labelBand)
+
+    -- A caption can be wider than the icon it names. In a horizontal bar that
+    -- costs nothing - it overhangs into the gap either side, which is what the
+    -- key label on every action bar already does - but in a vertical one it
+    -- overhangs the bar's own edge, so the column widens to the longest word
+    -- and the icons centre in it.
+    --
+    -- Measured across every button rather than only the drawn ones, so the
+    -- column does not change width as boons are looted and spent. A bar that
+    -- breathes sideways every time you pick something up is the thing the
+    -- corner anchor was introduced to stop.
+    if vertical and labels then
+        for i = 1, #buttons do
+            local label = buttons[i].itemID and buttons[i].label
+            local width = label and label:GetStringWidth() or 0
+            if width > cellCross then cellCross = math.ceil(width) end
+        end
+    end
+
+    -- Where the icon sits inside its cell. The caption takes the other end.
+    local iconMain  = (vertical and labelAbove) and labelBand or 0
+    local iconCross = vertical
+        and math.floor((cellCross - size) / 2)
+        or  (labelAbove and labelBand or 0)
+
+    local along, across = BAR_PAD, BAR_PAD
+    local lastGroup, inRow, placed = nil, 0, 0
+
+    -- Placing one cell. Records how far it reaches on both axes, because that
+    -- is what the sizing pass measures - it cannot re-run any of this
+    -- arithmetic while the player is fighting.
     local function Place(button, group)
-        if lastGroup and group ~= lastGroup then offset = offset + GROUP_GAP end
+        -- A row that has filled up starts the next one flush against the bar's
+        -- own edge, with no group gap carried into it: a gap at the start of a
+        -- row is an indent rather than a separator, and it would put the first
+        -- icon of every row in a different place.
+        if perRow and inRow >= perRow then
+            along, inRow, lastGroup = BAR_PAD, 0, nil
+            across = across + cellCross + ROW_GAP
+        end
+
+        if lastGroup and group ~= lastGroup then along = along + GROUP_GAP end
         lastGroup = group
 
         button:ClearAllPoints()
         if vertical then
-            button:SetPoint("TOPLEFT", bar, "TOPLEFT", BAR_PAD, -offset)
+            button:SetPoint("TOPLEFT", bar, "TOPLEFT",
+                across + iconCross, -(along + iconMain))
         else
-            button:SetPoint("TOPLEFT", bar, "TOPLEFT", offset, -BAR_PAD)
+            button:SetPoint("TOPLEFT", bar, "TOPLEFT",
+                along, -(across + iconCross))
         end
         button:Show()
 
-        button.layoutEdge = offset + size
-        offset = offset + size + ICON_GAP
+        button.layoutEdge  = along  + cellMain
+        button.layoutCross = across + cellCross
+
+        along = along + cellMain + ICON_GAP
+        inRow = inRow + 1
     end
 
     local parked = {}
@@ -1668,6 +1842,18 @@ local function Layout()
 
         button:SetWidth(size)
         button:SetHeight(size)
+
+        -- The caption is anchored to its own button, so it follows the icon
+        -- wherever the pass below puts it and needs no placing of its own. What
+        -- has to be re-stated here is which side of the icon it sits on, since
+        -- that is a setting and can have just changed.
+        button.label:ClearAllPoints()
+        if labelAbove then
+            button.label:SetPoint("BOTTOM", button, "TOP", 0, LABEL_GAP)
+        else
+            button.label:SetPoint("TOP", button, "BOTTOM", 0, -LABEL_GAP)
+        end
+        if labels and button.itemID then button.label:Show() else button.label:Hide() end
 
         if visible then
             -- What the gap separates. Normally the three categories, which is
@@ -1691,16 +1877,10 @@ local function Layout()
             -- Parked, not hidden. See the note above the parked pass.
             parked[#parked + 1] = button
         else
-            button.layoutEdge = nil
+            button.layoutEdge, button.layoutCross = nil, nil
             button:Hide()
         end
     end
-
-    -- Where the bar ends as far as the player is concerned: the run of boons
-    -- actually being drawn. Taken before the parked pass, which continues the
-    -- same row past it.
-    local visibleOffset = offset
-    if placed > 0 then visibleOffset = visibleOffset - ICON_GAP end
 
     ----------------------------------------------------------------
     -- The parked pass
@@ -1718,10 +1898,11 @@ local function Layout()
     -- SetAlpha is not protected, which means RefreshVisuals can reveal a boon
     -- the instant it is looted, in the middle of a pull, with its real icon.
     --
-    -- They are parked in bar order immediately after the drawn run, so the
-    -- first one revealed lands where the next boon belongs rather than out on
-    -- its own. The bar is still sized to the drawn run, so none of this shows
-    -- until something is revealed - and then the resize below grows it.
+    -- They are parked in bar order immediately after the drawn run, continuing
+    -- the same grid, so the first one revealed lands where the next boon
+    -- belongs rather than out on its own. The bar is still sized to the drawn
+    -- run, so none of this shows until something is revealed - and then the
+    -- sizing pass grows it.
     --
     -- Mouse off while parked, because an invisible button that still takes
     -- clicks is a boon you can fire by clicking empty screen. It comes back
@@ -1735,29 +1916,18 @@ local function Layout()
         pcall(button.EnableMouse, button, false)
     end
 
-    local extent = visibleOffset + BAR_PAD
-    local thickness = size + BAR_PAD * 2
-
     -- A bar with nothing in it still needs a rectangle, or the drag handle and
     -- the resize grip have nothing to sit on. This is what "hide unowned" plus
     -- an empty bag comes out as, and it is reachable on purpose: the player can
     -- still find and move the bar.
-    local minExtent = size + BAR_PAD * 2
-    if placed == 0 then extent = minExtent end
+    layout.vertical     = vertical
+    layout.minExtent    = cellMain  + BAR_PAD * 2
+    layout.minThickness = cellCross + BAR_PAD * 2
 
-    -- Kept for the combat-safe resize, which has no other way to know the shape
-    -- the bar was last laid out in.
-    layout.vertical  = vertical
-    layout.thickness = thickness
-    layout.minExtent = minExtent
-
-    if vertical then
-        bar:SetWidth(thickness)
-        bar:SetHeight(extent)
-    else
-        bar:SetWidth(extent)
-        bar:SetHeight(thickness)
-    end
+    -- The bar's own rectangle is measured rather than computed here. See the
+    -- note on SizeBarToRevealed: the alphas set above are what say which cells
+    -- are drawn, and one piece of code reading them is one answer.
+    SizeBarToRevealed()
 
     ns.StylePlateChrome(bar, ns.PanelStyle("mplus"))
     if bar.grip then bar.grip:Raise(nil, bar:GetFrameLevel()) end
@@ -2244,6 +2414,14 @@ local function AssignSpares()
                 else
                     button.entry = nil
                 end
+
+                -- A boon nobody has written a word for gets its own name cut
+                -- short. Worse than a chosen caption and much better than one
+                -- icon in a captioned row silently having none, which reads as
+                -- a rendering fault rather than as a boon this build has not
+                -- caught up with. LabelOf does the cutting.
+                button.label:SetText(button.entry
+                    and (ns.BoonData.LabelOf(button.entry) or "") or "")
             end
 
             if itemID then byItem[itemID] = button end
@@ -2640,6 +2818,22 @@ local function BuildButton(index, entry)
     button.hotkey:SetTextColor(ns.HexToRGB(ns.PALETTE.accentLight))
     button.hotkey:SetText("")
 
+    -- The caption. Outside the icon rather than over it, because the two
+    -- corners are already spoken for - the stack count and the bound key - and
+    -- a word laid across the middle of the art hides the thing it is naming.
+    --
+    -- Built whether or not the captions are on, and left hidden. It is one
+    -- FontString on a button that already carries a dozen regions, and creating
+    -- it when the setting is ticked would mean creating it in combat on the one
+    -- frame where that matters. Where it hangs is Layout's to say; it is
+    -- anchored to the button, so it follows the icon without being placed.
+    button.label = button:CreateFontString(nil, "OVERLAY")
+    button.label:SetFont(ns.GetFontFile(), LabelFontSize(), "OUTLINE")
+    button.label:SetJustifyH("CENTER")
+    button.label:SetTextColor(ns.HexToRGB(ns.PALETTE[LABEL_COLOUR]))
+    button.label:SetText(entry and ns.BoonData.LabelOf(entry) or "")
+    button.label:Hide()
+
     button:SetScript("OnEnter", ButtonOnEnter)
     button:SetScript("OnLeave", ButtonOnLeave)
 
@@ -2909,6 +3103,12 @@ function boons.Restyle()
             file, ns.GetFontSize(-2, "mplusBody"), "OUTLINE")
         pcall(buttons[i].hotkey.SetFont, buttons[i].hotkey,
             file, ns.GetFontSize(-3, "mplusBody"), "OUTLINE")
+        -- The caption's size is also the height of the band the layout leaves
+        -- for it, so this one has to be set before Layout runs below rather
+        -- than after - a font change would otherwise draw the new size into
+        -- the old band until the next bag event.
+        pcall(buttons[i].label.SetFont, buttons[i].label,
+            file, LabelFontSize(), "OUTLINE")
     end
 
     if InCombatLockdown() then
@@ -2963,6 +3163,20 @@ function boons.Dump()
             or (Config().anchorMplus
                 and "|cFF8B8FA3anchored, but the Mythic+ panel is not up|r"
                 or "free-placed"))
+
+    -- The two shape settings, reported together because they are the two that
+    -- change what the bar looks like without changing what is on it - so "the
+    -- bar is not where I left it" is answered from one line.
+    do
+        local perRow = RowLength()
+        ns.Print("  captions: %s; layout: %s",
+            Config().labels
+                and ("|cFFC2C6D8" .. tostring(Config().labelAnchor or "above")
+                     .. " each icon|r")
+                or  "|cFF8B8FA3off|r",
+            perRow and ("|cFFC2C6D8wrapping every " .. Int(perRow) .. "|r")
+                or   "|cFF8B8FA3one row|r")
+    end
 
     local warn = tonumber(Config().expiryWarn) or 0
     ns.Print("  expiry warning: %s; expiry read from |cFFC2C6D8%s|r",

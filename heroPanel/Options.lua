@@ -1643,6 +1643,69 @@ local function Build()
         function(value) return string.format("%d px", Int(value)) end,
         "drag the bar's corner to scale the whole bar")
 
+    -- Captions.
+    --
+    -- The words are what the boon does rather than what it is called -
+    -- BoonData's label column, not its names - because "Ascension",
+    -- "Bountiful" and "Wrathful" are three proper nouns that say nothing about
+    -- which one to press, and "Dmg", "Stats" and "AP/SP" say it without a
+    -- tooltip. The sublabel has to carry that, or the row reads as an offer to
+    -- write the names under the icons, which nobody wants.
+    --
+    -- Off by default. See the note in Core.lua: the bar's own claim is that you
+    -- aim at a position rather than read it, so a row of fifteen words is a
+    -- thing to opt into rather than out of.
+    y = NewToggle(body, y, "Boon labels", "a word saying what each boon does",
+        function() return BoonsSaved().labels end,
+        function(value)
+            BoonsSaved().labels = value and true or false
+            BoonsRefresh("boon labels toggled")
+        end)
+
+    -- Which side of the icon. The caption changes the bar's thickness rather
+    -- than only its colours, so this is a layout control - and it is a
+    -- segmented pair rather than a toggle because "above" and "below" are two
+    -- values, not an on and an off.
+    --
+    -- No refresh of its own: NewSegmented applies through options.Apply, which
+    -- reaches ns.Boons.Restyle and re-runs the layout. That is the same route
+    -- the orientation control above takes.
+    y = NewSegmented(body, y, "Label position", {
+            { key = "above", label = "Above" },
+            { key = "below", label = "Below" },
+        },
+        function() return BoonsSaved().labelAnchor or "above" end,
+        function(key) BoonsSaved().labelAnchor = key end,
+        100)
+
+    -- Wrapping.
+    --
+    -- Two controls rather than one, because "split it" and "split it where" are
+    -- two questions and a slider alone would have no off position - a row
+    -- length equal to the whole bar reads as a setting that does nothing rather
+    -- than as the feature being off.
+    --
+    -- The slider is a row *length*, not a number of rows, and the sublabel says
+    -- so. See the note in Boons.lua on why: a fixed "two rows" has no sensible
+    -- answer for a bar shorter than twice the split, and every answer it could
+    -- give is a surprise.
+    y = NewToggle(body, y, "Split into rows", "instead of one long bar",
+        function() return BoonsSaved().splitRows end,
+        function(value)
+            BoonsSaved().splitRows = value and true or false
+            BoonsRefresh("boon row split toggled")
+        end)
+
+    y = NewSlider(body, y, "Icons per row",
+        ns.BOON_ROW_MIN or 2, ns.BOON_ROW_MAX or 19, 1,
+        function() return BoonsSaved().rowSize or 8 end,
+        function(value)
+            BoonsSaved().rowSize = Int(value)
+            BoonsRefresh("boon row length changed")
+        end,
+        function(value) return string.format("%d per row", Int(value)) end,
+        "where the bar wraps; at 8 the fifteen boons are two rows")
+
     y = NewToggle(body, y, "Only in Mythic dungeons",
         "off shows it everywhere, for positioning",
         function() return BoonsSaved().mythicOnly ~= false end,

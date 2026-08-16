@@ -112,10 +112,22 @@ data.CATEGORY_NAMES = {
 --   name     the short name, without the "Mythical Boon: " the item carries.
 --            GetSpellInfo gives the full one; this is what fits under an icon
 --            and what a player calls it out loud.
+--   label    what the boon *does*, in a word, for the optional caption the bar
+--            can draw beside each icon. See the note below.
 --   cat      one of data.CATEGORY
 --   melee    true for the two boons that only do anything for a melee build.
 --            The client flags these and heroPanel offers to dim them.
 --   summary  a hand-written one-liner for the in-combat tooltip.
+--
+-- The label is not the name shortened, and that is the whole point of it being
+-- a separate column. "Ascension", "Bountiful" and "Wrathful" are three words
+-- that say nothing about which one to press; "Dmg", "Stats" and "AP/SP" say it
+-- without a tooltip. Nobody learns fifteen invented proper nouns mid-run, and
+-- the WeakAura this idea comes from settled on effect words for the same
+-- reason.
+--
+-- Kept to six characters or so, because it is drawn under a 32px icon and a
+-- caption wider than two icons stops saying which one it belongs to.
 --
 -- There is no lifetime column. Every boon lives ten minutes in the bags, so it
 -- is one constant below rather than the same number written fifteen times. A
@@ -157,14 +169,14 @@ local SPELLS, BUFFS, DEFENSE = data.CATEGORY.SPELLS, data.CATEGORY.BUFFS, data.C
 local MINUTE = 60
 
 data.BOONS = {
-    { id = 2104920, name = "Ascension",    cat = SPELLS,  melee = false, summary = "+20% damage and healing, 30s" },
-    { id = 2104921, name = "Infinity",     cat = SPELLS,  melee = false, summary = "-20% cooldowns and costs, 30s" },
-    { id = 2104922, name = "Momentum",     cat = BUFFS,   melee = false, summary = "+20% haste and movement speed, 30s" },
-    { id = 2104923, name = "Inquisition",  cat = DEFENSE, melee = false, summary = "Barrier damages nearby enemies, 20s" },
-    { id = 2104925, name = "Sanctuary",    cat = DEFENSE, melee = false, summary = "-15% damage taken, 30s" },
-    { id = 2104926, name = "Bountiful",    cat = BUFFS,   melee = false, summary = "+20% Str, Agi, Sta, Spi and Int, 30s" },
-    { id = 2104927, name = "Piercing",     cat = BUFFS,   melee = true,  summary = "+15% armor penetration, 30s" },
-    { id = 2104928, name = "Critical",     cat = SPELLS,  melee = false, summary = "+20% critical strike chance, 30s" },
+    { id = 2104920, name = "Ascension",    label = "Dmg",     cat = SPELLS,  melee = false, summary = "+20% damage and healing, 30s" },
+    { id = 2104921, name = "Infinity",     label = "CD",      cat = SPELLS,  melee = false, summary = "-20% cooldowns and costs, 30s" },
+    { id = 2104922, name = "Momentum",     label = "Haste",   cat = BUFFS,   melee = false, summary = "+20% haste and movement speed, 30s" },
+    { id = 2104923, name = "Inquisition",  label = "Barrier", cat = DEFENSE, melee = false, summary = "Barrier damages nearby enemies, 20s" },
+    { id = 2104925, name = "Sanctuary",    label = "DR",      cat = DEFENSE, melee = false, summary = "-15% damage taken, 30s" },
+    { id = 2104926, name = "Bountiful",    label = "Stats",   cat = BUFFS,   melee = false, summary = "+20% Str, Agi, Sta, Spi and Int, 30s" },
+    { id = 2104927, name = "Piercing",     label = "Pen",     cat = BUFFS,   melee = true,  summary = "+15% armor penetration, 30s" },
+    { id = 2104928, name = "Critical",     label = "Crit",    cat = SPELLS,  melee = false, summary = "+20% critical strike chance, 30s" },
     -- No rate in the summary, deliberately.
     --
     -- The client's own string is broken - see the note above - and the 3% a
@@ -173,11 +185,11 @@ data.BOONS = {
     -- client's text, and inventing a number to replace a wrong one is not that.
     -- The twenty seconds is confirmed; the rate is not, so it is left out until
     -- somebody measures it in a dungeon.
-    { id = 2104929, name = "Sanctified",   cat = DEFENSE, melee = false, summary = "Restores party health steadily, 20s" },
-    { id = 2104930, name = "Adaptation",   cat = SPELLS,  melee = true,  summary = "Spell power from 20% of attack power, 30s" },
-    { id = 2104931, name = "Ruthlessness", cat = BUFFS,   melee = false, summary = "+20% critical damage and healing, 30s" },
-    { id = 2104932, name = "Wrathful",     cat = BUFFS,   melee = false, summary = "+170 spell damage, +220 attack power, 30s" },
-    { id = 2104933, name = "Phasewalk",    cat = DEFENSE, melee = false, summary = "Party phases out, walk past enemies, 10s" },
+    { id = 2104929, name = "Sanctified",   label = "Heal",    cat = DEFENSE, melee = false, summary = "Restores party health steadily, 20s" },
+    { id = 2104930, name = "Adaptation",   label = "Hybrid",  cat = SPELLS,  melee = true,  summary = "Spell power from 20% of attack power, 30s" },
+    { id = 2104931, name = "Ruthlessness", label = "CDmg",    cat = BUFFS,   melee = false, summary = "+20% critical damage and healing, 30s" },
+    { id = 2104932, name = "Wrathful",     label = "AP/SP",   cat = BUFFS,   melee = false, summary = "+170 spell damage, +220 attack power, 30s" },
+    { id = 2104933, name = "Phasewalk",    label = "Invis",   cat = DEFENSE, melee = false, summary = "Party phases out, walk past enemies, 10s" },
     -- Named "Mythical Boon: Test" on the live client, and that is not a
     -- placeholder for a name heroPanel failed to look up - it is the name. The
     -- research notes called it "Skulking", having only ever seen the ID, and
@@ -191,8 +203,12 @@ data.BOONS = {
     -- exist is exactly the kind of guess that produced those. The cost of
     -- keeping it is one greyed icon on a bar; the cost of dropping it is a boon
     -- in somebody's bags with no summary behind it.
-    { id = 2104934, name = "Test",         cat = DEFENSE, melee = false, summary = "Party phases out, walk past enemies, 10s" },
-    { id = 2104935, name = "Bloodlust",    cat = BUFFS,   melee = false, summary = "Grants the party Bloodlust" },
+    --
+    -- Its label is its name, unlike every other row. There is no effect word
+    -- for a developer's copy of Phasewalk that would not be a lie about which
+    -- of the two you were holding.
+    { id = 2104934, name = "Test",         label = "Test",    cat = DEFENSE, melee = false, summary = "Party phases out, walk past enemies, 10s" },
+    { id = 2104935, name = "Bloodlust",    label = "Lust",    cat = BUFFS,   melee = false, summary = "Grants the party Bloodlust" },
 }
 
 -- How long a boon survives in the bags. Ten minutes, for all fifteen.
@@ -287,6 +303,37 @@ function data.IsBoonName(name)
     if type(name) ~= "string" then return false end
     if data.EXCLUDE[name] then return false end
     return string.sub(name, 1, #data.PREFIX) == data.PREFIX
+end
+
+-- data.LabelOf(entry) -> the short caption for one boon, or nil.
+--
+-- Answers for a boon the table does not have, which is the case that matters:
+-- a spare slot holding something a later build added has no hand-written label,
+-- and a bar drawing captions with one icon silently missing its own reads as a
+-- rendering fault rather than as a boon nobody has written a word for yet.
+--
+-- The fallback is the item's own name with the "Mythical Boon: " stripped and
+-- cut to the width the hand-written ones are kept inside. That is a worse label
+-- than a chosen one - it says what the boon is called rather than what it does -
+-- and it is a great deal better than a gap.
+local LABEL_MAX = 7
+
+function data.LabelOf(entry)
+    if type(entry) ~= "table" then return nil end
+    if type(entry.label) == "string" and entry.label ~= "" then return entry.label end
+
+    local name = entry.name
+    if type(name) ~= "string" or name == "" then return nil end
+
+    -- Plain string.sub rather than gsub, for the same reason IsBoonName uses
+    -- one: the prefix is data and a magic character in it would turn this into
+    -- a pattern that matched something else.
+    if string.sub(name, 1, #data.PREFIX) == data.PREFIX then
+        name = string.match(string.sub(name, #data.PREFIX + 1), "^[%s:]*(.-)%s*$") or name
+    end
+    if name == "" then return nil end
+
+    return string.sub(name, 1, LABEL_MAX)
 end
 
 -- data.Count() -> how many boons this build knows about.

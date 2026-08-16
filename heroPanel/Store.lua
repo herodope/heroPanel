@@ -196,6 +196,16 @@ local RULES = {
                               max = function() return ns.BOON_ICON_MAX end },
     ["boons.orientation"] = { type = "string",
                               values = function() return ns.BOON_ORIENTATIONS end },
+    ["boons.labelAnchor"] = { type = "string",
+                              values = function() return ns.BOON_LABEL_ANCHORS end },
+
+    -- Where the bar wraps. A range rather than the closed set the slider
+    -- offers, for the same reason expiryWarn is: every value in it means
+    -- something to the layout, and a store carrying a row of 9 wraps at nine
+    -- correctly whether or not the slider has a stop there.
+    ["boons.rowSize"]     = { type = "number",
+                              min = function() return ns.BOON_ROW_MIN end,
+                              max = function() return ns.BOON_ROW_MAX end },
 
     -- The expiry warning threshold, in seconds, with 0 for off. A range rather
     -- than the closed set of four the options window offers, because the number

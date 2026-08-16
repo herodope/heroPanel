@@ -230,6 +230,35 @@ ns.defaults = {
         orientation = "horizontal",
         iconSize    = 32,
 
+        -- A word beside each icon saying what the boon does - "Dmg", "Crit",
+        -- "AP/SP" - from BoonData's label column.
+        --
+        -- Off by default, because the bar's own claim is that you aim at a
+        -- position rather than read it, and fifteen captions is a bar you read.
+        -- It is on offer because that claim only holds once the positions have
+        -- been learned, and the run where you are still learning them is the
+        -- run where a caption is worth most.
+        --
+        -- Above rather than below, and the bottom edge is why: the cycle key's
+        -- "next up" mark is a bar drawn across it, and the stack count sits in
+        -- the corner beside that. A caption underneath lands directly under
+        -- both and the three read as one smudge. The top edge carries only the
+        -- bound key, in the opposite corner. Either side is one click away.
+        labels      = false,
+        labelAnchor = "above",
+
+        -- Wrap the bar into rows instead of one long strip. Nineteen icons at
+        -- the default size is about seven hundred pixels of screen, which is a
+        -- third of a 1920 monitor laid across the middle of it.
+        --
+        -- rowSize is where the wrap falls, and it is a length rather than a
+        -- number of rows - see the note in Boons.lua on why "split into two"
+        -- has no sensible answer for a bar shorter than twice the split. Eight
+        -- is a little over half the fifteen known boons, so the default lands
+        -- as the two rows this was asked for.
+        splitRows   = false,
+        rowSize     = 8,
+
         -- Exactly the check the client's own boon UI makes: a party instance
         -- at dungeon difficulty 3. Off means "always show", which is how the
         -- bar gets positioned somewhere other than mid-run.

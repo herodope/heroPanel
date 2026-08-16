@@ -165,6 +165,15 @@ Worth knowing:
 
 * By default it only appears in a Mythic dungeon. Turn *Only in Mythic
   dungeons* off to place it.
+* **Labels** — turn on *Boon labels* and each icon gets a word saying what the
+  boon *does*: Dmg, Crit, Haste, DR, AP/SP. Not the boon's name — "Ascension"
+  and "Bountiful" tell you nothing about which one to press. *Label position*
+  puts them above or below the icons. Off by default, because once you know the
+  bar you aim at a position rather than read it; on, for the runs before that.
+* **Two rows instead of one** — nineteen icons in a line is a lot of screen.
+  Turn on *Split into rows* and the bar wraps; *Icons per row* is where it
+  breaks, 8 by default, which puts the fifteen boons into two rows. Set it
+  shorter for a tighter grid.
 * **One key for everything** — bind *Cycle boons* under **Key Bindings →
   heroPanel** and each press fires the next boon you are holding, left to right
   along the bar and round again. A small accent bar under an icon shows which
