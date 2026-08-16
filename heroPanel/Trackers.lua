@@ -1,14 +1,19 @@
 --[[--------------------------------------------------------------------------
     heroPanel - Trackers.lua
 
-    Finds the two frames heroPanel cares about and keeps a small record for
+    Finds the three frames heroPanel cares about and keeps a small record for
     each one:
 
-        watch  the default objective tracker (WatchFrame). WatchFrameHolder is
-               preferred as the drag target when the client provides it.
-        mplus  MythicPlusObjectiveTracker, supplied by Ascension_MythicPlus.
-               It frequently does not exist yet at ADDON_LOADED, so it is
-               polled rather than assumed.
+        watch    the default objective tracker (WatchFrame). WatchFrameHolder is
+                 preferred as the drag target when the client provides it.
+        mplus    MythicPlusObjectiveTracker, supplied by Ascension_MythicPlus.
+                 It frequently does not exist yet at ADDON_LOADED, so it is
+                 polled rather than assumed.
+        dungeon  LFGObjectiveTracker, the panel Ascension draws in a Normal,
+                 Heroic or Mythic 0 dungeon. It is FrameXML rather than an
+                 addon, so unlike the Mythic+ tracker it is normally already
+                 there - but it is discovered and polled the same way, because
+                 one discovery path is one thing to get right.
 
     Also owns the collapse state both panels read, which is deliberately not
     the tracker's own collapsed flag - see ns.IsCollapsed.
@@ -48,9 +53,24 @@ ns.trackers = {
         found       = false,
         hooked      = false,
     },
+    dungeon = {
+        key         = "dungeon",
+        label       = "Dungeon tracker",
+        -- ScenarioObjectiveTracker is the sibling frame built from the same
+        -- template, and is listed second rather than skinned as well: a client
+        -- that stopped shipping the LFG one would still have a dungeon panel to
+        -- draw, and a client that has both keeps the one this panel is about.
+        candidates  = { "LFGObjectiveTracker", "ScenarioObjectiveTracker" },
+        moverFirst  = { "LFGObjectiveTracker", "ScenarioObjectiveTracker" },
+        protected   = false,
+        frame       = nil,
+        mover       = nil,
+        found       = false,
+        hooked      = false,
+    },
 }
 
-ns.TRACKER_KEYS = { "watch", "mplus" }
+ns.TRACKER_KEYS = { "watch", "mplus", "dungeon" }
 
 local function IsFrame(object)
     return type(object) == "table"
@@ -139,6 +159,9 @@ ns:On("ADDON_LOADED", function(loadedAddon)
         -- If Ascension_MythicPlus was loaded ahead of us its ADDON_LOADED has
         -- already been and gone, so look for its tracker directly.
         DiscoverTracker("mplus")
+        -- FrameXML, so normally already built. Polled if not, for the same
+        -- reason the quest tracker is.
+        if not DiscoverTracker("dungeon") then PollForTracker("dungeon", 1) end
     elseif loadedAddon == "Ascension_MythicPlus" then
         ns.Debug("Ascension_MythicPlus loaded, looking for its tracker.")
         if not DiscoverTracker("mplus") then PollForTracker("mplus", 1) end
@@ -238,7 +261,8 @@ function ns.PrintStatus()
         (ns.db and ns.db.frame.ownership) or "auto",
         ns.DEBUG and "|cFF79C68DON|r" or "|cFF8B8FA3OFF|r")
 
-    if ns.Mplus and ns.Mplus.PrintStatus then ns.Mplus.PrintStatus() end
+    if ns.Mplus   and ns.Mplus.PrintStatus   then ns.Mplus.PrintStatus()   end
+    if ns.Dungeon and ns.Dungeon.PrintStatus then ns.Dungeon.PrintStatus() end
     if ns.Keys  and ns.Keys.PrintStatus  then ns.Keys.PrintStatus()  end
     if ns.Boons and ns.Boons.PrintStatus then ns.Boons.PrintStatus() end
 

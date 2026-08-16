@@ -816,7 +816,14 @@ end
 function ApplyLockState(key)
     local record = ns.trackers[key]
     local frame  = record and record.mover
-    if not frame then return false end
+
+    -- A tracker that has not been found has nothing to apply and nothing
+    -- pending, so it is vacuously live. Answering false here made an
+    -- undiscovered tracker indistinguishable from one waiting on a call the
+    -- game refuses in combat, which is the only thing this answer is used for -
+    -- and it produced "the dungeon tracker will be draggable the moment you
+    -- leave combat" on a client that has no dungeon tracker at all.
+    if not frame then return true end
 
     local locked = ns.IsLocked()
     local handle = record.dragHandle
@@ -846,8 +853,10 @@ function ApplyLockState(key)
     end
 
     -- No handle: the tracker is dragged by its own rectangle, so it has to take
-    -- the mouse to be movable at all. Only the Mythic+ tracker is in this state,
-    -- and it is on screen for the length of a key rather than all session.
+    -- the mouse to be movable at all. The Mythic+ and dungeon trackers are the
+    -- two in this state, and both are on screen for the length of a run rather
+    -- than all session - which is also why both panels carry a placement
+    -- preview that takes the mouse on heroPanel's own plate instead.
     if not locked then
         -- Clamping is not protected and is worth having on before a drag.
         pcall(frame.SetClampedToScreen, frame, true)

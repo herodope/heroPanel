@@ -1302,10 +1302,15 @@ end
 -- The single entry point for either skin flag, so nothing else has to remember
 -- to write HEROPANEL_DB.skin and call the right half.
 --
--- key is "watch", "mplus", or nil for both. One shared flag came first, which
--- meant turning the Mythic+ panel off also handed the quest tracker back to
--- Blizzard; they are separate settings now, and this is the one place that
--- knows both halves.
+-- key is "watch", "mplus", "dungeon", or nil for all of them. One shared flag
+-- came first, which meant turning the Mythic+ panel off also handed the quest
+-- tracker back to Blizzard; they are separate settings now, and this is the one
+-- place that knows all three.
+--
+-- The dungeon panel is drawn from the Mythic+ panel's *appearance* settings and
+-- still has a switch of its own, because "which panels heroPanel draws" is a
+-- different question from "what they look like": running the Mythic+ panel and
+-- leaving Ascension's dungeon tracker alone is a reasonable thing to want.
 function ns.SetSkinEnabled(key, enabled)
     if not ns.db then return false end
     enabled = enabled and true or false
@@ -1327,10 +1332,15 @@ function ns.SetSkinEnabled(key, enabled)
         if ns.Mplus then pcall(ns.Mplus.SetEnabled, enabled) end
     end
 
+    if key == nil or key == "dungeon" then
+        ns.db.skin.dungeon = enabled
+        if ns.Dungeon then pcall(ns.Dungeon.SetEnabled, enabled) end
+    end
+
     return enabled
 end
 
--- Kept as the "both panels" call, which is what this name has always meant to
+-- Kept as the "every panel" call, which is what this name has always meant to
 -- everything that uses it - /hp skin, the harness, Reset.
 function skin.SetEnabled(enabled)
     return ns.SetSkinEnabled(nil, enabled)

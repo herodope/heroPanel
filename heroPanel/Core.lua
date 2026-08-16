@@ -9,7 +9,7 @@
 local ADDON_NAME, ns = ...
 
 ns.name    = ADDON_NAME
-ns.version = "0.2.2"
+ns.version = "0.2.3"
 
 -- Public API surface. Every other file in the addon registers into this table,
 -- and it is what another addon would talk to heroPanel through.
@@ -78,28 +78,38 @@ ns.defaults = {
     debug   = false,
 
     -- Which panels heroPanel skins. One flag each, because they are separate
-    -- modules over separate addons' frames: a single `enabled` came first and
-    -- made it impossible to hand one panel back without the other.
+    -- modules over separate frames: a single `enabled` came first and made it
+    -- impossible to hand one panel back without the others.
     --
-    -- Neither is a master. "/hp skin on|off" still sets both, because that
-    -- command is the escape hatch and an escape hatch that only frees half of
-    -- the UI is not one.
+    -- None of them is a master. "/hp skin on|off" still sets all three, because
+    -- that command is the escape hatch and an escape hatch that only frees part
+    -- of the UI is not one.
+    --
+    -- The dungeon panel has a flag here and no block in `panel` below: which
+    -- panels are drawn is a different question from what they look like.
     skin = {
-        watch = true,
-        mplus = true,
+        watch   = true,
+        mplus   = true,
+        dungeon = true,
     },
 
     frame = {
         locked = true,
         -- auto | own | holder | yield. See the ownership notes in Move.lua.
         ownership = "auto",
-        watch  = { point = nil, x = 0, y = 0, scale = 1.0 },
-        mplus  = { point = nil, x = 0, y = 0, scale = 1.0 },
+        watch   = { point = nil, x = 0, y = 0, scale = 1.0 },
+        mplus   = { point = nil, x = 0, y = 0, scale = 1.0 },
+        -- The dungeon panel has a position of its own even though it is drawn
+        -- from the Mythic+ panel's settings. They are two frames and only one
+        -- of them is ever on screen, so sharing a position would look tidy and
+        -- would mean neither could be placed while the other was up.
+        dungeon = { point = nil, x = 0, y = 0, scale = 1.0 },
     },
 
     collapsed = {
-        watch = false,
-        mplus = false,
+        watch   = false,
+        mplus   = false,
+        dungeon = false,
     },
 
     -- Panel chrome, one block per tracker. One global set covered both once,
@@ -109,6 +119,12 @@ ns.defaults = {
     --
     -- The backdrop texture stays global, below: it is one piece of art, and two
     -- panels drawn from different ones would read as two addons.
+    --
+    -- There is deliberately no `dungeon` block. The dungeon panel is the
+    -- Mythic+ panel with the keystone taken out of it, and it reads
+    -- ns.PanelStyle("mplus") and the mplus font roles directly - so the two
+    -- cannot be set to disagree, and there is no second copy of these keys to
+    -- keep matched. See the header of Dungeon.lua.
     panel = {
         -- The options window's own background, and only that.
         --
@@ -410,7 +426,7 @@ ns.ALPHA = {
     hoverButton = 0.16,
 }
 
--- Whether one panel's skin is switched on. key is "watch" or "mplus".
+-- Whether one panel's skin is switched on. key is "watch", "mplus" or "dungeon".
 --
 -- Defended rather than indexed straight, because it is read from boot paths
 -- that run before the store has been filled in - a tracker can be discovered
@@ -585,9 +601,9 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp help|r - this list")
     ns.Print("  |cFFC2C6D8/hp lock|r - lock both trackers in place")
     ns.Print("  |cFFC2C6D8/hp unlock|r - unlock both trackers for dragging")
-    ns.Print("  |cFFC2C6D8/hp scale <watch|mplus> <0.5-1.5>|r - set tracker scale "
+    ns.Print("  |cFFC2C6D8/hp scale <watch|mplus|dungeon> <0.5-1.5>|r - set tracker scale "
         .. "(|cFF8B8FA3or unlock and drag the grip in a panel's bottom-right corner|r)")
-    ns.Print("  |cFFC2C6D8/hp reset [watch|mplus|boons]|r - clear saved position and scale")
+    ns.Print("  |cFFC2C6D8/hp reset [watch|mplus|dungeon|boons]|r - clear saved position and scale")
     ns.Print("  |cFFC2C6D8/hp mode <auto|own|holder|yield>|r - who positions the trackers")
     ns.Print("  |cFFC2C6D8/hp font <8-30>|r - set every text size at once")
     ns.Print("  |cFFC2C6D8/hp fontface <name>|r - set the LibSharedMedia face by name")
@@ -604,6 +620,8 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp dump|r - report the geometry the skin measured")
     ns.Print("  |cFFC2C6D8/hp mplus [preview]|r - report what the Mythic+ panel resolved "
         .. "(|cFF8B8FA3preview draws it outside a key so you can place it|r)")
+    ns.Print("  |cFFC2C6D8/hp dungeon [preview]|r - the same for the dungeon panel "
+        .. "(|cFF8B8FA3Normal, Heroic and Mythic 0|r)")
     ns.Print("  |cFFC2C6D8/hp probe [all]|r - report what else draws inside the panel; |cFF8B8FA3all|r adds heroPanel's own")
     ns.Print("  |cFFC2C6D8/hp frame <name>|r - everything about one named frame (use the name /framestack gives)")
     ns.Print("  |cFFC2C6D8/hp texture <path>|r - put any texture in the caret's slot, untinted (no path resets)")
@@ -644,7 +662,7 @@ SlashCmdList["HEROPANEL"] = function(input)
         if key and value and ns.SetScale(key, tonumber(value)) then
             ns.Print("%s scale set to %.1f.", key, tonumber(value))
         else
-            ns.Print("usage: /hp scale <watch|mplus> <0.5-1.5>")
+            ns.Print("usage: /hp scale <watch|mplus|dungeon> <0.5-1.5>")
         end
     elseif cmd == "reset" then
         -- The boon bar is not one of ns.trackers - it is a frame heroPanel
@@ -692,6 +710,10 @@ SlashCmdList["HEROPANEL"] = function(input)
             if ns.Mplus then
                 pcall(ns.Mplus.Restyle)
                 pcall(ns.Mplus.Refresh, "glyph mode changed")
+            end
+            if ns.Dungeon then
+                pcall(ns.Dungeon.Restyle)
+                pcall(ns.Dungeon.Refresh, "glyph mode changed")
             end
         else
             ns.Print("usage: /hp glyphs <auto|art|tga|blocks>  (currently |cFFC2C6D8%s|r)",
@@ -745,18 +767,21 @@ SlashCmdList["HEROPANEL"] = function(input)
             ns.Print("  %d face(s) registered with LibSharedMedia.", #faces)
         end
     elseif cmd == "skin" then
-        -- Both panels, always. The two are separate settings in the options
-        -- window; this command is the escape hatch, and one that frees half the
-        -- UI is not one. A bare /hp skin toggles on "is anything skinned",
-        -- so a half-on state turns fully off first rather than fully on.
+        -- Every panel, always. They are separate settings in the options
+        -- window; this command is the escape hatch, and one that frees part of
+        -- the UI is not one. A bare /hp skin toggles on "is anything skinned",
+        -- so a partly-on state turns fully off first rather than fully on.
         local wanted
         if rest == "on" then wanted = true
         elseif rest == "off" then wanted = false
-        else wanted = not (ns.SkinEnabled("watch") or ns.SkinEnabled("mplus")) end
+        else
+            wanted = not (ns.SkinEnabled("watch") or ns.SkinEnabled("mplus")
+                          or ns.SkinEnabled("dungeon"))
+        end
 
         if ns.SetSkinEnabled then
             ns.SetSkinEnabled(nil, wanted)
-            -- The options window shows this as a pill and two toggles, so it
+            -- The options window shows this as a pill and three toggles, so it
             -- has to follow the command as well as the other way round.
             if ns.Options then pcall(ns.Options.Sync) end
             ns.Print("skin %s.", wanted and "|cFF79C68Don|r"
@@ -856,6 +881,21 @@ SlashCmdList["HEROPANEL"] = function(input)
             ns.Print("usage: /hp mplus [preview]  (no argument reports what it resolved)")
         else
             ns.Mplus.Dump()
+        end
+    elseif cmd == "dungeon" then
+        -- Same shape as /hp mplus above, and for the same reasons: a bare call
+        -- reports rather than switches anything on, and the preview is here as
+        -- well as in the options window because placing a panel means dragging
+        -- it across the screen the options window is sitting in the middle of.
+        if not (ns.Dungeon and ns.Dungeon.Dump) then
+            ns.Print("the dungeon module is not loaded.")
+        elseif rest == "preview" then
+            ns.Dungeon.SetPreview(not ns.Dungeon.IsPreview())
+            if ns.Options then pcall(ns.Options.Sync) end
+        elseif rest ~= "" then
+            ns.Print("usage: /hp dungeon [preview]  (no argument reports what it resolved)")
+        else
+            ns.Dungeon.Dump()
         end
     elseif cmd == "probe" then
         if ns.Skin and ns.Skin.Probe then

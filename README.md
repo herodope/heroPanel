@@ -19,15 +19,15 @@
 A clean, movable, configurable skin for your objective trackers on
 **Ascension WoW · Conquest of Azeroth** (3.3.5a / WotLK client).
 
-heroPanel gives the quest tracker and the Mythic+ tracker a proper panel, a
-readable header, better fonts and colours, and lets you drag them anywhere on
-screen and lock them there. It also ships an optional **Mythic+ boon bar**, so
+heroPanel gives the quest tracker, the Mythic+ tracker and the dungeon
+tracker a proper panel, a readable header, better fonts and colours, and lets
+you drag them anywhere on screen and lock them there. It also ships an optional **Mythic+ boon bar**, so
 the Mythical Boons in your bags are one click or one keypress away instead of
 buried in an inventory slot mid-run. Everything is configured in an in-game
 options window, and changes apply immediately — no reloading to see what a
 setting did.
 
-> **Pre-release (0.2.2).** Feature complete and playable, but still being
+> **Pre-release (0.2.3).** Feature complete and playable, but still being
 > tested. Your settings carry across updates — see
 > [Updating](#updating).
 
@@ -41,7 +41,8 @@ setting did.
 
 The Mythic+ panel needs Ascension's own `Ascension_MythicPlus` addon, which the
 server delivers to you automatically. If it isn't there, heroPanel just skins
-the quest tracker and says nothing about it.
+the quest tracker and says nothing about it. The dungeon panel needs nothing
+extra — that tracker is part of the client.
 
 ## Installation
 
@@ -80,8 +81,12 @@ groups:
 * **Global** — the font, and the options window's own size and background.
 * **Quest tracker** — panel colour and transparency, border, three text sizes,
   text shadow, and the auto-hide switches.
-* **Mythic+ tracker** — the same panel controls again, its own three text
-  sizes, and the colours it uses for objective states.
+* **Mythic+ and dungeon trackers** — the same panel controls again, its own
+  three text sizes, and the colours it uses for objective states. One group for
+  two panels, because the dungeon panel *is* the Mythic+ panel with the
+  keystone taken out of it: whatever you set here it draws with, so the two can
+  never end up looking like different addons. What it keeps of its own is a
+  position and a switch.
 * **Boons** — the Mythic+ boon bar, which is off until you turn it on.
 
 Each tracker is styled separately on purpose: the Mythic+ panel is a block of
@@ -106,6 +111,18 @@ quest they belong to instead of hanging off the left edge.
 level in the header, a large timer, the chest/threshold bar, the enemy forces
 meter and the boss rows.
 
+**On the dungeon tracker** — Normal, Heroic and Mythic 0, the panel Ascension
+draws when you zone into a dungeon through the group finder. The same panel
+again with everything keystone-shaped removed: no timer, no thresholds, no
+affixes, no enemy forces. The header carries the dungeon and how hard it is —
+`Mara (Mythic)` — where the Mythic+ header carries the dungeon and the key
+level, and the objectives sit under it with the same tick and the same colours
+the Mythic+ boss rows use.
+
+Ascension's own version of that panel says `Dungeon` at the top whatever
+difficulty you are in, so a Normal, a Heroic and a Mythic 0 all look the same.
+heroPanel's says which.
+
 **Placing the Mythic+ panel without being in a key.** That panel only exists
 during a keystone run, so normally the first chance you get to see where you put
 it is thirty seconds into a timed pull. Turn on *Show panel for placement* in the
@@ -117,6 +134,11 @@ It turns itself off the moment a real keystone starts, and it doesn't survive a
 `/reload`, so it can't be left on by accident. The affix row is the one thing it
 can't show you: those are real icons off the client's own affix table, and
 inventing them would draw art that doesn't match what you'll get in a key.
+
+The dungeon panel has the same switch for the same reason — *Show dungeon panel
+for placement*, or `/hp dungeon preview` — since that tracker is only on screen
+inside a dungeon. The two panels are placed separately, because they are two
+frames and only one of them is ever up at a time.
 
 **Text you can read over anything.** Turn the panel down to nearly transparent
 and the header still reads over snow or open sky. There's an optional text
@@ -265,14 +287,15 @@ Everything below is also in the options window, except where noted.
 |---|---|
 | `/hp` | Open the options window |
 | `/hp help` | List the commands |
-| `/hp lock` / `/hp unlock` | Lock or unlock both trackers for dragging |
-| `/hp scale <watch\|mplus> <0.5-1.5>` | Set a tracker's scale |
-| `/hp reset [watch\|mplus\|boons]` | Clear saved position and scale |
+| `/hp lock` / `/hp unlock` | Lock or unlock every tracker for dragging |
+| `/hp scale <watch\|mplus\|dungeon> <0.5-1.5>` | Set a tracker's scale |
+| `/hp reset [watch\|mplus\|dungeon\|boons]` | Clear saved position and scale |
 | `/hp font <8-30>` | Set every text size at once |
 | `/hp fontface <name>` | Pick a font by name |
 | `/hp keys [on\|off]` | Answer `?keys` in group chat — no argument posts your key now |
 | `/hp boons [on\|off\|reset\|expiry]` | The Mythic+ boon bar — no argument reports what it found; `expiry` dumps the tooltip lines the glow reads |
 | `/hp mplus [preview]` | Report what the Mythic+ panel resolved — `preview` draws it outside a key so you can place it |
+| `/hp dungeon [preview]` | The same for the dungeon panel — Normal, Heroic and Mythic 0 |
 | `/hp mode <auto\|own\|holder\|yield>` | Who positions the trackers |
 | `/hp skin [on\|off]` | Style the trackers, or hand them back to the game |
 | `/hp status` | Report what heroPanel found and hooked |
@@ -280,8 +303,8 @@ Everything below is also in the options window, except where noted.
 
 ## If something looks wrong
 
-**`/hp skin off`** is the escape hatch. It puts both trackers back exactly the
-way the game and Ascension's own addon had them — fonts, colours, header and
+**`/hp skin off`** is the escape hatch. It puts every tracker back exactly the
+way the game and Ascension's own addons had them — fonts, colours, header and
 all. `/hp skin on` brings heroPanel back. Nothing is lost either way.
 
 **`/hp reset`** clears saved positions and scales if a tracker has ended up

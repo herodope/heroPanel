@@ -9,7 +9,8 @@
 
 local ADDON_NAME, ns = ...
 
--- Addons that also drive WatchFrame / MythicPlusObjectiveTracker.
+-- Addons that also drive WatchFrame, MythicPlusObjectiveTracker or
+-- LFGObjectiveTracker. DeModal moves and skins all three.
 -- name         the addon folder name passed to the addon API
 -- globals      globals that prove the addon is live even if the API disagrees
 local CONFLICTS = {
@@ -410,10 +411,11 @@ ns:On("PLAYER_LOGIN", function()
 
     if not ns.DEBUG then return end
 
-    ns.Debug("%s v%s ready. Objective skin %s, Mythic+ skin %s, frames %s.",
+    ns.Debug("%s v%s ready. Objective skin %s, Mythic+ skin %s, dungeon skin %s, frames %s.",
         ADDON_NAME, ns.version,
-        ns.SkinEnabled("watch") and "enabled" or "disabled",
-        ns.SkinEnabled("mplus") and "enabled" or "disabled",
+        ns.SkinEnabled("watch")   and "enabled" or "disabled",
+        ns.SkinEnabled("mplus")   and "enabled" or "disabled",
+        ns.SkinEnabled("dungeon") and "enabled" or "disabled",
         ns.IsLocked() and "locked" or "unlocked")
 
     -- The M+ tracker may still be polling at this point, so report once more

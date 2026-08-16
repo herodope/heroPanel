@@ -71,8 +71,8 @@ local GROUP_LABEL_H = 26   -- and the label itself, which is set over body size
 local ROW_HEIGHT    = 28
 local SLIDER_HEIGHT = 34
 local FOOTER_HEIGHT = 44
--- Two rows now, one switch per panel. See the note on the enable block below.
-local ENABLE_HEIGHT = 92
+-- Three rows now, one switch per panel. See the note on the enable block below.
+local ENABLE_HEIGHT = 130
 
 -- The scrollbar sits in the right margin, clear of the controls: they anchor
 -- PAD_X in and it is inset less than half that.
@@ -208,6 +208,13 @@ local function Apply(reason)
     if ns.Mplus then
         pcall(ns.Mplus.Restyle)
         pcall(ns.Mplus.Refresh, reason)
+    end
+    -- The dungeon panel is drawn from the Mythic+ panel's settings, so every
+    -- control in that group has to reach it as well - otherwise the two panels
+    -- agree only until somebody moves a slider.
+    if ns.Dungeon then
+        pcall(ns.Dungeon.Restyle)
+        pcall(ns.Dungeon.Refresh, reason)
     end
     -- The boon bar takes its chrome from the Mythic+ panel's colours, so a
     -- change made in that group has to reach it too, and its own group's
@@ -1222,10 +1229,10 @@ local function Build()
     local title = NewText(panel, 2, TEXT_BRIGHT, "heroPanel")
     title:SetPoint("TOPLEFT", lockButton, "TOPRIGHT", 12, -1)
 
-    -- Both trackers, named. "Objective tracker skin" undersold half of what is
-    -- in the window: the Mythic+ panel is a group of its own now.
+    -- Every tracker, named. "Objective tracker skin" undersold what is in the
+    -- window, and naming two of the three would undersell it again.
     local subtitle = NewText(panel, -2, TEXT_MUTED,
-        "M+ and Objective tracker skin \194\183 v" .. ns.version)
+        "Objective, M+ and dungeon tracker skin \194\183 v" .. ns.version)
     subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
 
     local pill = CreateFrame("Frame", nil, panel)
@@ -1271,14 +1278,18 @@ local function Build()
     -- something else has gone wrong - and one you have to go looking for is not
     -- that.
     --
-    -- One switch per panel. A single "Enable skin" covering both came first and
-    -- made the commonest thing anybody wants from a skin - seeing one panel
-    -- without it - impossible to do to one panel at a time.
+    -- One switch per panel. A single "Enable skin" covering all of them came
+    -- first and made the commonest thing anybody wants from a skin - seeing one
+    -- panel without it - impossible to do to one panel at a time.
     --
-    -- Both stay in the fixed block rather than moving down into each panel's
-    -- own group. A switch that turns a panel off is not a setting of that panel
-    -- in the way its background colour is, and burying either one behind a
+    -- All three stay in the fixed block rather than moving down into each
+    -- panel's own group. A switch that turns a panel off is not a setting of
+    -- that panel in the way its background colour is, and burying one behind a
     -- scroll is exactly what the block exists to avoid.
+    --
+    -- The dungeon panel has a switch here and no group of its own below,
+    -- because it is drawn from the Mythic+ panel's settings - see the note on
+    -- its placement toggle in that group.
     ------------------------------------------------------------------
 
     local y = HEADER_HEIGHT + 12
@@ -1315,8 +1326,9 @@ local function Build()
             end, 8)
     end
 
-    EnableToggle(12, "watch", "Objective panel skin", "Off = Blizzard's own quest tracker")
-    EnableToggle(50, "mplus", "M+ panel skin",        "Off = Ascension's own Mythic+ tracker")
+    EnableToggle(12, "watch",   "Objective panel skin", "Off = Blizzard's own quest tracker")
+    EnableToggle(50, "mplus",   "M+ panel skin",        "Off = Ascension's own Mythic+ tracker")
+    EnableToggle(88, "dungeon", "Dungeon panel skin",   "Normal, Heroic and Mythic 0 - drawn from the M+ settings below")
 
     local bodyTop = y - 8 + ENABLE_HEIGHT + GROUP_GAP
 
@@ -1453,7 +1465,14 @@ local function Build()
         end)
 
     ------------------------------------------------------------------
-    -- MYTHIC+ TRACKER
+    -- MYTHIC+ AND DUNGEON TRACKERS
+    --
+    -- One group for two panels, because they are one panel: the dungeon panel
+    -- is the Mythic+ panel with the keystone taken out of it and reads these
+    -- settings directly rather than keeping a copy - see the header of
+    -- Dungeon.lua. A second group of identical controls would have been a
+    -- second thing to keep matched and a way for the same dungeon to be drawn
+    -- two different ways depending on which difficulty it was run at.
     --
     -- Three font sizes, the same way the quest tracker has three. One number
     -- moved the whole panel together, which sounds harmless until you try to
@@ -1470,7 +1489,7 @@ local function Build()
     -- boss list.
     ------------------------------------------------------------------
 
-    y = GroupLabel(body, y + GROUP_GAP, "Mythic+ tracker", true)
+    y = GroupLabel(body, y + GROUP_GAP, "Mythic+ and dungeon trackers", true)
 
     -- Placement preview.
     --
@@ -1488,6 +1507,19 @@ local function Build()
         function() return ns.Mplus and ns.Mplus.IsPreview() end,
         function(value)
             if ns.Mplus then ns.Mplus.SetPreview(value) end
+        end)
+
+    -- The dungeon panel's own placement, beside the Mythic+ one rather than in
+    -- a group of its own. They are two frames with two saved positions and that
+    -- is the whole of what is separate about them, so the two switches that
+    -- place them belong next to each other; everything under this line governs
+    -- both panels at once.
+    y = NewToggle(body, y, "Show dungeon panel for placement",
+        { "the same, for Normal / Heroic / Mythic 0",
+          "it has its own position; everything else here is shared" },
+        function() return ns.Dungeon and ns.Dungeon.IsPreview() end,
+        function(value)
+            if ns.Dungeon then ns.Dungeon.SetPreview(value) end
         end)
 
     y = PanelGroup(body, y, "mplus")
@@ -1901,8 +1933,9 @@ local function Obstacles()
     for i = 1, #ns.TRACKER_KEYS do
         Add(ns.GetTrackerFrame(ns.TRACKER_KEYS[i]))
     end
-    if ns.Skin  and ns.Skin.GetPlate  then Add(ns.Skin.GetPlate())  end
-    if ns.Mplus and ns.Mplus.GetPlate then Add(ns.Mplus.GetPlate()) end
+    if ns.Skin    and ns.Skin.GetPlate    then Add(ns.Skin.GetPlate())    end
+    if ns.Mplus   and ns.Mplus.GetPlate   then Add(ns.Mplus.GetPlate())   end
+    if ns.Dungeon and ns.Dungeon.GetPlate then Add(ns.Dungeon.GetPlate()) end
 
     return list
 end
@@ -2022,14 +2055,18 @@ function options.Sync()
     end
     syncing = false
 
-    -- Three states, because there are two switches. "Enabled" over a window
-    -- where one of the two panels is off would be the pill telling a half-truth
+    -- Three states, because there are three switches. "Enabled" over a window
+    -- where one of the panels is off would be the pill telling a half-truth
     -- about the very thing it exists to report at a glance.
-    local watchOn, mplusOn = ns.SkinEnabled("watch"), ns.SkinEnabled("mplus")
+    local on = 0
+    for i = 1, #ns.TRACKER_KEYS do
+        if ns.SkinEnabled(ns.TRACKER_KEYS[i]) then on = on + 1 end
+    end
+
     local label, colour
-    if watchOn and mplusOn then
+    if on == #ns.TRACKER_KEYS then
         label, colour = "ENABLED", GREEN
-    elseif watchOn or mplusOn then
+    elseif on > 0 then
         label, colour = "PARTIAL", "#E7C67C"
     else
         label, colour = "DISABLED", "#C98A8A"
@@ -2123,11 +2160,12 @@ function options.Reset()
     -- the kind of half-reset that makes people reload to check.
     if panel then panel:SetScale(SavedPlacement().scale or 1) end
 
-    -- Both panels, each from its own restored default, rather than one call
-    -- that would have to pick one of the two flags to speak for both.
+    -- Every panel, each from its own restored default, rather than one call
+    -- that would have to pick one of the flags to speak for all of them.
     if ns.SetSkinEnabled then
-        ns.SetSkinEnabled("watch", ns.SkinEnabled("watch"))
-        ns.SetSkinEnabled("mplus", ns.SkinEnabled("mplus"))
+        ns.SetSkinEnabled("watch",   ns.SkinEnabled("watch"))
+        ns.SetSkinEnabled("mplus",   ns.SkinEnabled("mplus"))
+        ns.SetSkinEnabled("dungeon", ns.SkinEnabled("dungeon"))
     end
     Apply("options reset")
 

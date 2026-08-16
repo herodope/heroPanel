@@ -247,6 +247,10 @@ local function QueueRestyle()
             pcall(ns.Mplus.Restyle)
             pcall(ns.Mplus.Refresh, "shared media changed")
         end
+        if ns.Dungeon then
+            pcall(ns.Dungeon.Restyle)
+            pcall(ns.Dungeon.Refresh, "shared media changed")
+        end
         if ns.Boons   then pcall(ns.Boons.Restyle)   end
         if ns.Options then pcall(ns.Options.Restyle) end
     end)
@@ -262,6 +266,10 @@ function media.Apply(reason)
     if ns.Mplus then
         pcall(ns.Mplus.Restyle)
         pcall(ns.Mplus.Refresh, reason or "font changed")
+    end
+    if ns.Dungeon then
+        pcall(ns.Dungeon.Restyle)
+        pcall(ns.Dungeon.Refresh, reason or "font changed")
     end
     if ns.Boons   then pcall(ns.Boons.Restyle)   end
     if ns.Options then pcall(ns.Options.Restyle) end
