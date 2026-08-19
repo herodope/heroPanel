@@ -12,15 +12,35 @@ local ADDON_NAME, ns = ...
 -- Addons that also drive WatchFrame, MythicPlusObjectiveTracker or
 -- LFGObjectiveTracker. DeModal moves and skins all three.
 -- name         the addon folder name passed to the addon API
--- globals      globals that prove the addon is live even if the API disagrees
+-- globals      globals that prove the addon is live even if the API disagrees.
+--              Only consulted for entries without an Active test.
+-- Active       optional, and when present it is the whole test: installed is
+--              not enough, the entry only counts while this says the
+--              overlapping feature is switched on. DeModal and ElvUI take the
+--              tracker by being loaded at all, so they have none. Leatrix Plus
+--              is a hundred-odd unrelated tweaks with one checkbox that touches
+--              the tracker, off by default - warning its whole user base about
+--              a feature they have not enabled is noise, and noise is what gets
+--              a warning ignored.
 local CONFLICTS = {
     { name = "DeModal", label = "DeModal", globals = { "DeModal" } },
     { name = "ElvUI",   label = "ElvUI",   globals = { "ElvUI" } },
+    {
+        name   = "Leatrix_Plus",
+        label  = "Leatrix Plus",
+        Active = function() return ns.LeatrixHasTracker() end,
+    },
 }
 
 ns.conflictsWarned = false
 
 local function IsLoadedOrEnabled(entry)
+    if entry.Active then
+        local ok, active = pcall(entry.Active)
+        if ok and active then return true, "active" end
+        return false
+    end
+
     if IsAddOnLoaded and IsAddOnLoaded(entry.name) then return true, "loaded" end
 
     if GetAddOnInfo then
@@ -292,6 +312,240 @@ HANDLERS.moveanything = {
 }
 
 --------------------------------------------------------------------------------
+-- Leatrix Plus
+--
+-- The third shape of this problem, and the most destructive of the three.
+-- Leatrix Plus is a large quality-of-life addon - a hundred-odd unrelated
+-- tweaks - and exactly one of them, "Manage Quest Tracker" on its Frames page,
+-- touches WatchFrame. It is off by default. When it is on, its Player() handler
+-- does this at PLAYER_LOGIN:
+--
+--     trackerContainer.SetPoint = function(self, _, relativeTo)
+--         if not InCombatLockdown() and not isWatchFrameMoving
+--            and relativeTo ~= trackerHolder then
+--             WatchFrameSetPoint(self, 'TOPRIGHT', trackerHolder)
+--             self:SetParent(trackerHolder)
+--         end
+--     end
+--
+-- Read that carefully, because two separate things go wrong and only one of
+-- them is the obvious one.
+--
+--   * It is a *replacement*, not a hook. It rawsets over WatchFrame.SetPoint -
+--     and heroPanel installs its anchor watch with hooksecurefunc, which is
+--     itself a rawset on the same key. Leatrix runs at PLAYER_LOGIN and
+--     heroPanel hooks at ADDON_LOADED, so Leatrix wins and heroPanel's SetPoint
+--     hook is simply gone for the session. The one thing that notices the
+--     tracker being re-anchored no longer fires.
+--   * It discards its own arguments. Every heroPanel SetPoint on the tracker -
+--     the mover, the restore-on-show, the geometry re-apply - is swallowed and
+--     answered with Leatrix's own anchor instead.
+--
+-- So the mover moves nothing, and the contention detector that exists to notice
+-- precisely that has been unhooked. Nothing degrades, nothing warns, and the
+-- player is left dragging a tracker that will not move for no stated reason.
+-- (The SetParent hook does survive, and Leatrix calls SetParent from inside its
+-- replacement, so heroPanel eventually observes the holder and steps down to
+-- holder mode after a visible tug-of-war. That is a floor, not a fix.)
+--
+-- Detection is off Leatrix's own configuration panel rather than off its addon
+-- name or its saved variables. LeaPlusGlobalPanel_TrackerPanel is created by
+-- CreatePanel inside the feature's `if` block and nowhere else, so its
+-- existence means the feature ran - which is the question, since the option is
+-- off by default and is locked out entirely when ElvUI is handling frames.
+--
+-- Releasing it is where Leatrix differs from the other two, and the difference
+-- is worth spelling out because the obvious approach is wrong. Leatrix keeps
+-- its live settings in LeaPlusLC, which is a file-local - there is no global
+-- handle on it at all. Only LeaPlusDB, the saved variable, is reachable, and
+-- writing that is worse than useless: Leatrix rewrites LeaPlusDB from LeaPlusLC
+-- at PLAYER_LOGOUT, so a value poked into it is overwritten by the reload that
+-- was supposed to apply it. LeaPlusDB is therefore read here and never written.
+--
+-- What is reachable is the checkbox, because the panel it lives on is a named
+-- global. Driving it runs Leatrix's own OnClick, which sets LeaPlusLC inside
+-- their closure, and their logout handler then saves it - the same sequence as
+-- the player ticking it themselves. The checkbox is anonymous, so it is found
+-- by walking the panel and matching its label; a build that renames the caption
+-- falls into the instructions path rather than doing something approximate.
+--------------------------------------------------------------------------------
+
+-- Leatrix's own caption, minus the "*" MakeCB appends to mark a reload-required
+-- option. It is not in Leatrix_Plus_Locale.lua under any locale, so the L[]
+-- lookup falls through to the key and this is the on-screen text everywhere.
+-- The second entry is the older, shorter wording.
+local LEATRIX_CAPTIONS = {
+    ["manage quest tracker"] = true,
+    ["manage tracker"]       = true,
+}
+
+local function LeatrixLabelMatches(box)
+    local label = box.f
+    if type(label) ~= "table" or type(label.GetText) ~= "function" then return false end
+
+    local ok, text = pcall(label.GetText, label)
+    if not ok or type(text) ~= "string" then return false end
+
+    text = string.lower(text)
+    text = string.gsub(text, "%*", "")
+    text = string.gsub(text, "^%s*(.-)%s*$", "%1")
+    return LEATRIX_CAPTIONS[text] and true or false
+end
+
+-- The Frames page is a child of the main panel and the checkbox is a child of
+-- the page, so two levels down. Regions are skipped - the label is read off the
+-- checkbox's own .f rather than found by walking - and the depth is capped just
+-- past where the answer is, because this runs on a panel with several hundred
+-- widgets on it.
+local function FindLeatrixTrackerCheckbox()
+    local panel = _G.LeaPlusGlobalPanel
+    if type(panel) ~= "table" or type(ns.WalkFrameTree) ~= "function" then return nil end
+
+    local found
+    ns.WalkFrameTree(panel, function(object, info)
+        if found then return false end
+        if info.objectType ~= "CheckButton" then return end
+        if LeatrixLabelMatches(object) then found = object end
+    end, { includeRegions = false, maxDepth = 3 })
+
+    return found
+end
+
+-- The gear button beside the checkbox, which is its only child frame. Leatrix
+-- dims it to alpha 0.3 whenever the option is off, from SetDim() at the end of
+-- the same OnClick - so it is the one piece of LeaPlusLC's state that is
+-- visible from outside, and the only way to confirm the flip actually landed.
+local function LeatrixConfigButton(box)
+    local ok, children = pcall(function() return { box:GetChildren() } end)
+    if not ok then return nil end
+    for i = 1, #children do
+        local child = children[i]
+        if child and child.GetAlpha and child.GetObjectType
+           and child:GetObjectType() == "Button" then
+            return child
+        end
+    end
+    return nil
+end
+
+-- Leatrix's holder is created with no name, so this asks the shape of the
+-- question rather than the name: is the tracker hanging off some unnamed frame
+-- that is not UIParent? A named holder - ElvUI's WatchFrameHolder is the one in
+-- the wild - is not this, and is handled by Move.lua's holder mode instead.
+local function DockedIntoUnnamedFrame()
+    local watch = ns.GetTrackerFrame and ns.GetTrackerFrame("watch")
+    if not watch then return false end
+
+    local function Unnamed(object)
+        if type(object) ~= "table" or object == UIParent then return false end
+        if type(object.GetName) ~= "function" then return false end
+        local ok, objectName = pcall(object.GetName, object)
+        return ok and (objectName == nil or objectName == "")
+    end
+
+    local gotParent, parent = pcall(watch.GetParent, watch)
+    if gotParent and Unnamed(parent) then return true end
+
+    local gotCount, count = pcall(watch.GetNumPoints, watch)
+    if not gotCount or type(count) ~= "number" then return false end
+    for i = 1, count do
+        local gotPoint, _, relativeTo = pcall(watch.GetPoint, watch, i)
+        if gotPoint and Unnamed(relativeTo) then return true end
+    end
+    return false
+end
+
+-- Also read by the CONFLICTS table at the top of the file, so the login line
+-- stays quiet for the many Leatrix users who never turned this on.
+function ns.LeatrixHasTracker()
+    -- The flag first, for the reason spelled out on DeModal.Present: after the
+    -- fix and its reload this reads "Off" and nothing else needs consulting.
+    local db = _G.LeaPlusDB
+    if type(db) == "table" and db.ManageTracker == "Off" then return false end
+
+    -- The panel is the marker. It exists only because the feature ran.
+    if _G.LeaPlusGlobalPanel_TrackerPanel ~= nil then return true end
+
+    -- A build that stops creating that panel still has to dock the tracker
+    -- somewhere, so fall back to the frame itself. Gated on the option being on
+    -- so this cannot pin another addon's unnamed holder on Leatrix.
+    if type(db) == "table" and db.ManageTracker == "On" then
+        return DockedIntoUnnamedFrame()
+    end
+    return false
+end
+
+HANDLERS.leatrix = {
+    label = "Leatrix Plus",
+
+    Present = function() return ns.LeatrixHasTracker() end,
+
+    Resolved = function()
+        local db = _G.LeaPlusDB
+        return type(db) == "table" and db.ManageTracker == "Off" and true or false
+    end,
+
+    CanFix = function() return FindLeatrixTrackerCheckbox() ~= nil end,
+
+    Fix = function()
+        local box = FindLeatrixTrackerCheckbox()
+        if not box then return false end
+
+        local onClick = box.GetScript and box:GetScript("OnClick")
+        if type(onClick) ~= "function" then return false end
+
+        -- SetChecked and then the handler, rather than Click, for the same
+        -- reason as DeModal: Click toggles, and a box that somehow reads as
+        -- already unticked would be turned back on by it.
+        pcall(box.SetChecked, box, false)
+
+        -- The return value is deliberately ignored. Leatrix's OnClick sets its
+        -- option and then calls Live(), which runs a great deal of unrelated
+        -- code; a throw in there leaves the option correctly set and would
+        -- still fail a pcall. What actually happened is read off the frames
+        -- below instead of inferred from whether the call came back clean.
+        pcall(onClick, box)
+
+        local stillChecked = box.GetChecked and box:GetChecked()
+        if stillChecked then return false end
+
+        local gear = LeatrixConfigButton(box)
+        if gear then
+            local ok, alpha = pcall(gear.GetAlpha, gear)
+            -- Dimmed means Leatrix's own SetDim ran and read the option as off,
+            -- which is the confirmation that LeaPlusLC really changed and not
+            -- just the checkbox art.
+            if ok and type(alpha) == "number" then return alpha < 0.9 end
+        end
+
+        -- No gear button to read. The tick is the only evidence there is.
+        return true
+    end,
+
+    fixText =
+        "|cFF9184D9Leatrix Plus|r is positioning the objective tracker.\n\n"
+        .. "It replaces the tracker's anchor outright, so heroPanel's mover cannot "
+        .. "move it and gets no say in where it goes.\n\n"
+        .. "heroPanel can untick Leatrix Plus's |cFFC2C6D8Manage Quest Tracker|r "
+        .. "option for you. That is the one option of its hundred-odd that touches "
+        .. "the tracker; everything else Leatrix Plus does is left alone.\n\n"
+        .. "Your UI will reload.",
+
+    staleText =
+        "|cFF9184D9Leatrix Plus|r is positioning the objective tracker, and heroPanel "
+        .. "could not reach its option to untick it.\n\n"
+        .. "Open Leatrix Plus with |cFFC2C6D8/ltp|r, go to |cFFC2C6D8Frames|r and untick "
+        .. "|cFFC2C6D8Manage Quest Tracker|r, then reload.\n\n"
+        .. "Or run |cFFC2C6D8/hp mode yield|r to let Leatrix Plus place the tracker "
+        .. "while heroPanel only skins it.",
+
+    chatHint =
+        "Leatrix Plus is positioning the objective tracker, so heroPanel's mover "
+        .. "cannot. Open |cFFC2C6D8/ltp|r, go to |cFFC2C6D8Frames|r and untick "
+        .. "|cFFC2C6D8Manage Quest Tracker|r, then |cFFC2C6D8/reload|r.",
+}
+
+--------------------------------------------------------------------------------
 -- Asking, and acting
 --------------------------------------------------------------------------------
 
@@ -361,7 +615,10 @@ local function Ask(handler, fixable)
     return true
 end
 
-local ORDER = { "demodal", "moveanything" }
+-- Leatrix goes second because its overlap is the one that leaves no trace: it
+-- unhooks heroPanel's anchor watch on the way past, so unlike the other two
+-- there is nothing left to notice the frame being taken and degrade for it.
+local ORDER = { "demodal", "leatrix", "moveanything" }
 
 function ns.CheckTakeovers()
     for i = 1, #ORDER do

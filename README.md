@@ -285,8 +285,23 @@ instead of the tracker, and if the frame is clearly owned by someone else it
 stops positioning it and only styles it.
 
 This is automatic. If you want to force it, `/hp mode <auto|own|holder|yield>`,
-and `/hp status` will tell you what it settled on. heroPanel never disables
-another addon for you, and never touches another addon's settings.
+and `/hp status` will tell you what it settled on.
+
+Three addons take the tracker in a way that does not degrade gracefully — you
+get a mover that snaps back or does nothing at all, with nothing on screen to
+say why. Each of those has one setting of its own that hands the tracker back,
+and heroPanel offers to change **that one setting**, once, in a dialog you can
+say no to:
+
+| Addon | The setting | Where you'd find it yourself |
+|---|---|---|
+| **DeModal** | Disable Objectives Features | Escape → Interface → AddOns → DeModal |
+| **MoveAnything** | Reset the `WatchFrame` entry | `/ma` — its own window, not the Blizzard panel |
+| **Leatrix Plus** | Manage Quest Tracker | `/ltp` → Frames |
+
+Nothing else those addons do is touched, the change is made through their own
+control rather than by editing their settings behind their back, and saying no
+just prints the manual steps. heroPanel never disables another addon for you.
 
 ## Commands
 
