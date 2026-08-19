@@ -43,14 +43,23 @@
         show/hide.
 
       * Work is split in two. Visual work - alpha, desaturation, stack counts,
-        cooldown swipes - is not protected and runs immediately, in combat or
-        out. Secure work - binding a button to a bag slot, laying the bar out,
-        installing keybinds - is guarded by InCombatLockdown() and deferred
-        through ns.RunWhenSafe, which flushes on PLAYER_REGEN_ENABLED.
+        cooldown swipes, and which cells are in the input path - is not
+        protected and runs immediately, in combat or out. Secure work - binding
+        a button to a bag slot, laying the bar out, installing keybinds - is
+        guarded by InCombatLockdown() and deferred through ns.RunWhenSafe, which
+        flushes on PLAYER_REGEN_ENABLED.
 
-    A boon looted in the middle of a fight therefore lights up straight away and
-    becomes clickable when the fight ends. That is a real limitation and it is
-    the one the client's own implementation shipped with.
+      * Which cells take clicks is therefore the hit rect's job and never
+        EnableMouse's. EnableMouse is on that refused list, so a button parked
+        with its mouse off is one no mid-fight reveal can rescue; the mouse is
+        turned on once and left on, and SetHitRectInsets does the parking. See
+        the note on SetClickable.
+
+    A boon looted in the middle of a fight therefore lights up straight away,
+    takes its hover and its tooltip straight away, and becomes usable when the
+    fight ends - the bag slot behind it cannot be bound until then. That last
+    part is a real limitation and it is the one the client's own implementation
+    shipped with.
 
     The cycle key is the way out of that
     ------------------------------------
@@ -1365,6 +1374,48 @@ local function SizeBarToRevealed()
     end
 end
 
+-- Whether a button is in the input path - without touching EnableMouse.
+--
+-- EnableMouse is protected on a SecureActionButtonTemplate, so a button parked
+-- with its mouse off could not get it back until the fight ended. That is
+-- exactly the state a boon looted mid-pull arrives into: the alpha pass drew
+-- it, and then it took no clicks and showed no tooltip, on the one bar whose
+-- whole job is to be clicked. The leak ran the other way too - a boon spent in
+-- combat went to alpha zero and kept its mouse, which is an invisible thing
+-- eating clicks, the precise failure parking was introduced to prevent.
+--
+-- So the mouse stays on for every placed button and the hit rect does the
+-- parking instead. SetHitRectInsets is not one of the calls the client refuses
+-- under lockdown, so this lands mid-combat where EnableMouse cannot.
+--
+-- If some build does refuse it, the pcall swallows it and the button is left
+-- mouse-enabled and clickable. That is the right way round to fail on this bar:
+-- the cost is a parked cell eating a click inside the bar's own full-size
+-- footprint, and the alternative is a boon that cannot be clicked at all.
+local function SetClickable(button, on)
+    if not button then return end
+
+    -- Always on, and never turned off again. This is the call that cannot be
+    -- taken back in combat, so it is only ever made in the direction that
+    -- leaves the bar working.
+    pcall(button.EnableMouse, button, true)
+
+    if type(button.SetHitRectInsets) ~= "function" then return end
+
+    if on then
+        pcall(button.SetHitRectInsets, button, 0, 0, 0, 0)
+        return
+    end
+
+    -- Inset by the button's whole width and height on each side, which leaves
+    -- the rect inside out and so catching nothing. Measured off the button
+    -- rather than off the icon-size setting, because a reveal in combat has to
+    -- work from whatever size the last layout gave it.
+    local width  = tonumber(button:GetWidth())  or 0
+    local height = tonumber(button:GetHeight()) or 0
+    pcall(button.SetHitRectInsets, button, width, width, height, height)
+end
+
 local function RefreshVisuals()
     if not bar then return end
     local cfg = Config()
@@ -1380,7 +1431,12 @@ local function RefreshVisuals()
         -- Sampled buttons are the placement-preview stand-ins and are meant to
         -- be seen while unowned, so they keep theirs.
         if button.itemID and not button.sampled then
-            button:SetAlpha((packing and not record) and 0 or 1)
+            -- Drawn and clickable move together. Splitting them is what left a
+            -- boon looted mid-fight visible and dead, and a boon spent
+            -- mid-fight invisible and live.
+            local drawn = not (packing and not record)
+            button:SetAlpha(drawn and 1 or 0)
+            SetClickable(button, drawn)
         end
 
         button.icon:SetDesaturated(not record)
@@ -1479,26 +1535,56 @@ end
 --------------------------------------------------------------------------------
 -- Visibility
 --
--- The default is exactly the check the client's own UI makes: a party instance
--- at dungeon difficulty 3. "Show only in Mythic dungeons" off turns that check
+-- The default is the check the client's own UI makes: a party instance at
+-- dungeon difficulty 3. "Show only in Mythic dungeons" off turns that check
 -- into nothing, which is how the bar gets positioned somewhere other than
 -- mid-run.
+--
+-- The difficulty comes from GetInstanceInfo first and GetDungeonDifficulty only
+-- as the fallback, which is the order Dungeon.lua already uses. They are not
+-- the same question: GetInstanceInfo answers for the instance the player is
+-- standing in, while GetDungeonDifficulty answers for the difficulty selector -
+-- and a key run is entered through the keystone rather than through that
+-- dropdown, so the selector can still read normal or heroic inside a Mythic.
+-- The client's own boon UI asks the selector and that is the bug being copied:
+-- the bar hid itself mid-key while the Mythic+ panel beside it drew a +15.
 --
 -- IsInInstance returns 1 rather than true on this client, so it is tested for
 -- truth rather than compared - a build that returns a boolean must not turn the
 -- bar off.
 --------------------------------------------------------------------------------
 
+-- The instance the player is in: whether it is a party instance, and at what
+-- difficulty index. Either half may come back nil on a build that answers one
+-- call and not the other.
+local function InstanceState()
+    local instanceType, difficulty
+
+    if type(_G.GetInstanceInfo) == "function" then
+        local ok, _, kind, index = pcall(_G.GetInstanceInfo)
+        if ok then
+            if type(kind) == "string" and kind ~= "" then instanceType = kind end
+            difficulty = tonumber(index)
+        end
+    end
+
+    if instanceType == nil and type(_G.IsInInstance) == "function" then
+        local ok, inInstance, kind = pcall(_G.IsInInstance)
+        if ok and inInstance and inInstance ~= 0 then instanceType = kind end
+    end
+
+    if difficulty == nil and type(_G.GetDungeonDifficulty) == "function" then
+        local ok, index = pcall(_G.GetDungeonDifficulty)
+        if ok then difficulty = tonumber(index) end
+    end
+
+    return instanceType, difficulty
+end
+
 local function InMythicDungeon()
-    if type(_G.IsInInstance) ~= "function" then return false end
-
-    local ok, inInstance, instanceType = pcall(_G.IsInInstance)
-    if not ok or not inInstance or inInstance == 0 then return false end
+    local instanceType, difficulty = InstanceState()
     if instanceType ~= "party" then return false end
-
-    if type(_G.GetDungeonDifficulty) ~= "function" then return false end
-    local gotDifficulty, difficulty = pcall(_G.GetDungeonDifficulty)
-    return gotDifficulty and difficulty == 3
+    return difficulty == 3
 end
 
 local function ShouldShow()
@@ -1870,7 +1956,7 @@ local function Layout()
 
             Place(button, group)
             button:SetAlpha(1)
-            pcall(button.EnableMouse, button, true)
+            SetClickable(button, true)
             placed = placed + 1
 
         elseif hideUnowned and button.itemID then
@@ -1904,16 +1990,19 @@ local function Layout()
     -- run, so none of this shows until something is revealed - and then the
     -- sizing pass grows it.
     --
-    -- Mouse off while parked, because an invisible button that still takes
-    -- clicks is a boon you can fire by clicking empty screen. It comes back
-    -- with the next out-of-combat pass, which is also when the secure
-    -- attributes that make the button do anything are set.
+    -- Out of the input path while parked, because an invisible button that
+    -- still takes clicks is a click the world behind it never sees.
+    --
+    -- Done with the hit rect and not with EnableMouse. The mouse being off was
+    -- the older spelling of this and it could not be undone in combat, so a
+    -- boon revealed mid-pull was drawn and then took no clicks and showed no
+    -- tooltip. See the note on SetClickable.
     ----------------------------------------------------------------
     for i = 1, #parked do
         local button = parked[i]
         Place(button, "rest")
         button:SetAlpha(0)
-        pcall(button.EnableMouse, button, false)
+        SetClickable(button, false)
     end
 
     -- A bar with nothing in it still needs a rectangle, or the drag handle and
@@ -2993,11 +3082,14 @@ _G.BINDING_NAME_HEROPANEL_BOON_CYCLE = "Cycle boons"
 --------------------------------------------------------------------------------
 -- Bag events
 --
--- The Ascension path first. C_Hook:RegisterBucket coalesces a burst of bag
--- changes into one callback with the events batched, and NEW_BAG_ITEM_ADDED /
--- BAG_ITEM_REMOVED carry the bag, slot, itemID and count - so a bag change that
--- has nothing to do with boons costs a loop over a handful of entries rather
--- than a scan of five bags.
+-- Two paths, both live. C_Hook:RegisterBucket coalesces a burst of bag changes
+-- into one callback with the events batched, and each event carries the bag,
+-- slot and itemID - so a bag change that has nothing to do with boons costs a
+-- loop over a handful of entries rather than a scan of five bags. That is the
+-- fast path and it is the one that gets a looted boon onto the bar promptly.
+--
+-- Plain BAG_UPDATE runs behind it as a backstop, because the granular path can
+-- fail silently. See the note on SubscribeBagEvents.
 --
 -- The handler runs securecall'd when the execution path is already insecure,
 -- which is what the client's own boon UI does. It is not that anything below is
@@ -3005,6 +3097,21 @@ _G.BINDING_NAME_HEROPANEL_BOON_CYCLE = "Cycle boons"
 -- work done on one taints what it touches. The buttons are secure frames, so
 -- that matters here in a way it does not anywhere else in heroPanel.
 --------------------------------------------------------------------------------
+
+-- Where the itemID sits in a bucketed bag event's arguments.
+--
+--   BAG_ITEM_ADDED           bag, slot, itemID, count
+--   BAG_ITEM_REMOVED         bag, slot, itemID, count
+--   NEW_BAG_ITEM_ADDED       bag, slot, itemID, count
+--   BAG_ITEM_COUNT_CHANGED   bag, slot, itemID, count, diff
+--   BAG_ITEM_REPLACED        bag, slot, oldID, oldCount, newID, newCount
+--
+-- Four of the five put it third. The replacement carries two of them and either
+-- one can be the boon - the old one when a boon was overwritten, the new one
+-- when a boon landed on top of something else - so both places are read. The
+-- bucket does not say which event a batch entry came from, which is why this is
+-- positional rather than a lookup by name.
+local BAG_EVENT_ITEM_SLOTS = { 3, 5 }
 
 local function OnBagEvent(batch)
     -- Not every build hands the bucket a batch. Without one there is nothing to
@@ -3017,10 +3124,13 @@ local function OnBagEvent(batch)
 
     for i = 1, #batch do
         local event = batch[i]
-        local itemID = type(event) == "table" and event[3] or nil
-        if ClassifyItem(itemID) then
-            boons.Refresh("boon added or removed")
-            return
+        if type(event) == "table" then
+            for j = 1, #BAG_EVENT_ITEM_SLOTS do
+                if ClassifyItem(event[BAG_EVENT_ITEM_SLOTS[j]]) then
+                    boons.Refresh("boon added or removed")
+                    return
+                end
+            end
         end
     end
 end
@@ -3034,34 +3144,73 @@ local function BagEventEntry(batch)
     OnBagEvent(batch)
 end
 
+-- Every granular bag event that can carry a boon.
+--
+-- The list used to be NEW_BAG_ITEM_ADDED, BAG_ITEM_REMOVED and
+-- BAG_ITEM_COUNT_CHANGED, and that is why boons went missing off the bar. The
+-- two that were absent are the two a looted boon most often arrives on:
+--
+--   BAG_ITEM_ADDED     sent for every item that lands in an empty slot.
+--                      NEW_BAG_ITEM_ADDED is the *subset* of those the client
+--                      could match back to an ITEM_PUSH, and it matches by icon
+--                      texture rather than by item - so two boons that share an
+--                      icon, which Skulking and Phasewalk do, can consume each
+--                      other's pending push and the second one is announced on
+--                      BAG_ITEM_ADDED alone.
+--   BAG_ITEM_REPLACED  sent instead of either of the above when the slot was
+--                      not empty. A boon landing on top of something else fires
+--                      only this, so it was previously invisible to the bar.
+--
+-- Subscribing to the whole set costs nothing: OnBagEvent throws away anything
+-- that is not a boon before it does any work.
+local BAG_EVENTS = "BAG_ITEM_ADDED, NEW_BAG_ITEM_ADDED, BAG_ITEM_REMOVED, "
+    .. "BAG_ITEM_REPLACED, BAG_ITEM_COUNT_CHANGED"
+
 local function SubscribeBagEvents()
+    local path = nil
+
     if caps.hook then
+        -- pcall is not the safety net it looks like here. Called from an
+        -- addon, C_Hook:RegisterBucket sees an insecure execution path and
+        -- launders the registration through attributes on its own handler
+        -- frame rather than performing it - so it returns having queued the
+        -- work, and pcall reports success whether or not the registration ever
+        -- landed. There is no return value to test either. That is the whole
+        -- reason the stock route below is now installed alongside this one
+        -- rather than only when this one visibly fails: a bucket that silently
+        -- never registers used to leave the bar with no bag events at all, and
+        -- nothing in the status output could tell that from a working one.
         local ok = pcall(function()
-            _G.C_Hook:RegisterBucket(bar,
-                "NEW_BAG_ITEM_ADDED, BAG_ITEM_REMOVED, BAG_ITEM_COUNT_CHANGED",
-                0.1, BagEventEntry)
+            _G.C_Hook:RegisterBucket(bar, BAG_EVENTS, 0.1, BagEventEntry)
         end)
         if ok then
             ns.Debug("boons: subscribed to C_Hook bag buckets.")
-            return "C_Hook"
+            path = "C_Hook"
+        else
+            ns.Debug("boons: C_Hook:RegisterBucket refused.")
         end
-        ns.Debug("boons: C_Hook:RegisterBucket refused; falling back to BAG_UPDATE.")
     end
 
-    -- The stock route. BAG_UPDATE says nothing about what changed, so every one
-    -- of them costs a scan - which is why it is the fallback and not the
-    -- default. Throttled onto the next frame so moving a stack around a bag
-    -- does not scan five times.
+    -- The stock route, always on. BAG_UPDATE says nothing about what changed,
+    -- so every one of them costs a scan - which is why it is throttled hard and
+    -- why the granular path above is still preferred for latency. As a backstop
+    -- it is worth its price: it is the only thing that guarantees the bar
+    -- cannot sit on a stale hand of boons for a whole key.
+    --
+    -- The delay is 0.3s and not the next frame on purpose. C_InventoryState
+    -- rebuilds the cache this module reads on its own 0.2s BAG_UPDATE bucket,
+    -- so a scan any sooner reads the bags as they were before the change.
     local queued = false
     ns:On("BAG_UPDATE", function()
         if queued then return end
         queued = true
-        ns.After(0.1, function()
+        ns.After(0.3, function()
             queued = false
             boons.Refresh("bag update")
         end)
     end)
-    return "BAG_UPDATE"
+
+    return path and (path .. " + BAG_UPDATE") or "BAG_UPDATE"
 end
 
 --------------------------------------------------------------------------------
@@ -3143,6 +3292,27 @@ function boons.PrintStatus()
         cfg.mythicOnly and "Mythic dungeons only" or "always shown")
     ns.Print("    %d boon(s) in bags; bar is %s",
         ownedCount, (bar and bar:IsShown()) and "|cFF79C68Dshown|r" or "|cFF8B8FA3hidden|r")
+
+    -- Why it is hidden, when it is. A bar that is away mid-key and a bar that
+    -- is away in a city look identical in the line above, and the difference is
+    -- the whole question - so the gate that closed says so, with the readings
+    -- it closed on. This is the line that would have answered the boon bar
+    -- going missing during a +15 without a second run.
+    if bar and not bar:IsShown() then
+        local instanceType, difficulty = InstanceState()
+        if cfg.mythicOnly and not InMythicDungeon() then
+            ns.Print("    |cFF8B8FA3hidden by \"only in Mythic dungeons\"|r - "
+                .. "instance |cFFC2C6D8%s|r, difficulty |cFFC2C6D8%s|r",
+                tostring(instanceType or "none"), tostring(difficulty or "unknown"))
+        elseif cfg.hideEmpty and ownedCount == 0 then
+            ns.Print("    |cFF8B8FA3hidden by \"hide when you have none\"|r")
+        else
+            ns.Print("    |cFF8B8FA3nothing is gating it - "
+                .. "the show is waiting on the end of combat|r")
+        end
+    end
+
+    ns.Print("    bag events: |cFFC2C6D8%s|r", tostring(boons.eventPath or "not subscribed"))
 end
 
 -- /hp boons - what the module resolved, and from where.
