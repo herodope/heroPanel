@@ -215,11 +215,68 @@ end
 local applying = {}
 
 --------------------------------------------------------------------------------
+-- Anchor overrides
+--
+-- A tracker that hangs off another frame for as long as some condition holds,
+-- rather than sitting at the offsets it was dragged to. There is one caller:
+-- the quest tracker can be set to follow the Mythic+ panel for the length of a
+-- keystone run - see the note in Skin.lua.
+--
+-- It lives here rather than with the feature that wants it, because this file
+-- is the one that places a tracker and it does so from three directions the
+-- caller cannot see: the OnShow hook, the anchor hooks' correction pass, and
+-- RestorePosition itself. An override applied anywhere else is one the next of
+-- those to fire undoes.
+--
+-- The override is a function rather than a frame, re-asked on every pass,
+-- because the frame it names comes and goes: the Mythic+ plate is drawn when a
+-- key starts and hidden when it ends, and "the setting is on" is not the same
+-- question as "there is something on screen to hang off right now".
+--
+-- Where the frame was before the override took it is remembered, because a
+-- tracker the player has never dragged has no saved position to go back to -
+-- and a quest tracker left pinned under a Mythic+ panel that is no longer there
+-- is the bug this half exists to prevent.
+--------------------------------------------------------------------------------
+
+local anchorOverrides = {}   -- key -> function() -> frame, gap
+local anchorNotes     = {}   -- key -> what to say when a drag is refused
+local anchorHeld      = {}   -- key -> { x, y }: where it was before we pinned it
+local anchorApplied   = {}   -- key -> true while an override is the live anchor
+
+-- fn() returns the frame to hang off and the gap to leave under it, or nil for
+-- "not right now". fn = nil clears the override.
+function ns.SetAnchorOverride(key, fn, note)
+    anchorOverrides[key] = fn
+    anchorNotes[key]     = note
+end
+
+local function AnchorOverride(key)
+    local fn = anchorOverrides[key]
+    if type(fn) ~= "function" then return nil end
+    local ok, frame, gap = pcall(fn)
+    if not ok or not frame then return nil end
+    return frame, tonumber(gap) or 0
+end
+
+-- Whether a tracker is hanging off an override right now. The drag handler
+-- asks, because a frame pinned to another frame has nowhere for a drag to put
+-- it, and the options window asks so it can say so on the row.
+function ns.IsAnchorOverridden(key)
+    return AnchorOverride(key) ~= nil
+end
+
+--------------------------------------------------------------------------------
 -- Position
 --------------------------------------------------------------------------------
 
 function ns.SavePosition(key)
     if ns.GetMode(key) == "yield" then return false end
+
+    -- Where an overridden frame currently is is where the frame it follows put
+    -- it, not where the player wants it. Saving that would overwrite the
+    -- position the override is supposed to hand back when it lifts.
+    if AnchorOverride(key) then return false end
 
     local record = ns.trackers[key]
     local frame  = ActiveMover(key)
@@ -253,16 +310,61 @@ function ns.RestorePosition(key)
     if ns.GetMode(key) == "yield" then return false end
 
     local frame = ActiveMover(key)
-    local saved = GetSaved(key)
-    if not frame or not saved or not saved.point then return false end
+    if not frame then return false end
 
-    return ns.RunWhenSafe(function()
-        ReleaseFromUIParent(ActiveMoverName(key))
-        applying[key] = true
-        ApplyUIOffsets(frame, saved.x or 0, saved.y or 0)
-        applying[key] = nil
-        ns.Debug("restored %s position: %.0f, %.0f", key, saved.x or 0, saved.y or 0)
-    end, "RestorePosition:" .. key)
+    -- An override wins over the saved offsets for as long as it holds.
+    --
+    -- SetPoint against the frame itself rather than a computed offset, so the
+    -- tracker follows when that frame is moved, rescaled or redrawn taller -
+    -- without heroPanel having to watch for any of it.
+    local anchor, gap = AnchorOverride(key)
+    if anchor then
+        if not anchorApplied[key] then
+            anchorApplied[key] = true
+            -- Read before the first pin and not after, or the position being
+            -- remembered is the pinned one. A frame that is hidden has no
+            -- offsets to read, which is why this is not simply "the last x, y".
+            local x, y = GetUIOffsets(frame)
+            if x then anchorHeld[key] = { x = x, y = y } end
+        end
+
+        return ns.RunWhenSafe(function()
+            ReleaseFromUIParent(ActiveMoverName(key))
+            applying[key] = true
+            frame:ClearAllPoints()
+            frame:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -gap)
+            applying[key] = nil
+            ns.Debug("anchored %s under another frame (gap %d)", key, gap)
+        end, "RestorePosition:" .. key)
+    end
+
+    local saved = GetSaved(key)
+    local held  = anchorHeld[key]
+    anchorApplied[key], anchorHeld[key] = nil, nil
+
+    if saved and saved.point then
+        return ns.RunWhenSafe(function()
+            ReleaseFromUIParent(ActiveMoverName(key))
+            applying[key] = true
+            ApplyUIOffsets(frame, saved.x or 0, saved.y or 0)
+            applying[key] = nil
+            ns.Debug("restored %s position: %.0f, %.0f", key, saved.x or 0, saved.y or 0)
+        end, "RestorePosition:" .. key)
+    end
+
+    -- An override has just lifted on a tracker nobody has ever dragged. There
+    -- is no saved position to go back to, so it goes back to wherever it was
+    -- standing when the override took it.
+    if held then
+        return ns.RunWhenSafe(function()
+            applying[key] = true
+            ApplyUIOffsets(frame, held.x, held.y)
+            applying[key] = nil
+            ns.Debug("released %s back to %.0f, %.0f", key, held.x, held.y)
+        end, "RestorePosition:" .. key)
+    end
+
+    return false
 end
 
 --------------------------------------------------------------------------------
@@ -359,7 +461,11 @@ local function ReapplyGeometry()
             local key    = ns.TRACKER_KEYS[i]
             local record = ns.trackers[key]
             local saved  = GetSaved(key)
-            if record and record.hooked and saved and saved.point
+            -- An overridden tracker is corrected whether or not it has a saved
+            -- position of its own: what it is being put back to is the frame it
+            -- follows, and that has nothing to do with anything in the store.
+            local pinned = AnchorOverride(key) ~= nil
+            if record and record.hooked and (pinned or (saved and saved.point))
                and ns.GetMode(key) ~= "yield" and AllowCorrection(key) then
                 ns.RestorePosition(key)
             end
@@ -693,6 +799,16 @@ local function BeginDrag(record)
     if ns.GetMode(record.key) == "yield" then
         ns.Warn("another addon is positioning the %s - use its mover, or run "
             .. "/hp mode own to let heroPanel take over.", string.lower(record.label))
+        return
+    end
+
+    -- Pinned to another frame, so there is nowhere for a drag to put it. Said
+    -- out loud rather than silently ignored: a frame that will not move and
+    -- does not say why reads as a bug, and the way out is one switch.
+    if AnchorOverride(record.key) then
+        ns.Warn("the %s is %s. Turn that off in |cFFC2C6D8/hp|r to place it "
+            .. "yourself.", string.lower(record.label),
+            anchorNotes[record.key] or "anchored to another frame")
         return
     end
 

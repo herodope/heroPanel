@@ -9,7 +9,7 @@
 local ADDON_NAME, ns = ...
 
 ns.name    = ADDON_NAME
-ns.version = "0.2.3"
+ns.version = "0.2.4"
 
 -- Public API surface. Every other file in the addon registers into this table,
 -- and it is what another addon would talk to heroPanel through.
@@ -197,6 +197,19 @@ ns.defaults = {
     autoHide = {
         combat = false,
         mythic = false,
+    },
+
+    -- ...and the other answer to the same question. Rather than taking the
+    -- quest tracker off the screen for the length of a key, this hangs it off
+    -- the bottom of the Mythic+ panel and gives it back its own position when
+    -- the run ends - which is what somebody who still wants to read their
+    -- objectives in there is asking for. See the anchor notes in Skin.lua.
+    --
+    -- Off by default: it moves a frame the player placed themselves, and a
+    -- setting that does that before being asked is one they go looking for the
+    -- way to undo.
+    questAnchor = {
+        mplus = false,
     },
 
     bg = {
@@ -398,7 +411,13 @@ ns.defaults = {
     -- configures. x and y are in UIParent's space rather than the window's own,
     -- because the window is scalable and an offset in its own units means a
     -- different place on screen at a different scale.
-    options = { point = nil, x = 0, y = 0, scale = 1.0 },
+    -- ...and which of its groups are folded away. Every one of them starts
+    -- open, so a store written before the headings became switches opens the
+    -- window it always opened. See the section notes in Options.lua.
+    options = {
+        point = nil, x = 0, y = 0, scale = 1.0,
+        sections = { global = true, watch = true, mplus = true, boons = true },
+    },
 
     glyph = {
         -- auto | art | tga | blocks. See the glyph notes in Util.lua; "auto"

@@ -1075,6 +1075,110 @@ ns:On("PLAYER_REGEN_DISABLED", function() ApplyAutoHide() end)
 ns:On("PLAYER_REGEN_ENABLED",  function() ApplyAutoHide() end)
 
 --------------------------------------------------------------------------------
+-- Anchored under the Mythic+ panel
+--
+-- The other answer to "the quest tracker is in the way during a key". Hiding it
+-- is one, and it is the blunt one: the objectives on it are usually a reason to
+-- be in the dungeon at all, and a player who wants them where the Mythic+ panel
+-- is not does not necessarily want them gone.
+--
+-- So this stacks the two: for as long as a run is up, the quest tracker hangs
+-- off the bottom of the Mythic+ panel and comes back to where it was put when
+-- the run ends. That is the same arrangement the boon bar's own anchor switch
+-- offers, and it is the same anchor frame - heroPanel's plate where there is
+-- one, Ascension's tracker where the Mythic+ skin is off - so the two features
+-- cannot disagree about where the bottom of that panel is.
+--
+-- The move itself belongs to Move.lua, through an anchor override: the quest
+-- tracker is re-placed by an OnShow hook and by the anchor hooks' correction
+-- pass as well as by RestorePosition, and a SetPoint made from here would be
+-- undone by whichever of those fired next. See the override notes there.
+--
+-- It is not gated on the skin being enabled. Where the tracker sits is not a
+-- question about what heroPanel draws over it, and a player running the Mythic+
+-- panel with Blizzard's own quest tracker is entitled to the same tidy corner.
+--
+-- Turning this on with "hide in Mythic+" already on does nothing visible - the
+-- tracker is faded out either way, and auto-hide wins because it is the one
+-- that takes the frame off the screen. The options row says so rather than
+-- letting the switch look broken.
+--------------------------------------------------------------------------------
+
+local MPLUS_ANCHOR_GAP = 6   -- the gap the boon bar leaves under the same panel
+
+-- heroPanel's own plate first, because that is the rectangle the player sees -
+-- it is sized to the lines actually drawn, where Ascension's tracker frame is
+-- far taller than its contents and would leave the quest tracker floating in
+-- empty space. The tracker itself is the fallback for when the Mythic+ skin is
+-- switched off, since "under the Mythic+ panel" is still a thing to ask for
+-- then.
+local function MplusAnchorFrame()
+    local mplusPlate = ns.Mplus and ns.Mplus.GetPlate and ns.Mplus.GetPlate()
+    if mplusPlate and mplusPlate:IsVisible() and mplusPlate:GetBottom() then
+        return mplusPlate
+    end
+
+    local tracker = ns.GetTrackerFrame and ns.GetTrackerFrame("mplus")
+    if tracker and tracker.IsVisible and tracker:IsVisible() and tracker:GetBottom() then
+        return tracker
+    end
+
+    return nil
+end
+
+-- The frame to hang off right now, or nil. Placement preview counts as a run:
+-- the Mythic+ panel only exists during a key, so without it this setting could
+-- only ever be judged thirty seconds into a timed one.
+local function QuestAnchorFrame()
+    local saved = ns.db and ns.db.questAnchor
+    if not (saved and saved.mplus) then return nil end
+
+    local mplus = ns.Mplus
+    if not mplus then return nil end
+
+    local live = (mplus.IsActive and mplus.IsActive())
+              or (mplus.IsPreview and mplus.IsPreview())
+    if not live then return nil end
+
+    return MplusAnchorFrame()
+end
+
+ns.SetAnchorOverride("watch", function()
+    local anchor = QuestAnchorFrame()
+    if not anchor then return nil end
+    return anchor, MPLUS_ANCHOR_GAP
+end, "anchored under the Mythic+ panel for this run")
+
+-- Whether it is hanging off that panel right now, which is not the same
+-- question as whether the setting is on. The options row and /hp status both
+-- report the first.
+function skin.IsQuestAnchored()
+    return QuestAnchorFrame() ~= nil
+end
+
+-- Called when the setting changes and when the Mythic+ panel comes up or goes
+-- away. RestorePosition covers both directions on its own - it re-asks the
+-- override and falls through to the saved position when there is none - so
+-- there is nothing here to keep in step with it.
+function skin.RefreshQuestAnchor(reason)
+    if not ns.RestorePosition then return false end
+    local moved = ns.RestorePosition("watch")
+    ns.Debug("quest anchor refreshed (%s); %s", tostring(reason),
+        moved and "re-placed" or "nothing to place")
+    return moved
+end
+
+-- The Mythic+ panel is built after heroPanel has booted - it is discovered by
+-- Trackers.lua's poll rather than existing at login - so a tracker anchored to
+-- it has nothing to hang off until then.
+ns:On("HEROPANEL_TRACKER_FOUND", function(key)
+    if key ~= "mplus" then return end
+    if not (ns.db and ns.db.questAnchor and ns.db.questAnchor.mplus) then return end
+    ns.RunWhenSafe(function() skin.RefreshQuestAnchor("mplus tracker found") end,
+        "Skin:questAnchor")
+end)
+
+--------------------------------------------------------------------------------
 -- Collapse
 --
 -- The tracker already knows how to collapse itself. heroPanel clicks the
@@ -1374,6 +1478,19 @@ function skin.PrintStatus()
             watch:IsVisible() and "visible" or "|cFFFFAA00hidden|r",
             ns.IsCollapsed("watch") and "collapsed" or "expanded",
             lastBlockCount)
+    end
+
+    -- Where it is and why, reported together, because "it will not move" and
+    -- "it is not where I left it" are the same question asked from either end -
+    -- and the answer to both is one of the two Mythic+ switches.
+    do
+        local anchored = ns.db.questAnchor and ns.db.questAnchor.mplus
+        ns.Print("    placement: %s",
+            skin.IsQuestAnchored()
+                and "|cFFC2C6D8anchored under the Mythic+ panel|r"
+                or (anchored
+                    and "|cFF8B8FA3anchored, but no key is running|r"
+                    or "free-placed"))
     end
 
     -- "title found" on its own was misleading: it says a FontString was

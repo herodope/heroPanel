@@ -688,6 +688,14 @@ function mplus.Read()
     lastRead = data
     if (wasActive and true or false) ~= data.active then
         if ns.Skin and ns.Skin.RefreshAutoHide then pcall(ns.Skin.RefreshAutoHide) end
+        -- The quest tracker can also be set to follow this panel rather than
+        -- disappear, and that anchor needs the same moment. Redraw announces it
+        -- too, off the plate coming up - this is the case Redraw cannot cover,
+        -- because with the Mythic+ skin switched off there is no plate to draw
+        -- and the tracker hangs off Ascension's own frame instead.
+        if ns.Skin and ns.Skin.RefreshQuestAnchor then
+            pcall(ns.Skin.RefreshQuestAnchor, "keystone run started or ended")
+        end
     end
 
     return data
@@ -2200,12 +2208,28 @@ end
 -- preview down by itself when a real key starts.
 local previewNotified = false
 
+-- Whether the panel was on screen at the end of the last draw. The quest
+-- tracker can be set to hang off the bottom of it, and coming up or going away
+-- is the whole of what that anchor needs told about: it is a SetPoint against
+-- this plate, so a panel that has merely grown a boss row taller carries the
+-- tracker down with it and needs no second call. Which matters, because this
+-- runs on a ticker for the length of a key.
+local plateNotified = false
+
 local function Redraw()
     DoRedraw()
 
     if preview ~= previewNotified then
         previewNotified = preview
         ns:Fire("HEROPANEL_MPLUS_PREVIEW", preview)
+    end
+
+    local up = (plate and plate:IsShown()) and true or false
+    if up ~= plateNotified then
+        plateNotified = up
+        if ns.Skin and ns.Skin.RefreshQuestAnchor then
+            pcall(ns.Skin.RefreshQuestAnchor, "mplus panel shown or hidden")
+        end
     end
 end
 

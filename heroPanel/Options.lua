@@ -135,6 +135,9 @@ local TEXT_MUTED  = "#75798C"
 local GREEN       = "#79C68D"
 local ACCENT      = "#9184D9"
 local ACCENT_DEEP = "#5D5294"
+-- The design's hovered-caret accent, the same one the trackers' collapse
+-- carets brighten to. It is here for the group headings, which are carets now.
+local ACCENT_LIGHT = "#B5ABFC"
 local LOCK_GLYPH  = "#F5F4FF"
 
 -- Swatch choices. The background set is the design's; the border set is the
@@ -330,38 +333,6 @@ local function BoxStyle(bgColor, bgOpacity, borderColor, borderAlpha, radius)
         radius      = radius or 8,
         shadowAlpha = 0,
     }
-end
-
---------------------------------------------------------------------------------
--- Group heading
---------------------------------------------------------------------------------
-
--- A group heading, optionally over a rule.
---
--- The rule is what makes "these settings belong to the Mythic+ panel and those
--- ones do not" readable at a glance. A heading on its own was enough while
--- there were two groups and no repetition; there are three now and two of them
--- carry the same six controls, so a reader scrolling past a background swatch
--- has to be able to tell which panel's background it is without scrolling back
--- up to find the heading.
-local function GroupLabel(parent, y, text, rule)
-    if rule then
-        local line = NewTexture(parent, "BORDER")
-        line:SetHeight(1)
-        line:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X, -y)
-        line:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -PAD_X, -y)
-        line:SetVertexColor(ns.HexToRGB("#E9E9ED", ns.ALPHA.divider))
-        y = y + GROUP_RULE
-    end
-
-    -- A step *over* the body text rather than three points under it, and in the
-    -- accent rather than the muted grey group colour. A heading set smaller and
-    -- fainter than the rows beneath it is a heading you find by scrolling past
-    -- it, which is the wrong way round in a window whose two lower groups carry
-    -- the same six control labels as each other.
-    local fs = NewText(parent, 2, ACCENT, string.upper(text))
-    fs:SetPoint("TOPLEFT", parent, "TOPLEFT", PAD_X, -y)
-    return y + GROUP_LABEL_H
 end
 
 --------------------------------------------------------------------------------
@@ -1168,6 +1139,120 @@ local function SavedPlacement()
     return ns.db.options
 end
 
+--------------------------------------------------------------------------------
+-- Group heading
+--
+-- A group heading over an optional rule, and the switch that folds the group
+-- away under it.
+--
+-- The rule is what makes "these settings belong to the Mythic+ panel and those
+-- ones do not" readable at a glance. A heading on its own was enough while
+-- there were two groups and no repetition; there are four now and two of them
+-- carry the same six controls, so a reader scrolling past a background swatch
+-- has to be able to tell which panel's background it is without scrolling back
+-- up to find the heading.
+--
+-- The heading is the control as well as the label. There are better than fifty
+-- rows across the four groups, which is two full screens of scrolling to reach
+-- the boon bar's anchoring switch from the font dropdown - so a group nobody is
+-- working in is a group worth folding. A separate expander button beside each
+-- heading would have been a third thing on a row that already carries a rule
+-- and a label, when the heading itself is the widest click target on it; the
+-- caret says what the row does, and it is the same caret and the same side of
+-- the row the trackers' own collapse controls use.
+--
+-- Which groups are folded is remembered, because the answer is "the ones I am
+-- not using" and that does not change between sessions. Absent means expanded,
+-- so a store written before this existed opens the window it used to open.
+--
+-- Nothing is positioned here. Where a section lands depends on which of the
+-- ones above it are folded, so the header, the rule and the body are all placed
+-- by the layout pass in Build and placed again every time one is toggled.
+--------------------------------------------------------------------------------
+
+local SECTION_CARET = 10   -- the same glyph size the font dropdown's carries
+
+-- Resolved per call rather than captured, for the same reason PanelSaved is:
+-- Reset replaces the whole store, and a closure holding the old table would go
+-- on writing to a table nothing reads.
+local function SectionsSaved()
+    local placement = SavedPlacement()
+    if type(placement.sections) ~= "table" then placement.sections = {} end
+    return placement.sections
+end
+
+local function NewSection(parent, key, text, rule, onToggle)
+    local section = { key = key, expanded = true, contentHeight = 0 }
+
+    if rule then
+        section.rule = NewTexture(parent, "BORDER")
+        section.rule:SetHeight(1)
+        section.rule:SetVertexColor(ns.HexToRGB("#E9E9ED", ns.ALPHA.divider))
+    end
+
+    -- The header row. A Button rather than a bare FontString, because the whole
+    -- band takes the click - a ten-pixel caret is a target you have to aim at,
+    -- and there is nothing else on this row to hit by accident.
+    section.head = CreateFrame("Button", nil, parent)
+    section.head:SetWidth(PANEL_WIDTH)
+    section.head:SetHeight(GROUP_LABEL_H)
+
+    -- A step *over* the body text rather than three points under it, and in the
+    -- accent rather than the muted grey group colour. A heading set smaller and
+    -- fainter than the rows beneath it is a heading you find by scrolling past
+    -- it, which is the wrong way round in a window whose two lower groups carry
+    -- the same six control labels as each other.
+    --
+    -- Centred in the band rather than hung off its top, so the caret opposite it
+    -- lines up with it however the options font size is set.
+    local label = NewText(section.head, 2, ACCENT, string.upper(text))
+    label:SetPoint("LEFT", section.head, "LEFT", PAD_X, 0)
+
+    local caret = ns.NewGlyph(section.head, SECTION_CARET)
+    caret:SetPoint("RIGHT", section.head, "RIGHT", -PAD_X, 0)
+
+    -- What the group's controls are built into. Full window width, like the
+    -- scrolling body itself, so every control's TOPRIGHT anchor lands where it
+    -- did when they hung off that directly.
+    section.body = CreateFrame("Frame", nil, parent)
+    section.body:SetWidth(PANEL_WIDTH)
+    section.body:SetHeight(1)
+
+    function section:Paint(hovered)
+        if hovered ~= nil then self.hovered = hovered and true or false end
+        local colour = self.hovered and ACCENT_LIGHT or ACCENT
+        caret:SetShape(self.expanded and "caretUp" or "caretDown")
+        caret:SetColor(ns.HexToRGB(colour))
+        label:SetTextColor(ns.HexToRGB(colour))
+    end
+
+    -- The height the group's rows came to, once they have been built.
+    function section:Close(height)
+        self.contentHeight = height
+        self.body:SetHeight(math.max(1, height))
+    end
+
+    -- Read back off the store, so /hp reset and a fresh login both land here
+    -- rather than on whatever the window was last left showing.
+    function section:Sync()
+        self.expanded = SectionsSaved()[self.key] ~= false
+        self:Paint()
+    end
+
+    section.head:SetScript("OnClick", function()
+        section.expanded = not section.expanded
+        SectionsSaved()[section.key] = section.expanded and true or false
+        section:Paint()
+        if onToggle then onToggle() end
+    end)
+
+    section.head:SetScript("OnEnter", function() section:Paint(true) end)
+    section.head:SetScript("OnLeave", function() section:Paint(false) end)
+
+    section:Sync()
+    return section
+end
+
 local function Build()
     if panel then return panel end
 
@@ -1354,7 +1439,34 @@ local function Build()
     local body = CreateFrame("Frame", nil, viewport)
     body:SetWidth(PANEL_WIDTH)
 
-    y = 0
+    ------------------------------------------------------------------
+    -- Sections
+    --
+    -- Every group below is a folding section: a heading that takes the click,
+    -- and a frame of its own the group's rows are built into. Each group is
+    -- laid out from a y of zero inside that frame rather than from wherever the
+    -- window had got to, because where the frame itself lands depends on which
+    -- of the sections above it are folded - which is not known until the layout
+    -- pass, and changes every time a heading is clicked.
+    --
+    -- Relayout is what that pass is called from. It is declared here and
+    -- assigned near the bottom of this function, because the headings are built
+    -- long before the scrollbar and the footer it has to resize along with them.
+    ------------------------------------------------------------------
+
+    local Relayout
+    local sections = {}
+
+    local function NewGroup(key, text, rule)
+        local section = NewSection(body, key, text, rule, function()
+            if Relayout then Relayout() end
+        end)
+        sections[#sections + 1] = section
+        -- Registered as a control so options.Sync pushes the store back into it,
+        -- which is what makes /hp reset put the folds back as well.
+        controls[#controls + 1] = section
+        return section
+    end
 
     ------------------------------------------------------------------
     -- GLOBAL
@@ -1365,25 +1477,31 @@ local function Build()
     -- which is why those moved down.
     ------------------------------------------------------------------
 
-    y = GroupLabel(body, y, "Global")
+    local globalGroup = NewGroup("global", "Global", false)
+    do
+        local body, y = globalGroup.body, 0
 
-    local fontWidget
-    y, fontWidget = NewFontDropdown(body, y, "Font family", "via LibSharedMedia", panel)
-    options.fontDropdown = fontWidget
+        local fontWidget
+        y, fontWidget = NewFontDropdown(body, y, "Font family", "via LibSharedMedia", panel)
+        options.fontDropdown = fontWidget
 
-    y = NewFontSlider(body, y, "Options font size", "options",
-        "the size of this window's own text")
+        y = NewFontSlider(body, y, "Options font size", "options",
+            "the size of this window's own text")
 
-    -- This window's own background, on the same kind of control the two panels
-    -- use for theirs. The rest of its chrome stays a design token - see the note
-    -- on CHROME - so there is no opacity or border row here to go with it.
-    y = NewSwatchRow(body, y, "Options background", OPTIONS_BG_SWATCHES,
-        function(entry) return OptionsSaved().bgColor == entry.colour end,
-        function(entry) OptionsSaved().bgColor = entry.colour end)
+        -- This window's own background, on the same kind of control the two
+        -- panels use for theirs. The rest of its chrome stays a design token -
+        -- see the note on CHROME - so there is no opacity or border row here to
+        -- go with it.
+        y = NewSwatchRow(body, y, "Options background", OPTIONS_BG_SWATCHES,
+            function(entry) return OptionsSaved().bgColor == entry.colour end,
+            function(entry) OptionsSaved().bgColor = entry.colour end)
 
-    y = NewTileRow(body, y, "Backdrop texture", BACKDROP_TILES,
-        function() return ns.db.bg.texture end,
-        function(key) ns.db.bg.texture = key end)
+        y = NewTileRow(body, y, "Backdrop texture", BACKDROP_TILES,
+            function() return ns.db.bg.texture end,
+            function(key) ns.db.bg.texture = key end)
+
+        globalGroup:Close(y)
+    end
 
     ------------------------------------------------------------------
     -- QUEST TRACKER
@@ -1396,73 +1514,107 @@ local function Build()
     -- panel.
     ------------------------------------------------------------------
 
-    y = GroupLabel(body, y + GROUP_GAP, "Quest tracker", true)
-    y = PanelGroup(body, y, "watch")
+    local questGroup = NewGroup("watch", "Quest tracker", true)
+    do
+        local body, y = questGroup.body, 0
+        y = PanelGroup(body, y, "watch")
 
-    y = NewFontSlider(body, y, "Header font size", "watchHeader",
-        "the QUESTS row and its count")
-    y = NewFontSlider(body, y, "Quest name font size", "watchTitle",
-        "the name of each tracked quest")
-    y = NewFontSlider(body, y, "Description font size", "watchBody",
-        "objectives, descriptions and their counts")
+        y = NewFontSlider(body, y, "Header font size", "watchHeader",
+            "the QUESTS row and its count")
+        y = NewFontSlider(body, y, "Quest name font size", "watchTitle",
+            "the name of each tracked quest")
+        y = NewFontSlider(body, y, "Description font size", "watchBody",
+            "objectives, descriptions and their counts")
 
-    y = ShadowGroup(body, y, "watch")
+        y = ShadowGroup(body, y, "watch")
 
-    -- Nothing tracked, nothing drawn.
-    --
-    -- With no quests being followed the skin is a header reading "QUESTS 0" and
-    -- a plate around an empty column. This takes the whole thing off screen
-    -- rather than just the header row, because a bare plate with no header on it
-    -- reads as the skin having half failed rather than as a setting.
-    y = NewToggle(body, y, "Hide when empty", "no header or panel while nothing is tracked",
-        function() return ns.db.header.hideEmpty end,
-        function(value)
-            ns.db.header.hideEmpty = value and true or false
-            if ns.Skin then pcall(ns.Skin.Refresh, "hide-when-empty toggled") end
-        end)
+        -- Nothing tracked, nothing drawn.
+        --
+        -- With no quests being followed the skin is a header reading "QUESTS 0" and
+        -- a plate around an empty column. This takes the whole thing off screen
+        -- rather than just the header row, because a bare plate with no header on it
+        -- reads as the skin having half failed rather than as a setting.
+        y = NewToggle(body, y, "Hide when empty", "no header or panel while nothing is tracked",
+            function() return ns.db.header.hideEmpty end,
+            function(value)
+                ns.db.header.hideEmpty = value and true or false
+                if ns.Skin then pcall(ns.Skin.Refresh, "hide-when-empty toggled") end
+            end)
 
-    -- The header row on demand.
-    --
-    -- QUESTS, the count, the lock and the caret are chrome: useful while you
-    -- are arranging the tracker, and nothing you need on screen while reading
-    -- the quest under them. This fades them rather than removing the row, so
-    -- the quest lines stay where they are.
-    y = NewToggle(body, y, "Header on mouseover",
-        "shows the header only while you hover the panel",
-        function() return ns.db.header.mouseover end,
-        function(value)
-            ns.db.header.mouseover = value and true or false
-            if ns.Skin and ns.Skin.RefreshHeaderFade then
-                pcall(ns.Skin.RefreshHeaderFade)
-            end
-            -- Turning it on while the trackers are unlocked has no visible
-            -- effect until they are locked again, so say why rather than
-            -- leaving the toggle looking broken.
-            if ns.Skin and ns.Skin.NoteHeaderForced then
-                pcall(ns.Skin.NoteHeaderForced)
-            end
-        end)
+        -- The header row on demand.
+        --
+        -- QUESTS, the count, the lock and the caret are chrome: useful while you
+        -- are arranging the tracker, and nothing you need on screen while reading
+        -- the quest under them. This fades them rather than removing the row, so
+        -- the quest lines stay where they are.
+        y = NewToggle(body, y, "Header on mouseover",
+            "shows the header only while you hover the panel",
+            function() return ns.db.header.mouseover end,
+            function(value)
+                ns.db.header.mouseover = value and true or false
+                if ns.Skin and ns.Skin.RefreshHeaderFade then
+                    pcall(ns.Skin.RefreshHeaderFade)
+                end
+                -- Turning it on while the trackers are unlocked has no visible
+                -- effect until they are locked again, so say why rather than
+                -- leaving the toggle looking broken.
+                if ns.Skin and ns.Skin.NoteHeaderForced then
+                    pcall(ns.Skin.NoteHeaderForced)
+                end
+            end)
 
-    -- Getting the tracker out of the way on its own.
-    --
-    -- Both of these fade the tracker to nothing rather than hiding it, because
-    -- WatchFrame is protected and Hide is refused under lockdown - which is
-    -- precisely the moment "hide in combat" has to work. See the note in
-    -- Skin.lua; the short version is that the obvious call is the one that is
-    -- guaranteed to fail.
-    y = NewToggle(body, y, "Hide in combat", "fades the tracker while you are fighting",
-        function() return ns.db.autoHide.combat end,
-        function(value)
-            ns.db.autoHide.combat = value and true or false
-            if ns.Skin and ns.Skin.RefreshAutoHide then pcall(ns.Skin.RefreshAutoHide) end
-        end)
+        -- Getting the tracker out of the way on its own.
+        --
+        -- Both of these fade the tracker to nothing rather than hiding it, because
+        -- WatchFrame is protected and Hide is refused under lockdown - which is
+        -- precisely the moment "hide in combat" has to work. See the note in
+        -- Skin.lua; the short version is that the obvious call is the one that is
+        -- guaranteed to fail.
+        y = NewToggle(body, y, "Hide in combat", "fades the tracker while you are fighting",
+            function() return ns.db.autoHide.combat end,
+            function(value)
+                ns.db.autoHide.combat = value and true or false
+                if ns.Skin and ns.Skin.RefreshAutoHide then pcall(ns.Skin.RefreshAutoHide) end
+            end)
 
-    y = NewToggle(body, y, "Hide in Mythic+", "...and for the length of a keystone run",
-        function() return ns.db.autoHide.mythic end,
-        function(value)
-            ns.db.autoHide.mythic = value and true or false
-            if ns.Skin and ns.Skin.RefreshAutoHide then pcall(ns.Skin.RefreshAutoHide) end
-        end)
+        -- The two Mythic+ rows are alternatives rather than settings that happen
+        -- to sit next to each other: one takes the quest tracker off the screen
+        -- for the length of a key and the other moves it out from under the
+        -- Mythic+ panel instead. So each turns the other off.
+        --
+        -- Flipped rather than left to fight, because hiding wins when both are
+        -- on - it is the one that takes the frame off the screen - and a switch
+        -- that has been turned on and does nothing reads as broken. The other
+        -- row is one line up and options.Sync redraws it on the spot, so what
+        -- happened is visible rather than something to find out later.
+        y = NewToggle(body, y, "Hide in Mythic+", "...and for the length of a keystone run",
+            function() return ns.db.autoHide.mythic end,
+            function(value)
+                ns.db.autoHide.mythic = value and true or false
+                if value then ns.db.questAnchor.mplus = false end
+                if ns.Skin and ns.Skin.RefreshAutoHide then pcall(ns.Skin.RefreshAutoHide) end
+                if ns.Skin and ns.Skin.RefreshQuestAnchor then
+                    pcall(ns.Skin.RefreshQuestAnchor, "hide in Mythic+ toggled")
+                end
+                options.Sync()
+            end)
+
+        y = NewToggle(body, y, "Anchor under Mythic+ panel",
+            { "follows that panel for the run; you cannot drag it",
+              "instead of hiding it - it goes back when the key ends" },
+            function() return ns.db.questAnchor.mplus end,
+            function(value)
+                ns.db.questAnchor.mplus = value and true or false
+                if value then ns.db.autoHide.mythic = false end
+                if ns.Skin and ns.Skin.RefreshAutoHide then pcall(ns.Skin.RefreshAutoHide) end
+                if ns.Skin and ns.Skin.RefreshQuestAnchor then
+                    pcall(ns.Skin.RefreshQuestAnchor, "quest anchor toggled")
+                end
+                options.Sync()
+            end)
+
+        questGroup:Close(y)
+    end
 
     ------------------------------------------------------------------
     -- MYTHIC+ AND DUNGEON TRACKERS
@@ -1489,99 +1641,104 @@ local function Build()
     -- boss list.
     ------------------------------------------------------------------
 
-    y = GroupLabel(body, y + GROUP_GAP, "Mythic+ and dungeon trackers", true)
+    local mplusGroup = NewGroup("mplus", "Mythic+ and dungeon trackers", true)
+    do
+        local body, y = mplusGroup.body, 0
 
-    -- Placement preview.
-    --
-    -- First in the group, above the colours and the fonts, because it is what
-    -- makes the rest of the group usable: the panel only exists during a
-    -- keystone run, so every control below this one is otherwise being set
-    -- blind and judged a week later, thirty seconds into a timed key.
-    --
-    -- Not stored. The switch reads and writes the module's own session flag, so
-    -- a reload puts it back off - see the preview section in Mplus.lua for why
-    -- a preview that survived a login would read as a bug rather than a switch.
-    y = NewToggle(body, y, "Show panel for placement",
-        { "draws it outside a key, with sample data",
-          "drag to place; turns itself off in a real key" },
-        function() return ns.Mplus and ns.Mplus.IsPreview() end,
-        function(value)
-            if ns.Mplus then ns.Mplus.SetPreview(value) end
-        end)
+        -- Placement preview.
+        --
+        -- First in the group, above the colours and the fonts, because it is what
+        -- makes the rest of the group usable: the panel only exists during a
+        -- keystone run, so every control below this one is otherwise being set
+        -- blind and judged a week later, thirty seconds into a timed key.
+        --
+        -- Not stored. The switch reads and writes the module's own session flag, so
+        -- a reload puts it back off - see the preview section in Mplus.lua for why
+        -- a preview that survived a login would read as a bug rather than a switch.
+        y = NewToggle(body, y, "Show panel for placement",
+            { "draws it outside a key, with sample data",
+              "drag to place; turns itself off in a real key" },
+            function() return ns.Mplus and ns.Mplus.IsPreview() end,
+            function(value)
+                if ns.Mplus then ns.Mplus.SetPreview(value) end
+            end)
 
-    -- The dungeon panel's own placement, beside the Mythic+ one rather than in
-    -- a group of its own. They are two frames with two saved positions and that
-    -- is the whole of what is separate about them, so the two switches that
-    -- place them belong next to each other; everything under this line governs
-    -- both panels at once.
-    y = NewToggle(body, y, "Show dungeon panel for placement",
-        { "the same, for Normal / Heroic / Mythic 0",
-          "it has its own position; everything else here is shared" },
-        function() return ns.Dungeon and ns.Dungeon.IsPreview() end,
-        function(value)
-            if ns.Dungeon then ns.Dungeon.SetPreview(value) end
-        end)
+        -- The dungeon panel's own placement, beside the Mythic+ one rather than in
+        -- a group of its own. They are two frames with two saved positions and that
+        -- is the whole of what is separate about them, so the two switches that
+        -- place them belong next to each other; everything under this line governs
+        -- both panels at once.
+        y = NewToggle(body, y, "Show dungeon panel for placement",
+            { "the same, for Normal / Heroic / Mythic 0",
+              "it has its own position; everything else here is shared" },
+            function() return ns.Dungeon and ns.Dungeon.IsPreview() end,
+            function(value)
+                if ns.Dungeon then ns.Dungeon.SetPreview(value) end
+            end)
 
-    y = PanelGroup(body, y, "mplus")
+        y = PanelGroup(body, y, "mplus")
 
-    y = NewFontSlider(body, y, "Header font size", "mplusHeader",
-        "the dungeon name and keystone level")
-    y = NewFontSlider(body, y, "Timer font size", "mplusTimer",
-        "the clock")
-    y = NewFontSlider(body, y, "Body font size", "mplusBody",
-        "chest tiers, enemy forces and boss rows")
+        y = NewFontSlider(body, y, "Header font size", "mplusHeader",
+            "the dungeon name and keystone level")
+        y = NewFontSlider(body, y, "Timer font size", "mplusTimer",
+            "the clock")
+        y = NewFontSlider(body, y, "Body font size", "mplusBody",
+            "chest tiers, enemy forces and boss rows")
 
-    y = ShadowGroup(body, y, "mplus")
+        y = ShadowGroup(body, y, "mplus")
 
-    y = NewStateColours(body, y, "State colors", {
-        { label = "Title",  get = function() return ns.db.text.title  end,
-                            set = function(hex) ns.db.text.title  = hex end },
-        { label = "Normal", get = function() return ns.db.text.normal end,
-                            set = function(hex) ns.db.text.normal = hex end },
-        { label = "Done",   get = function() return ns.db.text.done   end,
-                            set = function(hex) ns.db.text.done   = hex end },
-    })
+        y = NewStateColours(body, y, "State colors", {
+            { label = "Title",  get = function() return ns.db.text.title  end,
+                                set = function(hex) ns.db.text.title  = hex end },
+            { label = "Normal", get = function() return ns.db.text.normal end,
+                                set = function(hex) ns.db.text.normal = hex end },
+            { label = "Done",   get = function() return ns.db.text.done   end,
+                                set = function(hex) ns.db.text.done   = hex end },
+        })
 
-    -- Party key checks.
-    --
-    -- Not a skin setting, and in this group anyway: it is the only thing in the
-    -- window that is about keystones rather than about how a panel is drawn,
-    -- and a group of its own for one switch would cost more scroll than it
-    -- saves confusion. The sublabel carries a sigil, because "key checks" does
-    -- not say what to type and the whole feature is what to type.
-    --
-    -- It says "links your keystone" rather than naming the feature twice. This
-    -- switch puts a line in chat under the player's own name, which is the one
-    -- thing in this window that other people see, and a player deciding whether
-    -- to leave it on is deciding about that rather than about key checks.
-    -- Two lines, because the feature *is* what to type and one sigil is not the
-    -- whole of it. Which one a server's players settle on is local habit, so
-    -- heroPanel answers eight spellings - and a control that names one of them
-    -- reads as the only one that works.
-    --
-    -- The second line is built from ns.Keys.COMMANDS rather than written out
-    -- again. That list is published for exactly this, and a hand-copied one is a
-    -- list that goes stale the first time a sigil is added.
-    local function OtherKeyCommands()
-        local list = ns.Keys and ns.Keys.COMMANDS
-        if type(list) ~= "table" then return "also !keys and the singular forms" end
+        -- Party key checks.
+        --
+        -- Not a skin setting, and in this group anyway: it is the only thing in the
+        -- window that is about keystones rather than about how a panel is drawn,
+        -- and a group of its own for one switch would cost more scroll than it
+        -- saves confusion. The sublabel carries a sigil, because "key checks" does
+        -- not say what to type and the whole feature is what to type.
+        --
+        -- It says "links your keystone" rather than naming the feature twice. This
+        -- switch puts a line in chat under the player's own name, which is the one
+        -- thing in this window that other people see, and a player deciding whether
+        -- to leave it on is deciding about that rather than about key checks.
+        -- Two lines, because the feature *is* what to type and one sigil is not the
+        -- whole of it. Which one a server's players settle on is local habit, so
+        -- heroPanel answers eight spellings - and a control that names one of them
+        -- reads as the only one that works.
+        --
+        -- The second line is built from ns.Keys.COMMANDS rather than written out
+        -- again. That list is published for exactly this, and a hand-copied one is a
+        -- list that goes stale the first time a sigil is added.
+        local function OtherKeyCommands()
+            local list = ns.Keys and ns.Keys.COMMANDS
+            if type(list) ~= "table" then return "also !keys and the singular forms" end
 
-        local others = {}
-        for i = 1, #list do
-            if list[i] ~= "?keys" then table.insert(others, list[i]) end
+            local others = {}
+            for i = 1, #list do
+                if list[i] ~= "?keys" then table.insert(others, list[i]) end
+            end
+            return "also " .. table.concat(others, " ")
         end
-        return "also " .. table.concat(others, " ")
-    end
 
-    y = NewToggle(body, y, "Answer party key checks",
-        {
-            "?keys in group chat links your keystone for you",
-            OtherKeyCommands(),
-        },
-        function() return ns.Keys and ns.Keys.IsEnabled() end,
-        function(value)
-            if ns.Keys then ns.Keys.SetEnabled(value) end
-        end)
+        y = NewToggle(body, y, "Answer party key checks",
+            {
+                "?keys in group chat links your keystone for you",
+                OtherKeyCommands(),
+            },
+            function() return ns.Keys and ns.Keys.IsEnabled() end,
+            function(value)
+                if ns.Keys then ns.Keys.SetEnabled(value) end
+            end)
+
+        mplusGroup:Close(y)
+    end
 
     ------------------------------------------------------------------
     -- BOONS
@@ -1599,245 +1756,250 @@ local function Build()
     -- looking like a control for this bar alone.
     ------------------------------------------------------------------
 
-    y = GroupLabel(body, y + GROUP_GAP, "Boons", true)
-
-    -- Resolved per call rather than captured, for the same reason PanelSaved is:
-    -- Reset replaces the whole store, and a closure holding the old table would
-    -- go on writing to a table nothing reads.
-    local function BoonsSaved()
-        if type(ns.db.boons) ~= "table" then ns.db.boons = {} end
-        return ns.db.boons
-    end
-
-    -- Every boon setting except the enable switch changes the bar's shape or
-    -- its visuals and nothing else, so they all land the same way.
-    local function BoonsRefresh(reason)
-        if ns.Boons then pcall(ns.Boons.Refresh, reason) end
-    end
-
-    y = NewToggle(body, y, "Boon bar", "a clickable bar of your Mythical Boons",
-        function() return ns.Boons and ns.Boons.IsEnabled() end,
-        function(value)
-            if ns.Boons then ns.Boons.SetEnabled(value) end
-        end)
-
-    y = NewSegmented(body, y, "Orientation", {
-            { key = "horizontal", label = "Horizontal" },
-            { key = "vertical",   label = "Vertical"   },
-        },
-        function() return BoonsSaved().orientation or "horizontal" end,
-        function(key) BoonsSaved().orientation = key end,
-        100)
-
-    -- Icon size and the corner grip's scale are not the same lever and both are
-    -- worth having. Size is how big one icon is, which is what decides whether
-    -- the bar can be read at a glance; scale is how big the whole bar is,
-    -- including the gaps between its three groups.
-    y = NewSlider(body, y, "Icon size",
-        ns.BOON_ICON_MIN or 20, ns.BOON_ICON_MAX or 64, ns.BOON_ICON_STEP or 2,
-        function() return BoonsSaved().iconSize or 32 end,
-        function(value)
-            BoonsSaved().iconSize = value
-            BoonsRefresh("boon icon size changed")
-        end,
-        function(value) return string.format("%d px", Int(value)) end,
-        "drag the bar's corner to scale the whole bar")
-
-    -- Captions.
-    --
-    -- The words are what the boon does rather than what it is called -
-    -- BoonData's label column, not its names - because "Ascension",
-    -- "Bountiful" and "Wrathful" are three proper nouns that say nothing about
-    -- which one to press, and "Dmg", "Stats" and "AP/SP" say it without a
-    -- tooltip. The sublabel has to carry that, or the row reads as an offer to
-    -- write the names under the icons, which nobody wants.
-    --
-    -- Off by default. See the note in Core.lua: the bar's own claim is that you
-    -- aim at a position rather than read it, so a row of fifteen words is a
-    -- thing to opt into rather than out of.
-    y = NewToggle(body, y, "Boon labels", "a word saying what each boon does",
-        function() return BoonsSaved().labels end,
-        function(value)
-            BoonsSaved().labels = value and true or false
-            BoonsRefresh("boon labels toggled")
-        end)
-
-    -- Which side of the icon. The caption changes the bar's thickness rather
-    -- than only its colours, so this is a layout control - and it is a
-    -- segmented pair rather than a toggle because "above" and "below" are two
-    -- values, not an on and an off.
-    --
-    -- No refresh of its own: NewSegmented applies through options.Apply, which
-    -- reaches ns.Boons.Restyle and re-runs the layout. That is the same route
-    -- the orientation control above takes.
-    y = NewSegmented(body, y, "Label position", {
-            { key = "above", label = "Above" },
-            { key = "below", label = "Below" },
-        },
-        function() return BoonsSaved().labelAnchor or "above" end,
-        function(key) BoonsSaved().labelAnchor = key end,
-        100)
-
-    -- Wrapping.
-    --
-    -- Two controls rather than one, because "split it" and "split it where" are
-    -- two questions and a slider alone would have no off position - a row
-    -- length equal to the whole bar reads as a setting that does nothing rather
-    -- than as the feature being off.
-    --
-    -- The slider is a row *length*, not a number of rows, and the sublabel says
-    -- so. See the note in Boons.lua on why: a fixed "two rows" has no sensible
-    -- answer for a bar shorter than twice the split, and every answer it could
-    -- give is a surprise.
-    y = NewToggle(body, y, "Split into rows", "instead of one long bar",
-        function() return BoonsSaved().splitRows end,
-        function(value)
-            BoonsSaved().splitRows = value and true or false
-            BoonsRefresh("boon row split toggled")
-        end)
-
-    y = NewSlider(body, y, "Icons per row",
-        ns.BOON_ROW_MIN or 2, ns.BOON_ROW_MAX or 19, 1,
-        function() return BoonsSaved().rowSize or 8 end,
-        function(value)
-            BoonsSaved().rowSize = Int(value)
-            BoonsRefresh("boon row length changed")
-        end,
-        function(value) return string.format("%d per row", Int(value)) end,
-        "where the bar wraps; at 8 the fifteen boons are two rows")
-
-    y = NewToggle(body, y, "Only in Mythic dungeons",
-        "off shows it everywhere, for positioning",
-        function() return BoonsSaved().mythicOnly ~= false end,
-        function(value)
-            BoonsSaved().mythicOnly = value and true or false
-            BoonsRefresh("boon gating changed")
-        end)
-
-    y = NewToggle(body, y, "Hide unowned boons", "compacts the bar; out of combat only",
-        function() return BoonsSaved().hideUnowned end,
-        function(value)
-            BoonsSaved().hideUnowned = value and true or false
-            BoonsRefresh("boon hide-unowned toggled")
-        end)
-
-    y = NewToggle(body, y, "Hide when you have none",
-        "hides the bar until you pick one up",
-        function() return BoonsSaved().hideEmpty end,
-        function(value)
-            BoonsSaved().hideEmpty = value and true or false
-            BoonsRefresh("boon hide-empty toggled")
-        end)
-
-    -- "Mark melee-only boons" was here, and is shelved. Boons.lua keeps the
-    -- code and gates it off; see MELEE_MARK_SHELVED there, which is also the
-    -- one line to change to bring this row back.
-
-    -- The expiry warning.
-    --
-    -- Sits with the appearance rows because it is one, and above the two
-    -- settings that move things. Four buttons rather than a slider: the
-    -- question is how much warning you want and the difference between forty
-    -- and forty-five seconds is not a thing anybody has an opinion about.
-    --
-    -- Off is first and is the default. See the note in Core.lua on why an
-    -- animation is a thing to opt into.
-    y = NewSegmented(body, y, "Expiry glow",
-        ns.BOON_EXPIRY_WARNINGS or { { key = 0, label = "Off" } },
-        function() return tonumber(BoonsSaved().expiryWarn) or 0 end,
-        function(key)
-            BoonsSaved().expiryWarn = key
-            BoonsRefresh("boon expiry warning changed")
-        end,
-        62)
-
-    -- Anchoring, and then the slot order, are the two settings that move things
-    -- rather than colour them, so they sit below the appearance rows.
-    --
-    -- The sublabel has to carry the packing as well as the anchoring, because
-    -- anchoring does both: a bar hanging under that panel draws only the boons
-    -- you are holding, hard against the panel's left edge, so the nth icon is
-    -- the nth keybind slot. Two separate checkboxes for one request would be a
-    -- version where this one looks broken on its own.
-    y = NewToggle(body, y, "Anchor under Mythic+ panel",
-        { "follows that panel; you cannot drag it",
-          "packs held boons into slots 1-5, bottom left" },
-        function() return BoonsSaved().anchorMplus end,
-        function(value)
-            BoonsSaved().anchorMplus = value and true or false
-            BoonsRefresh("boon anchoring toggled")
-        end)
-
-    -- The slot order and the keybinds are one idea, so the sublabel has to
-    -- carry both halves: what moves, and what that does for the keys. Said in
-    -- one line because a setting that needs a paragraph is a setting nobody
-    -- turns on.
-    y = NewToggle(body, y, "Line boons up in slots 1-5",
-        "held boons move to the front, for the keys",
-        function() return BoonsSaved().slotOrder end,
-        function(value)
-            BoonsSaved().slotOrder = value and true or false
-            BoonsRefresh("boon slot order toggled")
-        end)
-
-    -- Shift-click reporting.
-    --
-    -- The sublabel says both halves because the setting changes what a click
-    -- does, and a player who ticks this and then wonders why shift-clicking a
-    -- boon stopped using it has been told something the box did not say.
-    --
-    -- Routed through BoonsRefresh rather than saved and forgotten, unlike the
-    -- tooltip toggle below it: this one is a secure attribute on fifteen
-    -- buttons, so it does not take effect until the next secure pass, and the
-    -- next secure pass has to be now rather than whenever a bag changes.
-    y = NewToggle(body, y, "Shift-click reports remaining duration",
-        { "says how long your boon has left, in party chat",
-          "that click no longer uses the boon" },
-        function() return BoonsSaved().reportDuration end,
-        function(value)
-            BoonsSaved().reportDuration = value and true or false
-            BoonsRefresh("boon shift-click reporting toggled")
-        end)
-
-    -- The in-combat tooltip is a one-line summary heroPanel writes, because
-    -- three of the fifteen live client strings are wrong - BoonData.lua names
-    -- them. This is the way back to the client's own text for anyone who would
-    -- rather read that and judge for themselves.
-    y = NewToggle(body, y, "Full boon text", "client's own text instead of a summary",
-        function() return BoonsSaved().rawTooltip end,
-        function(value)
-            BoonsSaved().rawTooltip = value and true or false
-        end)
-
-    y = NewToggle(body, y, "Lock position", "the same lock as the trackers",
-        function() return ns.IsLocked() end,
-        function(value) ns.SetLocked(value and true or false) end)
-
-    -- Where the keys are. Not a control, and worth a row anyway: the bindings
-    -- live in the client's own Key Bindings window rather than in here, and
-    -- nothing else in this group would say so.
-    --
-    -- Two lines, because there are now two kinds of key and the difference
-    -- between them is the thing worth saying: the slot keys are direct access
-    -- and the cycle key is sequential. "Cycle boons" is the one most people
-    -- want and it is named second only because the slots came first.
+    local boonsGroup = NewGroup("boons", "Boons", true)
     do
-        local note = NewText(body, -2, TEXT_MUTED,
-            "Keys: Key Bindings \194\183 heroPanel \194\183 Boon slot 1-5")
-        note:SetPoint("TOPLEFT", body, "TOPLEFT", PAD_X, -y)
-        y = y + 16
+        local body, y = boonsGroup.body, 0
 
-        local cycle = NewText(body, -2, TEXT_MUTED,
-            "or \194\183 Cycle boons \194\183 one key, next boon each press")
-        cycle:SetPoint("TOPLEFT", body, "TOPLEFT", PAD_X, -y)
-        y = y + 22
+        -- Resolved per call rather than captured, for the same reason PanelSaved is:
+        -- Reset replaces the whole store, and a closure holding the old table would
+        -- go on writing to a table nothing reads.
+        local function BoonsSaved()
+            if type(ns.db.boons) ~= "table" then ns.db.boons = {} end
+            return ns.db.boons
+        end
+
+        -- Every boon setting except the enable switch changes the bar's shape or
+        -- its visuals and nothing else, so they all land the same way.
+        local function BoonsRefresh(reason)
+            if ns.Boons then pcall(ns.Boons.Refresh, reason) end
+        end
+
+        y = NewToggle(body, y, "Boon bar", "a clickable bar of your Mythical Boons",
+            function() return ns.Boons and ns.Boons.IsEnabled() end,
+            function(value)
+                if ns.Boons then ns.Boons.SetEnabled(value) end
+            end)
+
+        y = NewSegmented(body, y, "Orientation", {
+                { key = "horizontal", label = "Horizontal" },
+                { key = "vertical",   label = "Vertical"   },
+            },
+            function() return BoonsSaved().orientation or "horizontal" end,
+            function(key) BoonsSaved().orientation = key end,
+            100)
+
+        -- Icon size and the corner grip's scale are not the same lever and both are
+        -- worth having. Size is how big one icon is, which is what decides whether
+        -- the bar can be read at a glance; scale is how big the whole bar is,
+        -- including the gaps between its three groups.
+        y = NewSlider(body, y, "Icon size",
+            ns.BOON_ICON_MIN or 20, ns.BOON_ICON_MAX or 64, ns.BOON_ICON_STEP or 2,
+            function() return BoonsSaved().iconSize or 32 end,
+            function(value)
+                BoonsSaved().iconSize = value
+                BoonsRefresh("boon icon size changed")
+            end,
+            function(value) return string.format("%d px", Int(value)) end,
+            "drag the bar's corner to scale the whole bar")
+
+        -- Captions.
+        --
+        -- The words are what the boon does rather than what it is called -
+        -- BoonData's label column, not its names - because "Ascension",
+        -- "Bountiful" and "Wrathful" are three proper nouns that say nothing about
+        -- which one to press, and "Dmg", "Stats" and "AP/SP" say it without a
+        -- tooltip. The sublabel has to carry that, or the row reads as an offer to
+        -- write the names under the icons, which nobody wants.
+        --
+        -- Off by default. See the note in Core.lua: the bar's own claim is that you
+        -- aim at a position rather than read it, so a row of fifteen words is a
+        -- thing to opt into rather than out of.
+        y = NewToggle(body, y, "Boon labels", "a word saying what each boon does",
+            function() return BoonsSaved().labels end,
+            function(value)
+                BoonsSaved().labels = value and true or false
+                BoonsRefresh("boon labels toggled")
+            end)
+
+        -- Which side of the icon. The caption changes the bar's thickness rather
+        -- than only its colours, so this is a layout control - and it is a
+        -- segmented pair rather than a toggle because "above" and "below" are two
+        -- values, not an on and an off.
+        --
+        -- No refresh of its own: NewSegmented applies through options.Apply, which
+        -- reaches ns.Boons.Restyle and re-runs the layout. That is the same route
+        -- the orientation control above takes.
+        y = NewSegmented(body, y, "Label position", {
+                { key = "above", label = "Above" },
+                { key = "below", label = "Below" },
+            },
+            function() return BoonsSaved().labelAnchor or "above" end,
+            function(key) BoonsSaved().labelAnchor = key end,
+            100)
+
+        -- Wrapping.
+        --
+        -- Two controls rather than one, because "split it" and "split it where" are
+        -- two questions and a slider alone would have no off position - a row
+        -- length equal to the whole bar reads as a setting that does nothing rather
+        -- than as the feature being off.
+        --
+        -- The slider is a row *length*, not a number of rows, and the sublabel says
+        -- so. See the note in Boons.lua on why: a fixed "two rows" has no sensible
+        -- answer for a bar shorter than twice the split, and every answer it could
+        -- give is a surprise.
+        y = NewToggle(body, y, "Split into rows", "instead of one long bar",
+            function() return BoonsSaved().splitRows end,
+            function(value)
+                BoonsSaved().splitRows = value and true or false
+                BoonsRefresh("boon row split toggled")
+            end)
+
+        y = NewSlider(body, y, "Icons per row",
+            ns.BOON_ROW_MIN or 2, ns.BOON_ROW_MAX or 19, 1,
+            function() return BoonsSaved().rowSize or 8 end,
+            function(value)
+                BoonsSaved().rowSize = Int(value)
+                BoonsRefresh("boon row length changed")
+            end,
+            function(value) return string.format("%d per row", Int(value)) end,
+            "where the bar wraps; at 8 the fifteen boons are two rows")
+
+        y = NewToggle(body, y, "Only in Mythic dungeons",
+            "off shows it everywhere, for positioning",
+            function() return BoonsSaved().mythicOnly ~= false end,
+            function(value)
+                BoonsSaved().mythicOnly = value and true or false
+                BoonsRefresh("boon gating changed")
+            end)
+
+        y = NewToggle(body, y, "Hide unowned boons", "compacts the bar; out of combat only",
+            function() return BoonsSaved().hideUnowned end,
+            function(value)
+                BoonsSaved().hideUnowned = value and true or false
+                BoonsRefresh("boon hide-unowned toggled")
+            end)
+
+        y = NewToggle(body, y, "Hide when you have none",
+            "hides the bar until you pick one up",
+            function() return BoonsSaved().hideEmpty end,
+            function(value)
+                BoonsSaved().hideEmpty = value and true or false
+                BoonsRefresh("boon hide-empty toggled")
+            end)
+
+        -- "Mark melee-only boons" was here, and is shelved. Boons.lua keeps the
+        -- code and gates it off; see MELEE_MARK_SHELVED there, which is also the
+        -- one line to change to bring this row back.
+
+        -- The expiry warning.
+        --
+        -- Sits with the appearance rows because it is one, and above the two
+        -- settings that move things. Four buttons rather than a slider: the
+        -- question is how much warning you want and the difference between forty
+        -- and forty-five seconds is not a thing anybody has an opinion about.
+        --
+        -- Off is first and is the default. See the note in Core.lua on why an
+        -- animation is a thing to opt into.
+        y = NewSegmented(body, y, "Expiry glow",
+            ns.BOON_EXPIRY_WARNINGS or { { key = 0, label = "Off" } },
+            function() return tonumber(BoonsSaved().expiryWarn) or 0 end,
+            function(key)
+                BoonsSaved().expiryWarn = key
+                BoonsRefresh("boon expiry warning changed")
+            end,
+            62)
+
+        -- Anchoring, and then the slot order, are the two settings that move things
+        -- rather than colour them, so they sit below the appearance rows.
+        --
+        -- The sublabel has to carry the packing as well as the anchoring, because
+        -- anchoring does both: a bar hanging under that panel draws only the boons
+        -- you are holding, hard against the panel's left edge, so the nth icon is
+        -- the nth keybind slot. Two separate checkboxes for one request would be a
+        -- version where this one looks broken on its own.
+        y = NewToggle(body, y, "Anchor under Mythic+ panel",
+            { "follows that panel; you cannot drag it",
+              "packs held boons into slots 1-5, bottom left" },
+            function() return BoonsSaved().anchorMplus end,
+            function(value)
+                BoonsSaved().anchorMplus = value and true or false
+                BoonsRefresh("boon anchoring toggled")
+            end)
+
+        -- The slot order and the keybinds are one idea, so the sublabel has to
+        -- carry both halves: what moves, and what that does for the keys. Said in
+        -- one line because a setting that needs a paragraph is a setting nobody
+        -- turns on.
+        y = NewToggle(body, y, "Line boons up in slots 1-5",
+            "held boons move to the front, for the keys",
+            function() return BoonsSaved().slotOrder end,
+            function(value)
+                BoonsSaved().slotOrder = value and true or false
+                BoonsRefresh("boon slot order toggled")
+            end)
+
+        -- Shift-click reporting.
+        --
+        -- The sublabel says both halves because the setting changes what a click
+        -- does, and a player who ticks this and then wonders why shift-clicking a
+        -- boon stopped using it has been told something the box did not say.
+        --
+        -- Routed through BoonsRefresh rather than saved and forgotten, unlike the
+        -- tooltip toggle below it: this one is a secure attribute on fifteen
+        -- buttons, so it does not take effect until the next secure pass, and the
+        -- next secure pass has to be now rather than whenever a bag changes.
+        y = NewToggle(body, y, "Shift-click reports remaining duration",
+            { "says how long your boon has left, in party chat",
+              "that click no longer uses the boon" },
+            function() return BoonsSaved().reportDuration end,
+            function(value)
+                BoonsSaved().reportDuration = value and true or false
+                BoonsRefresh("boon shift-click reporting toggled")
+            end)
+
+        -- The in-combat tooltip is a one-line summary heroPanel writes, because
+        -- three of the fifteen live client strings are wrong - BoonData.lua names
+        -- them. This is the way back to the client's own text for anyone who would
+        -- rather read that and judge for themselves.
+        y = NewToggle(body, y, "Full boon text", "client's own text instead of a summary",
+            function() return BoonsSaved().rawTooltip end,
+            function(value)
+                BoonsSaved().rawTooltip = value and true or false
+            end)
+
+        y = NewToggle(body, y, "Lock position", "the same lock as the trackers",
+            function() return ns.IsLocked() end,
+            function(value) ns.SetLocked(value and true or false) end)
+
+        -- Where the keys are. Not a control, and worth a row anyway: the bindings
+        -- live in the client's own Key Bindings window rather than in here, and
+        -- nothing else in this group would say so.
+        --
+        -- Two lines, because there are now two kinds of key and the difference
+        -- between them is the thing worth saying: the slot keys are direct access
+        -- and the cycle key is sequential. "Cycle boons" is the one most people
+        -- want and it is named second only because the slots came first.
+        do
+            local note = NewText(body, -2, TEXT_MUTED,
+                "Keys: Key Bindings \194\183 heroPanel \194\183 Boon slot 1-5")
+            note:SetPoint("TOPLEFT", body, "TOPLEFT", PAD_X, -y)
+            y = y + 16
+
+            local cycle = NewText(body, -2, TEXT_MUTED,
+                "or \194\183 Cycle boons \194\183 one key, next boon each press")
+            cycle:SetPoint("TOPLEFT", body, "TOPLEFT", PAD_X, -y)
+            y = y + 22
+        end
+
+        y = NewActionRow(body, y, "Bar position",
+            "back to the middle of the screen", "Reset",
+            function()
+                if ns.Boons then ns.Boons.ResetPosition() end
+            end)
+
+        boonsGroup:Close(y)
     end
-
-    y = NewActionRow(body, y, "Bar position",
-        "back to the middle of the screen", "Reset",
-        function()
-            if ns.Boons then ns.Boons.ResetPosition() end
-        end)
 
     -- There is no HEADER group. header.show still exists and still governs the
     -- quest tracker's header row, but it is on and there is no control for it:
@@ -1851,26 +2013,17 @@ local function Build()
     -- the corner of the thing being resized beats guessing a percentage and
     -- then looking away from the slider to see what the percentage did.
 
-    body:SetHeight(y + GROUP_GAP)
-
     ------------------------------------------------------------------
     -- Viewport and scrollbar
     ------------------------------------------------------------------
-
-    local room     = MAX_HEIGHT - bodyTop - FOOTER_HEIGHT - 8
-    local viewHigh = math.max(MIN_VIEWPORT, math.min(body:GetHeight(), room))
-    viewport:SetHeight(viewHigh)
-    viewport:SetScrollChild(body)
-
-    local range = math.max(0, body:GetHeight() - viewHigh)
 
     local bar = CreateFrame("Slider", nil, panel)
     bar:SetOrientation("VERTICAL")
     bar:SetWidth(BAR_WIDTH)
     bar:SetPoint("TOPRIGHT", viewport, "TOPRIGHT", -BAR_INSET, 0)
     bar:SetPoint("BOTTOMRIGHT", viewport, "BOTTOMRIGHT", -BAR_INSET, 0)
-    bar:SetMinMaxValues(0, range)
     bar:SetValueStep(1)
+    bar:SetMinMaxValues(0, 0)
 
     local barTrack = NewTexture(bar, "BACKGROUND")
     barTrack:SetAllPoints(bar)
@@ -1880,7 +2033,6 @@ local function Build()
     local barThumb = bar:GetThumbTexture()
     if barThumb then
         barThumb:SetWidth(BAR_WIDTH)
-        barThumb:SetHeight(math.max(24, viewHigh * viewHigh / math.max(1, body:GetHeight())))
         barThumb:SetVertexColor(ns.HexToRGB(ACCENT, 0.7))
     end
 
@@ -1889,36 +2041,125 @@ local function Build()
     end)
     bar:SetValue(0)
 
-    -- A body that fits needs no bar, and a visible one that cannot move reads
-    -- as a window that has failed to scroll.
-    if range <= 0 then bar:Hide() end
+    -- How far the body can be scrolled, kept where the wheel handler can read
+    -- it. It is not a constant any more: folding a group away changes it.
+    local scrollRange = 0
 
     local WHEEL_STEP = 34   -- about one control row per notch
     viewport:EnableMouseWheel(true)
     viewport:SetScript("OnMouseWheel", function(_, delta)
-        bar:SetValue(ns.Clamp((bar:GetValue() or 0) - delta * WHEEL_STEP, 0, range))
+        bar:SetValue(ns.Clamp((bar:GetValue() or 0) - delta * WHEEL_STEP, 0, scrollRange))
     end)
 
-    panel.viewport = viewport
+    panel.viewport  = viewport
     panel.scrollBar = bar
 
     ------------------------------------------------------------------
     -- Footer
+    --
+    -- Placed by Relayout rather than here, because where it goes depends on how
+    -- tall the viewport above it came out - and that is no longer settled once
+    -- at build time.
     ------------------------------------------------------------------
-
-    local footerTop = bodyTop + viewHigh + 8
 
     local save = NewFooterButton(panel, CONTENT_WIDTH - 130, "Save & close", true, function()
         options.Hide()
     end)
-    save:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD_X, -footerTop)
 
     local reset = NewFooterButton(panel, 118, "Reset", false, function()
         options.Reset()
     end)
-    reset:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -PAD_X, -footerTop)
 
-    panel:SetHeight(footerTop + FOOTER_HEIGHT)
+    ------------------------------------------------------------------
+    -- Layout
+    --
+    -- One pass over the sections, then the window sized around what they came
+    -- to. Run once at build time and again on every fold, which is why the
+    -- viewport height, the scroll range, the thumb, the footer and the window's
+    -- own height are all worked out here rather than written down once.
+    --
+    -- The window is as tall as its content up to MAX_HEIGHT and scrolls past
+    -- that, which is what it has always done - the only new part is that its
+    -- content can now get shorter as well as longer.
+    ------------------------------------------------------------------
+
+    local room = MAX_HEIGHT - bodyTop - FOOTER_HEIGHT - 8
+
+    local function LayoutSections()
+        local top = 0
+        for i = 1, #sections do
+            local section = sections[i]
+            if i > 1 then top = top + GROUP_GAP end
+
+            if section.rule then
+                section.rule:ClearAllPoints()
+                section.rule:SetPoint("TOPLEFT", body, "TOPLEFT", PAD_X, -top)
+                section.rule:SetPoint("TOPRIGHT", body, "TOPRIGHT", -PAD_X, -top)
+                top = top + GROUP_RULE
+            end
+
+            section.head:ClearAllPoints()
+            section.head:SetPoint("TOPLEFT", body, "TOPLEFT", 0, -top)
+            top = top + GROUP_LABEL_H
+
+            if section.expanded then
+                section.body:ClearAllPoints()
+                section.body:SetPoint("TOPLEFT", body, "TOPLEFT", 0, -top)
+                section.body:Show()
+                top = top + section.contentHeight
+            else
+                section.body:Hide()
+            end
+        end
+
+        body:SetHeight(top + GROUP_GAP)
+    end
+
+    -- Assigning the forward-declared local the headings above were built with.
+    function Relayout()
+        LayoutSections()
+
+        local content = body:GetHeight()
+
+        -- min of the content, not max of MIN_VIEWPORT: with every group folded
+        -- the body is four headings tall and a floor of 200 would leave a strip
+        -- of empty window under them. The floor still applies to the other end -
+        -- a screen with less room than MIN_VIEWPORT gets MIN_VIEWPORT and
+        -- scrolls - which is the whole of what it was there for.
+        local viewHigh = math.min(content, math.max(MIN_VIEWPORT, room))
+        viewport:SetHeight(viewHigh)
+
+        scrollRange = math.max(0, content - viewHigh)
+        bar:SetMinMaxValues(0, scrollRange)
+        if (bar:GetValue() or 0) > scrollRange then bar:SetValue(scrollRange) end
+        -- Folding a group can leave the viewport scrolled past the end of what
+        -- is left, and a bar already at a legal value fires nothing.
+        viewport:SetVerticalScroll(bar:GetValue() or 0)
+
+        if barThumb then
+            barThumb:SetHeight(math.max(24, viewHigh * viewHigh / math.max(1, content)))
+        end
+
+        -- A body that fits needs no bar, and a visible one that cannot move
+        -- reads as a window that has failed to scroll.
+        if scrollRange > 0 then bar:Show() else bar:Hide() end
+
+        local footerTop = bodyTop + viewHigh + 8
+        save:ClearAllPoints()
+        save:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD_X, -footerTop)
+        reset:ClearAllPoints()
+        reset:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -PAD_X, -footerTop)
+
+        panel:SetHeight(footerTop + FOOTER_HEIGHT)
+    end
+    panel.Relayout = Relayout
+
+    -- The scroll child is attached once the body has a real height: SetScrollChild
+    -- reads the child's size, and handing it a frame that is one pixel tall and
+    -- then growing it is asking the client to keep up.
+    LayoutSections()
+    viewport:SetScrollChild(body)
+    Relayout()
 
     ------------------------------------------------------------------
     -- Resize grip
@@ -2141,6 +2382,11 @@ function options.Sync()
 
     panel.lockGlyph:SetShape(ns.IsLocked() and "locked" or "unlocked")
     panel.lockGlyph:SetColor(ns.HexToRGB(LOCK_GLYPH))
+
+    -- Which groups are folded came out of the store along with everything else
+    -- above - Reset replaces the whole of it - so the window has to be laid out
+    -- again around whatever the sections were just told they are.
+    if panel.Relayout then pcall(panel.Relayout) end
 end
 
 -- Re-applies the configured face and size to the window's own strings, so
@@ -2217,6 +2463,14 @@ function options.Reset()
     -- goes through the same call the lock event does rather than each panel
     -- deciding for itself, which is what stops the two disagreeing.
     if ns.SyncResizeGrips then pcall(ns.SyncResizeGrips) end
+
+    -- The Mythic+ anchor went with the store too, and a quest tracker left
+    -- hanging off a panel by a setting that is no longer on is exactly the
+    -- half-reset that has people reloading to check. Nothing above reaches it:
+    -- the loop restores scales, not positions.
+    if ns.Skin and ns.Skin.RefreshQuestAnchor then
+        pcall(ns.Skin.RefreshQuestAnchor, "options reset")
+    end
 
     -- This window's own scale went with the store, so it has to come off the
     -- frame too. Resetting to a default the window is not actually drawn at is

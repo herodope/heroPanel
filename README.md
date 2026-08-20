@@ -27,7 +27,7 @@ buried in an inventory slot mid-run. Everything is configured in an in-game
 options window, and changes apply immediately — no reloading to see what a
 setting did.
 
-> **Pre-release (0.2.3).** Feature complete and playable, but still being
+> **Pre-release (0.2.4).** Feature complete and playable, but still being
 > tested. Your settings carry across updates — see
 > [Updating](#updating).
 
@@ -80,7 +80,8 @@ groups:
 
 * **Global** — the font, and the options window's own size and background.
 * **Quest tracker** — panel colour and transparency, border, three text sizes,
-  text shadow, and the auto-hide switches.
+  text shadow, and the switches that decide where the tracker goes during a
+  fight or a key.
 * **Mythic+ and dungeon trackers** — the same panel controls again, its own
   three text sizes, and the colours it uses for objective states. One group for
   two panels, because the dungeon panel *is* the Mythic+ panel with the
@@ -88,6 +89,11 @@ groups:
   never end up looking like different addons. What it keeps of its own is a
   position and a switch.
 * **Boons** — the Mythic+ boon bar, which is off until you turn it on.
+
+**Click a group heading to fold it away**, and click it again to bring it back.
+The arrow at the right of the heading says which way it is. The window shrinks
+to fit whatever is left open, and remembers what you folded — so if you only ever
+touch two of the four groups, the other two need not be in your way.
 
 Each tracker is styled separately on purpose: the Mythic+ panel is a block of
 numbers that usually wants something solid behind it, while the quest tracker is
@@ -241,21 +247,28 @@ This is **on by default**. Turn it off with the *Answer party key checks* switch
 at the bottom of the Mythic+ group, or `/hp keys off`. Type `/hp keys` on its
 own to post your key right now.
 
-## Auto-hide
+## Getting the quest tracker out of the way
 
-Two optional switches in the Quest tracker group, both off by default:
+Three optional switches in the Quest tracker group, all off by default:
 
 * **Hide in combat** — the quest tracker goes away when you pull and comes back
   when the fight ends.
-* **Hide during Mythic+** — the quest tracker stays out of the way for the
-  length of a key run.
+* **Hide in Mythic+** — the quest tracker stays out of the way for the length of
+  a key run.
+* **Anchor under Mythic+ panel** — instead of hiding it, the quest tracker moves
+  under the Mythic+ panel for the run and goes back where you put it when the
+  key ends. Use this one if you still want to read your objectives in there.
+
+The last two are alternatives, so turning one on turns the other off. While the
+tracker is anchored you cannot drag it — it is following the Mythic+ panel, so
+there is nowhere for a drag to put it; heroPanel says so if you try.
 
 One thing to know about the combat one: while you're actually in a fight, the
 game won't let an addon fully remove the tracker, so it becomes invisible but
 its area can still catch mouse clicks until combat ends. The Mythic+ one has no
 such limit — that region is properly click-through for the whole run.
 
-There is a third switch in the same group, **Header on mouseover**, which is
+There is one more switch in the same group, **Header on mouseover**, which is
 smaller in scope: the header row — `QUESTS`, the count, the lock and the collapse
 arrow — is only drawn while the cursor is over the panel. The row keeps its
 height, so your quest lines stay exactly where they are. It is ignored while the
