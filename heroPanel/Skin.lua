@@ -1106,13 +1106,31 @@ ns:On("PLAYER_REGEN_ENABLED",  function() ApplyAutoHide() end)
 
 local MPLUS_ANCHOR_GAP = 6   -- the gap the boon bar leaves under the same panel
 
--- heroPanel's own plate first, because that is the rectangle the player sees -
+-- The boon bar first, when that is hanging off the panel too.
+--
+-- Both features pin their TOPLEFT to their anchor's BOTTOMLEFT with the same
+-- gap, so anchoring both to the panel itself put the quest tracker on top of
+-- the bar rather than under it - two frames in one place, with whichever won
+-- the strata swallowing the other's clicks. Chained, the three read down the
+-- screen in the order they were asked for: panel, boons, objectives.
+--
+-- ns.Boons.IsAnchorHost is stricter than IsAnchored, and has to be: the bar
+-- stays "anchored" while it is gated off outside a Mythic dungeon or hiding
+-- itself on an empty hand, and hanging the tracker off a bar that is not drawn
+-- would leave it floating in the gap where the bar would have been.
+--
+-- Then heroPanel's own plate, because that is the rectangle the player sees -
 -- it is sized to the lines actually drawn, where Ascension's tracker frame is
 -- far taller than its contents and would leave the quest tracker floating in
 -- empty space. The tracker itself is the fallback for when the Mythic+ skin is
 -- switched off, since "under the Mythic+ panel" is still a thing to ask for
 -- then.
 local function MplusAnchorFrame()
+    local boonBar = ns.Boons and ns.Boons.GetBar and ns.Boons.GetBar()
+    if boonBar and ns.Boons.IsAnchorHost and ns.Boons.IsAnchorHost() then
+        return boonBar
+    end
+
     local mplusPlate = ns.Mplus and ns.Mplus.GetPlate and ns.Mplus.GetPlate()
     if mplusPlate and mplusPlate:IsVisible() and mplusPlate:GetBottom() then
         return mplusPlate
@@ -1175,6 +1193,15 @@ ns:On("HEROPANEL_TRACKER_FOUND", function(key)
     if key ~= "mplus" then return end
     if not (ns.db and ns.db.questAnchor and ns.db.questAnchor.mplus) then return end
     ns.RunWhenSafe(function() skin.RefreshQuestAnchor("mplus tracker found") end,
+        "Skin:questAnchor")
+end)
+
+-- The boon bar coming or going changes which frame the chain hangs off, and
+-- that is not something either the Mythic+ panel's redraw or a keystone
+-- transition can see: the bar is gated on its own settings and its own bag.
+ns:On("HEROPANEL_BOONBAR_ANCHOR", function()
+    if not (ns.db and ns.db.questAnchor and ns.db.questAnchor.mplus) then return end
+    ns.RunWhenSafe(function() skin.RefreshQuestAnchor("boon bar anchor changed") end,
         "Skin:questAnchor")
 end)
 

@@ -257,7 +257,9 @@ Three optional switches in the Quest tracker group, all off by default:
   a key run.
 * **Anchor under Mythic+ panel** — instead of hiding it, the quest tracker moves
   under the Mythic+ panel for the run and goes back where you put it when the
-  key ends. Use this one if you still want to read your objectives in there.
+  key ends. Use this one if you still want to read your objectives in there. If
+  the boon bar is anchored under that panel too, the tracker goes below the bar
+  rather than on top of it.
 
 The last two are alternatives, so turning one on turns the other off. While the
 tracker is anchored you cannot drag it — it is following the Mythic+ panel, so

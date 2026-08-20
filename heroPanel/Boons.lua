@@ -1611,6 +1611,27 @@ end
 -- bar keeps its click targets until the fight ends. In practice the bar is
 -- hidden because the player left the dungeon or ran out of boons, and neither
 -- happens mid-fight.
+
+-- Whether the bar was something to hang off at the end of the last pass.
+--
+-- The quest tracker can be set to follow the Mythic+ panel, and when this bar
+-- is doing the same it chains under the bar rather than landing on top of it -
+-- see the anchor notes in Skin.lua. Which frame it picks depends on the answer
+-- below, so a change to it is a moment that tracker has to be told about.
+--
+-- Announced on the transition rather than on every pass, because the bar
+-- re-lays itself out on a ticker while a key is up and the chain is a SetPoint
+-- against this frame: a bar that has merely grown a row taller carries whatever
+-- hangs off it down with it, and needs no second call.
+local anchorHostNotified = false
+
+local function NoteAnchorHost()
+    local host = boons.IsAnchorHost()
+    if host == anchorHostNotified then return end
+    anchorHostNotified = host
+    ns:Fire("HEROPANEL_BOONBAR_ANCHOR", host)
+end
+
 local function ApplyVisibility()
     if not bar then return end
 
@@ -1645,6 +1666,11 @@ local function ApplyVisibility()
         end
         if glowDriver then glowDriver:Hide() end
     end
+
+    -- Last, so anything asking what the bar is now gets the state it is in
+    -- rather than the one it was in before this pass. Every boons.Refresh path
+    -- ends here, in and out of combat.
+    NoteAnchorHost()
 end
 
 --------------------------------------------------------------------------------
@@ -2578,6 +2604,10 @@ function ApplySecure(reason)
     if show then bar:Show() else bar:Hide() end
     bar:SetAlpha(show and 1 or 0)
 
+    -- The deferred pass reaches here without going through ApplyVisibility, so
+    -- a bar that came back after a fight has to announce itself from here too.
+    NoteAnchorHost()
+
     ns.Debug("boons: secure pass ran (%s), %d boon(s) held.",
         tostring(reason or "update"), ownedCount)
 end
@@ -2664,6 +2694,21 @@ end
 -- window both need to know which is true right now.
 function boons.IsAnchored()
     return Config().anchorMplus and MplusAnchor() ~= nil
+end
+
+-- Whether the bar is currently something another frame can hang off the bottom
+-- of: anchored under the Mythic+ panel, drawn, and with a resolved edge to
+-- measure from.
+--
+-- Stricter than IsAnchored on purpose. That one answers "is the bar following
+-- the panel", which stays true while the bar is gated off - outside a Mythic
+-- dungeon, or set to hide itself when you are carrying nothing. A tracker hung
+-- off a bar that is not drawn would sit in the gap where the bar would have
+-- been, which reads as a gap nobody asked for.
+function boons.IsAnchorHost()
+    if not (bar and boons.IsAnchored()) then return false end
+    if not (bar:IsShown() and bar:GetBottom()) then return false end
+    return true
 end
 
 function boons.RestorePosition()
