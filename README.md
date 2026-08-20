@@ -209,6 +209,13 @@ bag slot while you are in combat. So a boon looted mid-fight lights up on the
 bar straight away, but does not become clickable until the fight ends. Nothing
 is lost — it is there waiting.
 
+The same rule is why a boon looted mid-fight on a **packed** bar — anchored, or
+with *Hide unowned boons* on — can appear a cell or two past the
+ones you were already holding rather than hard against them. The bar cannot move
+its buttons during a fight, so it keeps a few spare cells behind the pack for
+exactly this and grows to cover whatever lands in one. It packs properly again
+the moment the fight ends.
+
 The cycle key is the exception. It is bound to a hidden button that chooses its
 boon inside the game's own restricted environment, which is the one place an
 addon may change what a button will use during a fight — so it keeps advancing

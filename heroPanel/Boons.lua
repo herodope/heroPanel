@@ -229,6 +229,39 @@ local ANCHOR_GAP = 6
 local SLOT_COUNT = 5
 
 --------------------------------------------------------------------------------
+-- The reserve
+--
+-- Cells a packed bar keeps behind the boons you are holding, for the ones you
+-- loot during a fight.
+--
+-- A packed bar draws only what you are carrying, so a boon looted mid-pull has
+-- to appear in a cell that was already there: SetPoint is refused on a
+-- SecureActionButtonTemplate under lockdown, and no amount of care gets around
+-- that. Parking every unowned button on a cell of its own was the first spelling
+-- and it is why the reveal still looked broken after the reveal itself was
+-- fixed - nineteen buttons is nineteen cells, so a boon that happens to sit
+-- twelfth in bar order lit up twelve cells past the end of a bar three cells
+-- wide, a lone icon out in the world with the bar's own plate nowhere near it.
+--
+-- So the parked buttons share a short run of cells instead, round-robin. What
+-- that buys is a bound: whatever is looted mid-fight lands within RESERVE_CELLS
+-- of the pack, which is inside the bar rather than out beyond it.
+--
+-- What it costs is a collision. Two boons looted in the same fight whose bar
+-- positions are congruent modulo the reserve land on the same cell and one
+-- covers the other until the fight ends. That is the trade being made here and
+-- it is made in this direction on purpose: a gap is a bar with a hole in it and
+-- is never wrong about what you are carrying, while a stack of one cell - the
+-- zero-gap version of this - would hide a held boon every time two arrived, on
+-- the bar whose whole job is to say what you are holding.
+--
+-- Five, and the same five as everywhere else in this file: it is what the
+-- keybinds reach and more boons than anybody holds at once, so a reserve that
+-- size is one the bar can always afford to grow into.
+--------------------------------------------------------------------------------
+local RESERVE_CELLS = SLOT_COUNT
+
+--------------------------------------------------------------------------------
 -- The expiry warning
 --
 -- A boon is a three-minute item, and the bar has no way to say so: an icon that
@@ -1342,16 +1375,27 @@ end
 -- grid two different ways is two answers that eventually disagree, and the
 -- disagreement shows up as the bar changing size on a refresh that moved
 -- nothing.
+--
+-- In combat it only ever grows
+-- ----------------------------
+-- This used to do nothing at all under lockdown, on the rule that the bar must
+-- not change size under the player mid-pull. That rule was reading its own
+-- purpose too widely and it took the reveal down with it: a boon revealed into
+-- a reserve cell was drawn past the edge of a plate that could not follow it,
+-- so the icon sat outside its own bar with no background behind it.
+--
+-- Growing moves nothing. Every button is anchored to the bar's TOPLEFT, so the
+-- bar getting longer or thicker leaves every icon already on screen exactly
+-- where it was and moves one edge of the plate. What the rule is actually about
+-- is icons shifting under the cursor mid-fight, and that is what packing is
+-- deferred for and still is.
+--
+-- Shrinking is refused, though, and that is what keeps the rule honest. A boon
+-- spent mid-fight would otherwise pull the plate back off the reserve cells and
+-- the bar would breathe in and out for the length of the pull - and with the
+-- quest tracker chained under it, so would that.
 local function SizeBarToRevealed()
     if not (bar and layout.minThickness > 0) then return end
-
-    -- Never in combat. The bar not changing size under the player mid-pull is
-    -- a rule this module is shaped by, and it outranks tidiness: a boon
-    -- revealed during a fight is drawn at its parked place and may sit a little
-    -- past the bar's own edge until the fight ends, which is a great deal
-    -- better than the icon not being there at all. The next out-of-combat
-    -- layout re-packs it properly.
-    if InCombatLockdown() then return end
 
     local reach, across = 0, 0
     for i = 1, #buttons do
@@ -1364,6 +1408,13 @@ local function SizeBarToRevealed()
 
     local extent    = (reach  > 0) and (reach  + BAR_PAD) or layout.minExtent
     local thickness = (across > 0) and (across + BAR_PAD) or layout.minThickness
+
+    if InCombatLockdown() then
+        local wasExtent    = layout.vertical and bar:GetHeight() or bar:GetWidth()
+        local wasThickness = layout.vertical and bar:GetWidth()  or bar:GetHeight()
+        extent    = math.max(extent,    tonumber(wasExtent)    or 0)
+        thickness = math.max(thickness, tonumber(wasThickness) or 0)
+    end
 
     if layout.vertical then
         bar:SetHeight(extent)
@@ -1639,6 +1690,23 @@ local function ApplyVisibility()
     bar:SetAlpha(show and 1 or 0)
 
     if InCombatLockdown() then
+        -- Showing is allowed; hiding still waits.
+        --
+        -- The two directions are not the same problem. A bar that cannot appear
+        -- during a fight cannot do its one job during a fight: with "hide when
+        -- you have none" ticked, the pull starts with the bar hidden - which
+        -- is the normal way a pull starts, since the crystal has not been
+        -- clicked yet - and every boon looted after that lit its icon inside a
+        -- frame nobody could see. Alpha was 1, the button was drawn and
+        -- clickable, and the container was still Hidden.
+        --
+        -- The frame this shows is heroPanel's own plain container, not one of
+        -- the secure buttons inside it. Show and Hide are refused on protected
+        -- frames, and protection runs down the parent chain rather than up it,
+        -- so the container is not one. It is pcall'd all the same: if some
+        -- build disagrees, the cost of being wrong here should be a bar that
+        -- appears late rather than an error in the middle of a key.
+        if show then pcall(bar.Show, bar) end
         QueueSecure("visibility")
     elseif show then
         bar:Show()
@@ -1905,9 +1973,31 @@ local function Layout()
     local along, across = BAR_PAD, BAR_PAD
     local lastGroup, inRow, placed = nil, 0, 0
 
-    -- Placing one cell. Records how far it reaches on both axes, because that
-    -- is what the sizing pass measures - it cannot re-run any of this
-    -- arithmetic while the player is fighting.
+    -- Putting one button on a cell whose position is already known. Records how
+    -- far it reaches on both axes, because that is what the sizing pass
+    -- measures - it cannot re-run any of this arithmetic while the player is
+    -- fighting.
+    --
+    -- Split out from Place so the parked pass can put more than one button on
+    -- the same cell without walking the cursor along the grid each time. See
+    -- the reserve note at the top of the file for why it wants to.
+    local function PlaceAt(button, atAlong, atAcross)
+        button:ClearAllPoints()
+        if vertical then
+            button:SetPoint("TOPLEFT", bar, "TOPLEFT",
+                atAcross + iconCross, -(atAlong + iconMain))
+        else
+            button:SetPoint("TOPLEFT", bar, "TOPLEFT",
+                atAlong, -(atAcross + iconCross))
+        end
+        button:Show()
+
+        button.layoutEdge  = atAlong  + cellMain
+        button.layoutCross = atAcross + cellCross
+    end
+
+    -- The next cell along, and the button that goes on it. Returns where it
+    -- landed, so a cell can be handed to the parked pass to be shared.
     local function Place(button, group)
         -- A row that has filled up starts the next one flush against the bar's
         -- own edge, with no group gap carried into it: a gap at the start of a
@@ -1921,21 +2011,13 @@ local function Layout()
         if lastGroup and group ~= lastGroup then along = along + GROUP_GAP end
         lastGroup = group
 
-        button:ClearAllPoints()
-        if vertical then
-            button:SetPoint("TOPLEFT", bar, "TOPLEFT",
-                across + iconCross, -(along + iconMain))
-        else
-            button:SetPoint("TOPLEFT", bar, "TOPLEFT",
-                along, -(across + iconCross))
-        end
-        button:Show()
-
-        button.layoutEdge  = along  + cellMain
-        button.layoutCross = across + cellCross
+        local atAlong, atAcross = along, across
+        PlaceAt(button, atAlong, atAcross)
 
         along = along + cellMain + ICON_GAP
         inRow = inRow + 1
+
+        return atAlong, atAcross
     end
 
     local parked = {}
@@ -2010,11 +2092,17 @@ local function Layout()
     -- SetAlpha is not protected, which means RefreshVisuals can reveal a boon
     -- the instant it is looted, in the middle of a pull, with its real icon.
     --
-    -- They are parked in bar order immediately after the drawn run, continuing
-    -- the same grid, so the first one revealed lands where the next boon
-    -- belongs rather than out on its own. The bar is still sized to the drawn
-    -- run, so none of this shows until something is revealed - and then the
-    -- sizing pass grows it.
+    -- They share a short run of reserve cells immediately after the drawn run,
+    -- continuing the same grid, so whatever is revealed lands within a few
+    -- cells of the pack rather than wherever its own position in bar order
+    -- happens to fall. See the reserve note at the top of the file: parking one
+    -- button per cell put a boon looted mid-fight out beyond the end of the bar
+    -- and is why the reveal still read as broken after the reveal itself
+    -- worked.
+    --
+    -- The bar is still sized to the drawn run, so none of this shows until
+    -- something is revealed - and then the sizing pass grows it into the
+    -- reserve.
     --
     -- Out of the input path while parked, because an invisible button that
     -- still takes clicks is a click the world behind it never sees.
@@ -2024,9 +2112,19 @@ local function Layout()
     -- boon revealed mid-pull was drawn and then took no clicks and showed no
     -- tooltip. See the note on SetClickable.
     ----------------------------------------------------------------
+    local reserve = {}
     for i = 1, #parked do
         local button = parked[i]
-        Place(button, "rest")
+        local cell   = ((i - 1) % RESERVE_CELLS) + 1
+        local spot   = reserve[cell]
+
+        if spot then
+            PlaceAt(button, spot[1], spot[2])
+        else
+            local atAlong, atAcross = Place(button, "rest")
+            reserve[cell] = { atAlong, atAcross }
+        end
+
         button:SetAlpha(0)
         SetClickable(button, false)
     end

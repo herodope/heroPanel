@@ -447,9 +447,21 @@ local function ReadObjectiveRow(row)
     local text = RawText(label)
     if not text or text == "" then return nil end
 
-    local progress, maximum = row.progress, row.progressMax
+    -- The pair the tracker itself tests, with its own right-aligned counter as
+    -- the fallback. That counter is the same number in text form - "1/6" - and
+    -- reading it matters for one row in particular: the extra-bosses heading is
+    -- the row whose count is the whole of what it has to say, and a build that
+    -- draws the counter without setting the pair would leave that row saying
+    -- nothing at all once heroPanel has faded the art.
+    local progress, maximum = tonumber(row.progress), tonumber(row.progressMax)
+    if not (progress and maximum) then
+        local counter = row.Counter and row.Counter.GetText and row.Counter:GetText()
+        local have, need = string.match(tostring(counter or ""), "(%d+)%s*/%s*(%d+)")
+        if have then progress, maximum = tonumber(have), tonumber(need) end
+    end
+
     local done = false
-    if type(progress) == "number" and type(maximum) == "number" and maximum > 0 then
+    if progress and maximum and maximum > 0 then
         done = progress >= maximum
     end
 
@@ -540,7 +552,12 @@ local function CollectBosses(tracker)
 
     local heading = ReadObjectiveRow(expandable)
     if heading then
-        heading.group = #subRows > 0
+        -- It is the heading of that block whichever way the chevron points, and
+        -- is only *drawn* as one while its children are on screen. Keeping the
+        -- two apart is what carries the count into the collapsed state, where
+        -- the row stands in for children nobody can see - see SetHeadingText.
+        heading.heading = true
+        heading.group   = #subRows > 0
         table.insert(found, heading)
     end
     for i = 1, #subRows do
@@ -548,12 +565,10 @@ local function CollectBosses(tracker)
         table.insert(found, subRows[i])
     end
 
-    -- Champions. Flat rather than folded into the list above: it is its own
-    -- objective, with its own API and its own update event, and not one of the
-    -- additional bosses however much its row looks like one on screen.
-    --
-    -- Marked so Redraw can put the API's counts on it - see the champions note
-    -- in mplus.Read for why the row's own numbers are not trusted here.
+    -- Champions. Collected but not drawn - see the champions note in Redraw.
+    -- It is read so the row can be faded like every other piece of the tracker
+    -- heroPanel is standing in front of, and marked so Redraw can tell it from
+    -- an additional boss, which is what its row looks like on screen and is not.
     local champions = Add(block.Champions)
     if champions then champions.champions = true end
 
@@ -617,8 +632,12 @@ function mplus.Read()
     --
     -- So the row being on screen does not mean the party owes anything, and the
     -- row's own progressMax cannot be read as a requirement either. Only the
-    -- API separates "displayed" from "required", which is why Redraw draws this
-    -- row from these two numbers rather than from the widget it sits on.
+    -- API separates "displayed" from "required".
+    --
+    -- Nothing on the panel draws these at the moment - see the champions note
+    -- in Redraw. They are read anyway, and reported by /hp dump, because the
+    -- open question is where a champion's slice of enemy forces belongs, and
+    -- that question needs the numbers to answer it.
     local champ = CallApi("GetActiveKeystoneChampions")
     if type(champ) == "table" then
         data.championsDead     = tonumber(champ.championsDead)
@@ -1796,9 +1815,22 @@ local function StyleBossRow(index, boss)
     row.ringDot:Hide()
     row.pulsing = false
 
-    if boss.group then
+    -- The count goes into the sentence in both of the heading's states.
+    --
+    -- It used to go in only while the block was expanded, which put it on the
+    -- one state that did not need it: expanded, the children are on screen and
+    -- can be counted. Collapsed they are not, the tracker's own right-aligned
+    -- "2/6" is faded with the rest of its art, and the row that stands in for
+    -- six bosses said nothing about how many of them were down.
+    --
+    -- What differs between the two states is the treatment below, not the text:
+    -- expanded it is a label over a list, collapsed it is an objective row with
+    -- an indicator like any other.
+    if boss.heading or boss.group then
         SetHeadingText(boss.label, boss.text, boss.progress, boss.maximum)
+    end
 
+    if boss.group then
         -- Green once the requirement is met, whether the row is expanded or
         -- collapsed. Collapsed it is a completed objective like any other and
         -- was already green; expanded it stayed muted, so the same run read as
@@ -2078,26 +2110,32 @@ local function DoRedraw()
             if boss.icon then FadeRegion(boss.icon) end
             if boss.counter then FadeRegion(boss.counter) end
             table.insert(subList, boss)
-        else
-            -- Champions is drawn as a heading rather than as a boss, off the
-            -- API's counts rather than the row's own.
+        elseif boss.champions then
+            ----------------------------------------------------------
+            -- Champions, which the panel does not draw.
             --
-            -- As a boss row it got a pending ring, which states that the party
-            -- has something left to do - and on this client that is usually
-            -- false, because the row is drawn whether or not the objective is
-            -- required. A +15 ran the whole way with a pending champions ring
-            -- on a requirement of zero. The heading treatment says the count
-            -- when there is one and says nothing when there is not, which is
-            -- the difference the API can actually see.
-            if boss.champions then
-                if data.championsRequired then
-                    boss.progress = data.championsDead or 0
-                    boss.maximum  = data.championsRequired
-                    boss.done     = boss.maximum > 0 and boss.progress >= boss.maximum
-                end
-                boss.group = true
-            end
-
+            -- A champion is a special kind of trash mob: worth a large slice of
+            -- enemy forces, optional, and a great deal harder than the pack it
+            -- stands in for. So what a party wants to know about one is a
+            -- percentage on the forces meter - what detouring for it is worth -
+            -- and not an objective row with a count on it.
+            --
+            -- Where that percentage goes, and whether it belongs on the meter
+            -- at all, is not settled. Drawing the row in the meantime is the
+            -- worst of the three options: as a boss row it got a pending ring
+            -- for a requirement that is usually zero on this client, and as a
+            -- heading it said a count whose meaning nobody had decided. So it
+            -- is faded whole, like Ascension's own enemy-forces row and the
+            -- extra-boss children, and nothing on the panel refers to it.
+            --
+            -- The API's counts are still read - see the champions note in
+            -- mplus.Read - and /hp dump reports them, so settling this later
+            -- starts from numbers rather than from nothing.
+            ----------------------------------------------------------
+            FadeRegion(boss.label)
+            if boss.icon then FadeRegion(boss.icon) end
+            if boss.counter then FadeRegion(boss.counter) end
+        else
             styled = styled + 1
             StyleBossRow(styled, boss)
 
@@ -2105,9 +2143,8 @@ local function DoRedraw()
             if bottom and (not contentBottom or bottom < contentBottom) then contentBottom = bottom end
 
             -- The expandable heading's own bottom, kept apart from the lowest
-            -- row on the panel - see the anchor note below. Champions is a
-            -- heading by the time it reaches here and is not this one.
-            if boss.group and not boss.champions and bottom then headingBottom = bottom end
+            -- row on the panel - see the anchor note below.
+            if boss.group and bottom then headingBottom = bottom end
         end
     end
     HideRowsFrom(styled + 1)
@@ -2116,13 +2153,16 @@ local function DoRedraw()
     -- on the panel.
     --
     -- Those were the same point right up until a row appeared *below* the
-    -- expanded children. Ascension anchors the champions row under the space it
+    -- expanded children. Ascension anchors its champions row under the space it
     -- reserves for them, so contentBottom jumped to the bottom of that whole
     -- block and the list was pushed below it. What that looked like on screen
-    -- was a tall gap between the heading and the champions row - the reserved
-    -- space, with Ascension's faded rows still standing in it - and heroPanel's
-    -- own list stranded underneath, reading as though it belonged to champions
-    -- rather than to the heading four rows above it.
+    -- was a tall gap between the heading and that row - the reserved space,
+    -- with Ascension's faded rows still standing in it - and heroPanel's own
+    -- list stranded underneath.
+    --
+    -- The panel no longer draws a champions row, so contentBottom no longer
+    -- jumps for one. The distinction stays because the reserved space does:
+    -- anything Ascension anchors under that block would move the list again.
     --
     -- Drawn against its heading, the list lands in the space that was reserved
     -- for it and the gap closes.
@@ -2133,9 +2173,9 @@ local function DoRedraw()
         local listTop  = plateTop and (anchor - plateTop - 4) or -120
         local listBottom = LayoutSubList(subList, listTop)
 
-        -- Whichever ends up lower wins. The list is no longer guaranteed to be
-        -- the bottom of the panel: with a champions row under it, that row is,
-        -- and sizing the plate to the list would cut the champions row off.
+        -- Whichever ends up lower wins. The list is normally the bottom of the
+        -- panel but is not guaranteed to be: a row drawn under it would be, and
+        -- sizing the plate to the list alone would cut that row off.
         if plateTop then
             local listScreen = plateTop + listBottom
             if not contentBottom or listScreen < contentBottom then
@@ -2727,10 +2767,19 @@ function mplus.Dump()
         tostring(data.totalTime and Clock(data.totalTime)),
         tostring(data.trashDead), tostring(data.trashRequired))
 
+    -- Read and not drawn. Reported here rather than on the panel because where
+    -- a champion's slice of enemy forces belongs is an open question, and this
+    -- is what there is to answer it with.
+    ns.Print("  champions: %s/%s |cFF8B8FA3(read, not drawn)|r",
+        tostring(data.championsDead), tostring(data.championsRequired))
+
     for i = 1, #data.bosses do
         local boss = data.bosses[i]
-        ns.Print("    boss %d |cFFC2C6D8%s|r: %s", i, boss.text,
-            boss.done and "|cFF79C68Dslain|r" or "|cFF8B8FA3up|r")
+        ns.Print("    boss %d |cFFC2C6D8%s|r: %s%s", i, boss.text,
+            boss.done and "|cFF79C68Dslain|r" or "|cFF8B8FA3up|r",
+            -- Collected so it can be faded, and listed so the row is accounted
+            -- for rather than looking like one the panel lost.
+            boss.champions and " |cFF8B8FA3(not drawn)|r" or "")
     end
     if #data.bosses == 0 then
         ns.Print("    |cFFFFAA00no boss rows|r - the objective block is empty or hidden")
