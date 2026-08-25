@@ -261,6 +261,12 @@ function ns.PrintStatus()
         (ns.db and ns.db.frame.ownership) or "auto",
         ns.DEBUG and "|cFF79C68DON|r" or "|cFF8B8FA3OFF|r")
 
+    -- High in the report rather than at the foot of it. A refused protected
+    -- call is the one line here that is worth more than the rest of the report
+    -- put together, and a status dump arrives in a bug report as often trimmed
+    -- as whole.
+    if ns.PrintBlockedCalls then ns.PrintBlockedCalls() end
+
     if ns.Mplus   and ns.Mplus.PrintStatus   then ns.Mplus.PrintStatus()   end
     if ns.Dungeon and ns.Dungeon.PrintStatus then ns.Dungeon.PrintStatus() end
     if ns.Keys  and ns.Keys.PrintStatus  then ns.Keys.PrintStatus()  end

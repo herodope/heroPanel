@@ -456,10 +456,26 @@ local function ProbeCapabilities()
     -- find out. Probed by building one rather than by looking for the template
     -- name, since a template that exists and does not bring SetAttribute with
     -- it would pass that test and fail every real use.
-    local ok, probe = pcall(CreateFrame, "Button", nil, UIParent, "SecureActionButtonTemplate")
-    caps.secureButtons = ok and type(probe) == "table"
-                         and type(probe.SetAttribute) == "function"
-    if ok and type(probe) == "table" and probe.Hide then pcall(probe.Hide, probe) end
+    --
+    -- Not in combat, though. Creating a frame from a protected template under
+    -- lockdown is refused, and this particular frame is the only unnamed one
+    -- the addon ever asks for - so the refusal is reported against no name at
+    -- all, as UNKNOWN(), which is a bug report nobody can act on. pcall is no
+    -- help: it catches the Lua error and the client still counts the block.
+    --
+    -- Left unresolved rather than answered "no" when that happens. A false here
+    -- is latched for the session and turns the bar into a read-only display for
+    -- the rest of it; nil means the question has not been asked yet, and
+    -- BuildBar asks it again once the fight is over.
+    if InCombatLockdown() then
+        caps.secureButtons = nil
+        ns.Debug("boons: secure buttons not probed - the client is in combat.")
+    else
+        local ok, probe = pcall(CreateFrame, "Button", nil, UIParent, "SecureActionButtonTemplate")
+        caps.secureButtons = ok and type(probe) == "table"
+                             and type(probe.SetAttribute) == "function"
+        if ok and type(probe) == "table" and probe.Hide then pcall(probe.Hide, probe) end
+    end
 
     -- Whether the cycle key can work in combat.
     --
@@ -493,12 +509,17 @@ local function ProbeCapabilities()
             (caps.containerScan and "container scan" or "none"),
         caps.hook and "C_Hook buckets" or "BAG_UPDATE",
         caps.itemCooldown and "yes" or "no",
-        caps.secureButtons and "yes" or "no",
+        caps.secureButtons == nil and "not probed yet"
+            or (caps.secureButtons and "yes" or "no"),
         caps.overrideBinds and "yes" or "no",
         caps.secureHandlers and "yes" or "no",
         caps.itemDuration and "client API" or "tracked")
 
-    if not caps.secureButtons then
+    -- Only on a definite no. Unprobed is not the same answer and must not be
+    -- announced as one: the probe is skipped in combat, and telling a player
+    -- mid-pull that their client cannot use boons would be a false alarm that
+    -- the next out-of-combat probe silently contradicts.
+    if caps.secureButtons == false then
         ns.Warn("this client has no secure action buttons, so the boon bar can "
             .. "show what you are holding but cannot use it. Use the boons from "
             .. "your bags.")
@@ -3134,10 +3155,36 @@ end
 local function BuildBar()
     if bar then return bar end
 
+    -- Never in combat.
+    --
+    -- Every button in the pool is a SecureActionButtonTemplate and the client
+    -- refuses to create one under lockdown, so building here mid-fight is a
+    -- block per button and a pool of nils behind them. This is not a
+    -- theoretical path: PLAYER_LOGIN fires on /reload as well as on login, and
+    -- /reload during a pull is how anybody testing a setting ends up on it.
+    --
+    -- Deferred rather than abandoned, and the follow-up work is deferred with
+    -- it: a bar that exists but was never scaled, placed or filled is a bar
+    -- sitting at 200x44 in the middle of the screen with nothing on it.
+    if InCombatLockdown() then
+        ns.Debug("boons: the bar cannot be built in combat; deferred.")
+        ns.RunWhenSafe(function()
+            if not BuildBar() then return end
+            local block = Saved()
+            if block then
+                bar:SetScale(ns.Clamp(block.scale or 1, ns.SCALE_MIN, ns.SCALE_MAX))
+            end
+            boons.RestorePosition()
+            boons.Refresh("bar built after combat")
+        end, "Boons:build")
+        return nil
+    end
+
     -- Normally probed at login, before this runs. Asked for here as well
     -- because the options window can reach SetEnabled first if the store is
     -- ready and login is not, and a pool built with caps empty would be a pool
-    -- of plain buttons for the rest of the session.
+    -- of plain buttons for the rest of the session - and because the probe is
+    -- skipped in combat, so a login that landed in one leaves it unanswered.
     if caps.secureButtons == nil then ProbeCapabilities() end
 
     bar = CreateFrame("Frame", "HeroPanelBoonBar", UIParent)
@@ -3667,13 +3714,15 @@ ns:On("PLAYER_LOGIN", function()
     ProbeCapabilities()
     WarmItemCache()
 
-    -- Built whether or not the feature is on. The pool cannot be created in
-    -- combat, so building it lazily on first enable would mean "turn the boon
-    -- bar on" failing during a pull - and an empty hidden frame costs nothing.
+    -- Built whether or not the feature is on. Building it lazily on first
+    -- enable would mean "turn the boon bar on" failing during a pull, since the
+    -- pool cannot be created in combat - and an empty hidden frame costs
+    -- nothing. BuildBar defers itself when this login landed in a fight, which
+    -- is why everything below it is guarded on the bar rather than assuming it.
     BuildBar()
 
     local block = Saved()
-    if block then
+    if block and bar then
         bar:SetScale(ns.Clamp(block.scale or 1, ns.SCALE_MIN, ns.SCALE_MAX))
     end
     boons.RestorePosition()

@@ -615,6 +615,140 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
 end)
 
 --------------------------------------------------------------------------------
+-- Blocked calls
+--
+-- The client fires ADDON_ACTION_BLOCKED (and ADDON_ACTION_FORBIDDEN, for the
+-- calls addons may never make at all) when it refuses a protected call and
+-- blames an addon by name. Both carry the addon and the function it was
+-- refused, and both are the only moment at which any of that is knowable.
+--
+-- This exists because it was not being captured. A blocked call is reported to
+-- the player as a taint error whose stack is whatever debugstack happened to be
+-- holding - usually a FrameXML template with no relation to what actually
+-- tripped - so a bug report arrives naming heroPanel and nothing else. What is
+-- recorded here is the part the taint error throws away: the function name, and
+-- whether the addon was still starting up when it happened.
+--
+-- Two fields carry most of the diagnostic weight:
+--
+--   combat  whether the client was in lockdown. A block out of combat is a
+--           different bug from a block during one - the first is a call that is
+--           never allowed, the second is one that only had to wait.
+--   booted  whether heroPanel had finished starting. A block before boot points
+--           at the login path, which is the one that runs whether or not the
+--           player asked for anything; /reload during a fight is how a player
+--           ends up on it mid-combat.
+--
+-- Reporting is capped the way ns.ReportError caps: one chat line per distinct
+-- function, counted after that, so a block on a repeating event cannot flood.
+-- The stack is kept but never printed unprompted - it is long, and it is only
+-- worth reading once the function name has failed to settle the question.
+--------------------------------------------------------------------------------
+
+-- Enough to see a pattern in, few enough to print into chat unpaged.
+local BLOCKED_KEEP = 5
+
+-- Newest last. Read by /hp status.
+ns.blockedCalls = {}
+
+local blockedSeen = {}
+
+local function RecordBlockedCall(event, addon, func)
+    -- Blocks are broadcast for every addon on the machine; this one only
+    -- speaks for its own. Another addon's block is that addon's bug, and a
+    -- heroPanel status report claiming it is a report that sends someone to
+    -- the wrong place.
+    if addon ~= ADDON_NAME then return end
+
+    func = tostring(func or "UNKNOWN")
+
+    local existing = blockedSeen[func]
+    if existing then
+        existing.count = existing.count + 1
+        return
+    end
+
+    -- debugstack rather than the stack the taint error shows, because this runs
+    -- at the moment of the refusal rather than whenever the error was drawn.
+    -- Level 2 skips this function itself. It is still not guaranteed to name
+    -- heroPanel code - a call blocked inside secure code has no frame of ours
+    -- on the stack at all - but when it does, it names the line.
+    local ok, stack = pcall(debugstack, 2, 8, 8)
+
+    -- Both of these are pcall'd against the client rather than assumed. This
+    -- handler runs at the one moment the information exists and there is no
+    -- second chance at it, so a client missing either call has to cost the
+    -- record a field rather than the whole thing.
+    local stamped, stamp = pcall(date, "%H:%M:%S")
+
+    local record = {
+        event  = event,
+        func   = func,
+        count  = 1,
+        combat = InCombatLockdown() and true or false,
+        booted = ns.booted and true or false,
+        when   = stamped and stamp or nil,
+        stack  = ok and stack or nil,
+    }
+
+    blockedSeen[func] = record
+    table.insert(ns.blockedCalls, record)
+    if #ns.blockedCalls > BLOCKED_KEEP then table.remove(ns.blockedCalls, 1) end
+
+    ns.Warn("the client refused a protected call: |cFFC2C6D8%s|r (%s, %s). "
+        .. "That is a bug - |cFFC2C6D8/hp status|r reports it.",
+        func,
+        record.combat and "in combat" or "out of combat",
+        record.booted and "after login" or "still starting up")
+end
+
+ns:On("ADDON_ACTION_BLOCKED", function(addon, func)
+    RecordBlockedCall("ADDON_ACTION_BLOCKED", addon, func)
+end)
+
+ns:On("ADDON_ACTION_FORBIDDEN", function(addon, func)
+    RecordBlockedCall("ADDON_ACTION_FORBIDDEN", addon, func)
+end)
+
+-- Printed by /hp status. Silent when there is nothing to say, so the common
+-- case - no blocked calls at all - costs the report one line of nothing.
+function ns.PrintBlockedCalls()
+    if #ns.blockedCalls == 0 then
+        ns.Print("  no protected calls were refused this session.")
+        return
+    end
+
+    ns.Print("  |cFFFFAA00%d protected call(s) refused|r - this is what to report:",
+        #ns.blockedCalls)
+
+    for i = 1, #ns.blockedCalls do
+        local record = ns.blockedCalls[i]
+        ns.Print("    %s |cFFC2C6D8%s|r - %s, %s%s",
+            record.when or "--:--:--",
+            record.func,
+            record.combat and "in combat" or "out of combat",
+            record.booted and "after login" or "|cFFFFAA00still starting up|r",
+            record.count > 1 and string.format(" (x%d)", record.count) or "")
+
+        -- One frame of it. The whole stack is on the record for anyone who
+        -- asks for it in a debug session; eight lines per block would bury the
+        -- rest of the status report.
+        if ns.DEBUG and record.stack then
+            -- string.char(10) rather than an escape in the pattern: this file
+            -- is read and edited far more often than it is run, and a lone
+            -- backslash in a string literal is the thing an editor, a diff or a
+            -- copy-paste is most likely to quietly eat.
+            local newline = string.char(10)
+            local stop    = string.find(record.stack, newline, 1, true)
+            local first   = stop and string.sub(record.stack, 1, stop - 1) or record.stack
+            if first and first ~= "" then
+                ns.Print("      |cFF8B8FA3%s|r", first)
+            end
+        end
+    end
+end
+
+--------------------------------------------------------------------------------
 -- Boot
 --------------------------------------------------------------------------------
 
