@@ -331,6 +331,33 @@ local function SaveGeometry(object)
     return true
 end
 
+-- Hand an object back to the client's own anchors, and forget it.
+--
+-- The counterpart to SaveGeometry, for the case where something heroPanel has
+-- already moved cannot be placed again on a later pass. Leaving it alone is
+-- not the neutral choice it looks like: it is still carrying the anchor from
+-- the pass that could place it, so it sits frozen at a position the tracker's
+-- own layout has since moved out from under, and every later pass fails the
+-- same way and leaves it there. Giving it back is the only state that is
+-- honest about heroPanel no longer knowing where it goes - and the next pass
+-- is free to place it again once it measures sanely.
+local function RestoreGeometry(object)
+    local saved = moved[object]
+    if not saved then return false end
+    moved[object] = nil
+
+    pcall(function()
+        object:ClearAllPoints()
+        if saved.width  then object:SetWidth(saved.width)   end
+        if saved.height then object:SetHeight(saved.height) end
+        for i = 1, #saved.points do
+            local point = saved.points[i]
+            object:SetPoint(point[1], point[2], point[3], point[4], point[5])
+        end
+    end)
+    return true
+end
+
 -- Why an object was or was not tucked, as one word.
 --
 -- Split out from the move itself so /hp dump can report the same decision the
@@ -600,46 +627,80 @@ local rowEnd = {}   -- title FontString -> right edge of the last marker placed
 -- the last rather than on top of it, and the row fills back inward.
 local rowClamp = {}   -- title FontString -> left edge to build back from
 
-local function PlaceBesideTitle(object, plate)
-    local left, right, top, bottom, scale = ScreenRect(object)
-    local panelLeft, panelRight, panelTop, _, panelScale = ScreenRect(plate)
-    if not (left and panelLeft) then return "unmeasured" end
+-- A marker this pass cannot place goes back to the client rather than staying
+-- on heroPanel's last anchor. Reported so the dump says which of the two
+-- happened, because "not placed" and "not placed, and it used to be" are
+-- different states and only one of them needs looking into.
+local function Unplaced(object, verdict)
+    if RestoreGeometry(object) then return verdict .. ", put back" end
+    return verdict
+end
 
-    -- A rect that measures backwards is not a reason to give up on the object.
-    -- It is the reason to re-anchor it.
-    --
-    -- The client re-anchors its own POI buttons on a tracker update, and it does
-    -- that with SetPoint rather than ClearAllPoints first - so a button carries
-    -- heroPanel's single TOPLEFT *and* the client's TOPRIGHT at once, the two
-    -- cross, and it reports a right edge to the left of its own left edge.
-    -- `poiWatchFrameLines3_1` came back as 1234..1105 in the game.
-    --
-    -- Bailing out on that measurement was worse than doing nothing, because it
-    -- was not a pass that skipped the button - it was every pass that skipped
-    -- it. Nothing else re-anchors these, so a button that crossed its anchors
-    -- once stayed crossed and kept its turn-in question mark sitting on top of
-    -- the quest name for the rest of the session. The guard meant to skip an
-    -- object that could not be measured instead locked out the one object that
-    -- most needed fixing.
-    --
-    -- The declared size is still good in that state, and one anchor replacing
-    -- two is exactly the repair, so fall back to it and go on.
-    local width  = (right - left) / scale
-    local height = (top - bottom) / scale
-    if width  <= 0 then width  = (object.GetWidth  and object:GetWidth())  or 0 end
-    if height <= 0 then height = (object.GetHeight and object:GetHeight()) or 0 end
-    if width <= 0 or height <= 0 then return "empty" end
-    if width > ICON_MAX or height > ICON_MAX then
-        return string.format("too big %.0fx%.0f", width, height)
+local function PlaceBesideTitle(object, plate)
+    -- Drawn, not merely shown - the same test the left-margin tuck applies, for
+    -- a reason that is sharper here. Placing a marker nothing can see is
+    -- harmless in itself; taking a turn on the row is not. rowEnd is what stops
+    -- two markers on one title from landing on top of each other, and a marker
+    -- that draws nothing bumps it exactly as a visible one does, so the icon
+    -- that *is* drawn gets pushed a marker's width to the right of a gap with
+    -- nothing in it. The tracker keeps a super-track indicator per link button
+    -- whether or not that button is carrying a quest - five of them against
+    -- four quest blocks, in the report this came from.
+    if object.IsVisible and not object:IsVisible() then
+        return Unplaced(object, "not drawn")
     end
 
-    -- The row is read off the vertical span, so that has to be sane too. A
-    -- crossed anchor can invert it the same way, and then the object belongs to
-    -- no row and the placement gives up one step later than it used to.
-    if bottom >= top then bottom = top - height * scale end
+    local left, right, top, bottom, scale = ScreenRect(object)
+    local panelLeft, panelRight, panelTop, _, panelScale = ScreenRect(plate)
+    if not (left and panelLeft) then return Unplaced(object, "unmeasured") end
+
+    -- The declared size, not the measured rect. Both are to hand, they disagree
+    -- in exactly one situation, and in that situation it is the rect that is
+    -- wrong.
+    --
+    -- The client re-anchors its own markers on a tracker update, and it does
+    -- that with SetPoint rather than ClearAllPoints first - so a marker carries
+    -- heroPanel's single TOPLEFT *and* a client anchor at once, and the rect it
+    -- reports is the span between the two rather than its own size. That lands
+    -- two ways, and they are the same fault wearing different numbers:
+    --
+    --   * The anchors cross and the rect measures backwards.
+    --     `poiWatchFrameLines3_1` came back as 1234..1105 in the game.
+    --   * The anchors pull apart and the rect measures far too wide.
+    --     `WatchFrameLinkButton1SuperTrackIndicator` declared 15 wide and
+    --     measured 127; `...LinkButton3...` declared 14 and measured 68.
+    --
+    -- Only the backwards case was covered, and covering it by size alone let
+    -- the stretched one fall through to the ICON_MAX guard and be thrown out as
+    -- "too big". That rejection is permanent: nothing else re-anchors these, so
+    -- a marker stretched once stayed stretched, kept failing the same guard on
+    -- every pass, and left its icon adrift of the quest name for the rest of
+    -- the session - which is the trap the backwards case had already been
+    -- caught in once.
+    --
+    -- Reading the declared size first covers both without having to tell them
+    -- apart, and costs nothing where they agree: every marker that placed
+    -- successfully in that report measured the same either way.
+    local width  = (object.GetWidth  and object:GetWidth())  or 0
+    local height = (object.GetHeight and object:GetHeight()) or 0
+    if width  <= 0 then width  = (right - left) / scale end
+    if height <= 0 then height = (top - bottom) / scale end
+    if width <= 0 or height <= 0 then return Unplaced(object, "empty") end
+    if width > ICON_MAX or height > ICON_MAX then
+        return Unplaced(object, string.format("too big %.0fx%.0f", width, height))
+    end
+
+    -- The row is read off the vertical span, so that gets the declared size
+    -- too. Anchors that cross invert the span and anchors that pull apart
+    -- stretch it, and either way the object claims a height it does not have -
+    -- so it matches no row, or worse, matches two and takes a turn on a title
+    -- it has nothing to do with. Measured down from the top edge, because
+    -- TOPLEFT is the corner heroPanel anchors these by and so the one end of
+    -- the span a stale anchor has not moved.
+    bottom = top - height * scale
 
     local titleRight, labelTop, labelBottom, label = TitleOnRow(top, bottom)
-    if not titleRight then return "no title on this row" end
+    if not titleRight then return Unplaced(object, "no title on this row") end
 
     -- Past whatever else is already on this row, if that is further along than
     -- the name itself ends.
@@ -812,10 +873,21 @@ function lines.DumpTuck()
         end
 
         local left, right = ScreenRect(object)
-        local entry = string.format("    d%.0f %s %s %.0fx%.0f at %.0f..%.0f: |cFFC2C6D8%s|r",
+
+        -- Whether a marker reaches the screen. A marker in the wrong place and
+        -- a marker that was never drawn read identically on this line, and the
+        -- report this was added for had five super-track indicators against
+        -- four quest blocks with no way to say which ones were real.
+        local drawn = ""
+        if marker then
+            drawn = (object.IsVisible and object:IsVisible()) and " shown" or " hidden"
+        end
+
+        local entry = string.format("    d%.0f %s %s%s %.0fx%.0f at %.0f..%.0f: |cFFC2C6D8%s|r",
             info.depth,
             tostring(name or "unnamed"),
             tostring(info.objectType),
+            drawn,
             object.GetWidth and object:GetWidth() or 0,
             object.GetHeight and object:GetHeight() or 0,
             left or 0, right or 0,

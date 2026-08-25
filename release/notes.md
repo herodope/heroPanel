@@ -43,6 +43,18 @@ can have either, both or neither.
   pull was spent with an invisible tracker still swallowing clicks meant for
   whatever was behind it. Both halves land immediately now. The same goes the
   other way: a key that ends mid-fight gives the tracker back there and then.
+* **Quest markers stop drifting off their titles.** The turn-in question mark
+  and the super-track arrow are re-anchored to the end of the quest name on
+  every pass. The client re-anchors them as well, without clearing first, so a
+  marker ends up carrying two anchors at once and reporting the span between
+  them as its size - a 15px icon measuring 127. heroPanel sized the placement
+  off that measurement, decided the marker was too big to be an icon and left
+  it alone, and nothing else re-anchors these - so one stretched marker sat
+  adrift of its quest name for the rest of the session. The size now comes from
+  what the marker declares itself to be, which is right either way, and a
+  marker heroPanel cannot place goes back on the client's own anchor instead of
+  staying frozen on heroPanel's. Markers that draw nothing no longer hold a
+  place on the row.
 * **The three panels stop rewriting a scale that has not changed.** Each one
   re-asserted its scale from the tracker on every redraw - every timer, trash
   and encounter update - for a number that had not moved since login.
