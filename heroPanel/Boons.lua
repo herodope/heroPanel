@@ -3090,6 +3090,28 @@ local function BuildButton(index, entry)
             return
         end
 
+        -- A click that could not have used anything must not do the
+        -- bookkeeping for one.
+        --
+        -- The attributes are written by ApplySecure, which is deferred out of
+        -- combat - so a boon looted during a fight is drawn and hoverable with
+        -- `type` still blank, and the client's own OnClick fires nothing. The
+        -- hook ran regardless, and NoteUsed then took the boon out of `owned`
+        -- and RefreshVisuals parked the button behind an inside-out hit rect:
+        -- the first click blanked the icon and every click after it went
+        -- through to the world, on a boon that was never spent and is still in
+        -- the bags.
+        --
+        -- The cycler's PostClick has read `type` for this reason since it was
+        -- written; this is the same test on the other path. It cannot move
+        -- into NoteUsed, because the cycle key fires through its own hidden
+        -- button and hands NoteUsed a visible one whose `type` is rightly
+        -- blank.
+        --
+        -- Reading an attribute is not protected, so this answers in combat.
+        local bound, kind = pcall(self.GetAttribute, self, "type")
+        if not (bound and kind == "item") then return end
+
         NoteUsed(self)
     end)
 
