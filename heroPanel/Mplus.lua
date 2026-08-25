@@ -496,6 +496,36 @@ local function BossName(text)
     return (string.gsub(tostring(text or ""), "%s*%(%d+:%d%d%)%s*$", ""))
 end
 
+-- One boss, two encounter IDs
+--
+-- Razorfen Downs. The heading counted 3/3 and only one of the three ticks was
+-- green, for the whole run, and the two that stayed grey were always the same
+-- two: Plaguemaw the Rotting and Ragglesnout.
+--
+-- They are the two bosses in that dungeon whose keystone encounter group holds
+-- them twice. Group 2710 is eight DungeonEncounterExtra rows for six bosses:
+-- 2618/2619 are the difficulty-2 entries the run is actually played on, and
+-- 9998/9999 are difficulty-0 entries for the same two creatures, carrying the
+-- same order index. GetMapEncounters hands the tracker all eight.
+--
+-- The run commits its kill against the difficulty it is running, so 2618 goes
+-- dead and 9998 never does. Both answer GetEncounterInfo with the same name,
+-- and a table keyed by name keeps whichever was written last - which is the
+-- stray, because its id sorts after the real one. The kill is overwritten by a
+-- boss that was never in the instance.
+--
+-- Ascension has the same bug for the same reason: SetSubObjective is keyed by
+-- label too, which is why the five rows are five and not eight, and why the
+-- last write wins there as well. The heading is right because its count comes
+-- from the server, not from these rows.
+--
+-- So the merge is a max rather than an assignment. A boss does not come back to
+-- life inside a run, and nothing here can invent a kill: false still loses to
+-- false. Reading every id and keeping the kill is the only answer that survives
+-- the same name arriving twice.
+--
+-- Group 2706 (Razorfen Kraul, Earthcaller Halmgar) and group 2962 (Maraudon,
+-- Meshlok the Harvester) are shaped the same way and were wrong the same way.
 local function EncounterStates(tracker)
     local states = {}
     if type(_G.GetEncounterInfo) ~= "function" then return states end
@@ -503,7 +533,9 @@ local function EncounterStates(tracker)
     local function Read(encounterID)
         if not encounterID then return end
         local ok, name, _, _, _, _, _, isDead = pcall(_G.GetEncounterInfo, encounterID)
-        if ok and name and name ~= "" then states[name] = isDead and true or false end
+        if ok and name and name ~= "" then
+            states[name] = states[name] or (isDead and true or false)
+        end
     end
 
     local list = tracker.encounters
