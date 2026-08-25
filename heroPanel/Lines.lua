@@ -710,8 +710,11 @@ local function TuckStrayArt(watch)
     local plate = ns.Skin.GetPlate()
     if not (watch and plate) then return end
 
-    -- Anchoring a child of the tracker is a protected call. Out of combat only;
-    -- the skin refreshes when combat ends, so it catches up on its own.
+    -- Out of combat only. The reason given was that anchoring a child of the
+    -- tracker is a protected call; measured, the tracker is not a protected
+    -- frame (see Util.lua). The restriction is kept on its own merit - this
+    -- walks the tracker's whole subtree to TUCK_DEPTH and a fight is the wrong
+    -- time to do it. The skin refreshes when combat ends, so it catches up.
     if InCombatLockdown() then return end
 
     wipe(rowEnd)

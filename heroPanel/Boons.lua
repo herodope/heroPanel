@@ -1995,8 +1995,11 @@ local function ApplyVisibility()
         --
         -- The frame this shows is heroPanel's own plain container, not one of
         -- the secure buttons inside it. Show and Hide are refused on protected
-        -- frames, and protection runs down the parent chain rather than up it,
-        -- so the container is not one. It is pcall'd all the same: if some
+        -- frames and the container is not one - measured with IsProtected
+        -- rather than reasoned from its parentage, which is what this comment
+        -- used to do. Protection does not descend the parent chain on this
+        -- client: UIParent is protected and heroPanel's frames under it are
+        -- not. See Util.lua. It is pcall'd all the same: if some
         -- build disagrees, the cost of being wrong here should be a bar that
         -- appears late rather than an error in the middle of a key.
         if show then pcall(bar.Show, bar) end

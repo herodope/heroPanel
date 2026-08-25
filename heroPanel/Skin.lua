@@ -202,7 +202,7 @@ local function BuildPlate(watch)
     -- you are arranging the panel, not to the state you play in.
     plate.grip = ns.NewResizeGrip(plate, {
         label    = "objective tracker",
-        deferred = true,   -- WatchFrame is protected, so a rescale can be refused
+        deferred = true,   -- a rescale may be refused; see Util.lua's note
         visible  = function() return not ns.IsLocked() end,
         get      = function() return ns.db.frame.watch.scale or 1 end,
         set      = function(scale) ns.SetScale("watch", scale) end,
@@ -686,7 +686,7 @@ local function LayoutPlate(watch, contentBottom)
     -- measurements be used directly as offsets on our own frames.
     local parent = watch:GetParent() or UIParent
     if plate:GetParent() ~= parent then plate:SetParent(parent) end
-    plate:SetScale(watch:GetScale() or 1)
+    ns.MatchScale(plate, watch:GetScale() or 1)
 
     -- The plate goes a strata below the tracker rather than a couple of frame
     -- levels below it. Levels bottom out at zero and only compare inside one
@@ -939,18 +939,25 @@ skin.Refresh = Refresh
 --     takes the whole subtree out of the input path in one call, which is what
 --     makes the region click-through.
 --
--- Hide is protected, so it goes through ns.RunWhenSafe - and that split falls
--- exactly where the two triggers need it. A key starting is not a combat
--- transition, so the Mythic+ hide lands there and then and the region is
--- click-through for the length of the run, which is the case this was reported
--- for. A combat hide is deferred, so until that fight ends the tracker is
--- invisible but still in the way. That is the same trade as before and it is
--- the best the client allows; nothing here can be made to land under lockdown.
+-- The Hide is attempted immediately, lockdown or not.
 --
--- Both deferred halves re-ask AutoHideWanted rather than trusting the state
--- they were queued in. The combat queue flushes on PLAYER_REGEN_ENABLED and so
--- does the lift, so a hide queued during a fight would otherwise land a frame
--- after the fight it was queued for had already ended.
+-- It used to go straight into ns.RunWhenSafe, because this file believed Hide
+-- was refused on WatchFrame during a fight. It is not - the tracker is not a
+-- protected frame (see Util.lua) - and the price of the belief was the whole of
+-- every fight spent with the tracker invisible and still eating clicks, which
+-- is the exact state the Hide half exists to prevent. "The best the client
+-- allows" is what this used to say about that, and it was wrong.
+--
+-- Attempted rather than assumed, in both directions. The call is pcall'd and
+-- the result is read back off IsShown, because a client that does refuse it may
+-- do so by throwing or by quietly doing nothing. If the frame did not move, the
+-- deferred path underneath is the one that ran before, so the worst case on a
+-- client that disagrees is exactly what this addon already did.
+--
+-- The deferred halves re-ask AutoHideWanted rather than trusting the state they
+-- were queued in. The combat queue flushes on PLAYER_REGEN_ENABLED and so does
+-- the lift, so a hide queued during a fight would otherwise land a frame after
+-- the fight it was queued for had already ended.
 --
 -- heroPanel's own plate is hidden properly, because that one is ours.
 --
@@ -991,6 +998,17 @@ local function HideTrackerWhenSafe()
     local watch = ns.GetTrackerFrame("watch")
     if not (watch and watch.IsShown and watch:IsShown()) then return end
 
+    -- Now, whatever the client is doing. See the note above: the frame is not
+    -- protected, so this lands mid-fight, which is the whole point of the half.
+    -- Read back rather than trusted - a refusal can be a throw or a no-op.
+    if pcall(watch.Hide, watch) and not watch:IsShown() then
+        trackerHiddenByUs = true
+        ns.Debug("objective tracker hidden outright; its rectangle takes no clicks.")
+        return
+    end
+
+    ns.Debug("the client would not hide the objective tracker; falling back to the queue.")
+
     -- RunWhenSafe runs the call now and returns true, or queues it behind the
     -- fight and returns false. Queued is the only state worth remembering: it
     -- is what stops every refresh in a long fight from stacking up its own copy.
@@ -1010,6 +1028,18 @@ end
 
 local function ShowTrackerIfOurs()
     if not trackerHiddenByUs then return end
+
+    -- The mirror of the hide, and it matters for the same reason. A key that
+    -- ends mid-fight, or the skin being switched off mid-fight, has to give the
+    -- tracker back there and then rather than at the end of the pull - the old
+    -- deferral left the player looking at nothing and no way to ask for it.
+    local watch = ns.GetTrackerFrame("watch")
+    if watch and not (skin.enabled and AutoHideWanted()) then
+        if pcall(watch.Show, watch) and watch:IsShown() then
+            trackerHiddenByUs = false
+            return
+        end
+    end
 
     ns.RunWhenSafe(function()
         -- Hidden again while this waited out a fight: leave it hidden, and
@@ -2098,8 +2128,9 @@ ns:On("PLAYER_LOGIN", function()
 end)
 
 ns:On("PLAYER_ENTERING_WORLD", function() Refresh("entering world") end)
--- Anchoring the tracker's own children is protected, so the line pass skips it
--- in combat. This is how it catches up rather than waiting for a quest to
--- change.
+-- The line pass skips the tracker's own children in combat - see TuckStrayArt
+-- in Lines.lua for why that restriction is worth keeping now that the tracker
+-- turns out not to be protected. This is how it catches up rather than waiting
+-- for a quest to change.
 ns:On("PLAYER_REGEN_ENABLED", function() Refresh("combat ended") end)
 ns:On("QUEST_WATCH_UPDATE", function() Refresh("quest watch") end)

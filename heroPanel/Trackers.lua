@@ -34,9 +34,14 @@ ns.trackers = {
         candidates  = { "WatchFrame" },
         -- Frame that actually gets dragged. Prefer the holder when it exists,
         -- because moving the holder moves the tracker without touching the
-        -- protected frame's own anchors.
+        -- tracker's own anchors.
+        --
+        -- There was a `protected` flag here, true for this tracker and false for
+        -- the other two. Nothing ever read it, and the one value that was not
+        -- trivially false was itself wrong - WatchFrame measures as unprotected
+        -- (see Util.lua). A hardcoded answer to a question only the client can
+        -- answer is worse than no answer, so it is gone rather than corrected.
         moverFirst  = { "WatchFrameHolder", "WatchFrame" },
-        protected   = true,
         frame       = nil,
         mover       = nil,
         found       = false,
@@ -47,7 +52,6 @@ ns.trackers = {
         label       = "Mythic+ tracker",
         candidates  = { "MythicPlusObjectiveTracker", "MythicPlusObjectiveTrackerFrame" },
         moverFirst  = { "MythicPlusObjectiveTracker", "MythicPlusObjectiveTrackerFrame" },
-        protected   = false,
         frame       = nil,
         mover       = nil,
         found       = false,
@@ -62,7 +66,6 @@ ns.trackers = {
         -- draw, and a client that has both keeps the one this panel is about.
         candidates  = { "LFGObjectiveTracker", "ScenarioObjectiveTracker" },
         moverFirst  = { "LFGObjectiveTracker", "ScenarioObjectiveTracker" },
-        protected   = false,
         frame       = nil,
         mover       = nil,
         found       = false,

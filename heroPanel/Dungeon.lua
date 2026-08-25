@@ -699,7 +699,7 @@ dungeon.Restyle = StyleStatic
 local function LayoutPlate(tracker, contentBottom)
     local parent = tracker:GetParent() or UIParent
     if plate:GetParent() ~= parent then plate:SetParent(parent) end
-    plate:SetScale(tracker:GetScale() or 1)
+    ns.MatchScale(plate, tracker:GetScale() or 1)
 
     local strata = tracker:GetFrameStrata() or "LOW"
     local level  = tracker:GetFrameLevel() or 1

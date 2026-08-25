@@ -1582,11 +1582,13 @@ local function Build()
 
         -- Getting the tracker out of the way on its own.
         --
-        -- Both of these fade the tracker to nothing rather than hiding it, because
-        -- WatchFrame is protected and Hide is refused under lockdown - which is
-        -- precisely the moment "hide in combat" has to work. See the note in
-        -- Skin.lua; the short version is that the obvious call is the one that is
-        -- guaranteed to fail.
+        -- Both of these fade the tracker to nothing *and* hide it outright. The
+        -- fade is the half that is certain to land; the Hide is what stops the
+        -- tracker's own rectangle going on taking clicks while it is invisible.
+        -- This file used to say the Hide could not land during a fight, because
+        -- WatchFrame was believed protected. It is not (see Util.lua), so both
+        -- halves now land the moment either toggle wants them. Skin.lua has the
+        -- long version.
         y = NewToggle(body, y, "Hide in combat", "fades the tracker while you are fighting",
             function() return ns.db.autoHide.combat end,
             function(value)

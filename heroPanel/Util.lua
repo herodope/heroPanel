@@ -65,9 +65,37 @@ end
 --------------------------------------------------------------------------------
 -- Combat-safe deferral
 --
--- WatchFrame and its children are protected. SetPoint / Show / Hide /
--- SetMovable / SetScale / EnableMouse on a protected frame throw during
--- combat lockdown, so anything touching those goes through ns.RunWhenSafe.
+-- What is actually protected on this client
+-- -----------------------------------------
+-- This section used to open by asserting that WatchFrame and its children are
+-- protected, and a good deal of the addon was written to that. Measured on a
+-- CoA client with IsProtected(), it is false:
+--
+--     HeroPanelMplusPlate         nil nil     heroPanel's own frame
+--     MythicPlusObjectiveTracker  nil nil
+--     WatchFrame                  nil nil
+--     UIParent                    1   1       explicitly protected
+--
+-- UIParent answering 1 1 is the control: the call exists and discriminates, so
+-- the nils are a real "not protected" rather than a client without the API.
+-- The plate is a direct child of UIParent and is not protected, so protection
+-- does not descend the parent chain here either - which is the other thing this
+-- addon assumed, and said in Boons.lua.
+--
+-- So SetPoint / Show / Hide / SetMovable / SetScale / EnableMouse on either
+-- tracker are not refused under lockdown, and the deferrals around them guard
+-- nothing. They are kept, for two reasons:
+--
+--   * Boons.lua's buttons are SecureActionButtonTemplate and genuinely are
+--     protected. That is what this queue is really for.
+--   * The reading is one client at one moment. A deferral that turns out to be
+--     unnecessary costs a call landing when the fight ends; a missing one costs
+--     an error in the middle of a key.
+--
+-- What this does *not* establish is each call in isolation: it is the frame's
+-- protection status, not a combat test of every method against it. Where a
+-- comment elsewhere still says a tracker call is protected, it has been marked
+-- as belief rather than left standing as fact.
 --------------------------------------------------------------------------------
 
 local combatQueue = {}
@@ -94,6 +122,50 @@ ns:On("PLAYER_REGEN_ENABLED", function()
         if not ok then ns.ReportError("deferred call " .. tostring(queued[i].tag), err) end
     end
 end)
+
+--------------------------------------------------------------------------------
+-- Writing a scale only when it changes
+--
+-- All three panels re-assert their plate's scale from the tracker on every
+-- redraw, and a redraw runs on every timer, trash and encounter update - so a
+-- key spends its whole length rewriting a number that has not moved since
+-- login. Reading first makes the common case free. GripOnUpdate in Move.lua has
+-- always applied this rule to the resize grip; the plates never did.
+--
+-- It also narrows what another addon can object to. A bug report from a CoA
+-- client carried "AddOn 'heroPanel' prevented the call of the secure function
+-- 'HeroPanelMplusPlate:SetScale()'" - a sentence that appears nowhere in the
+-- client's own Interface, GlobalStrings or bundled Ascension addons, so
+-- something else in that player's UI was wrapping SetScale and refusing the
+-- call itself. heroPanel cannot stop an addon doing that. It can stop handing
+-- it several hundred chances per key.
+--
+-- The write is pcall'd for the same reason: a refusal must cost the plate its
+-- scale, not the rest of the layout that runs after it. ns.ReportError dedupes
+-- on context and message, so a refusal that repeats is said once.
+--
+-- Compared against an epsilon rather than ==, because the number comes back off
+-- the client as a float.
+--------------------------------------------------------------------------------
+
+local SCALE_EPSILON = 0.0001
+
+function ns.MatchScale(frame, scale)
+    if not frame or type(scale) ~= "number" then return false end
+
+    local ok, current = pcall(frame.GetScale, frame)
+    if ok and current and math.abs(current - scale) <= SCALE_EPSILON then
+        return false
+    end
+
+    local applied, err = pcall(frame.SetScale, frame, scale)
+    if not applied then
+        local name = frame.GetName and frame:GetName() or "frame"
+        ns.ReportError("SetScale on " .. tostring(name), err)
+        return false
+    end
+    return true
+end
 
 --------------------------------------------------------------------------------
 -- Script hooking

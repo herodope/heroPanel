@@ -4,9 +4,12 @@
     Move / lock / rescale for both trackers.
 
     Safety rules this file exists to enforce:
-      * WatchFrame is protected. SetPoint, Show, Hide, SetMovable, SetScale and
-        EnableMouse on it are only ever called through ns.RunWhenSafe, which
-        defers to PLAYER_REGEN_ENABLED while the player is in combat.
+      * SetPoint, Show, Hide, SetMovable, SetScale and EnableMouse on a tracker
+        are only ever called through ns.RunWhenSafe, which defers to
+        PLAYER_REGEN_ENABLED while the player is in combat. This rule was
+        written believing WatchFrame to be protected. Measured, it is not - see
+        the note over ns.RunWhenSafe in Util.lua. The deferral is kept as a
+        precaution, not as a known requirement.
       * Scripts are attached with ns.HookScript, which hooks rather than
         replaces anything the game already installed.
       * Global functions are extended with hooksecurefunc, never overwritten.
@@ -603,8 +606,8 @@ end
 -- the thing being resized, and it moves with the cursor.
 --
 -- It sets *scale*, not size. 3.3.5a has StartSizing, and pointing it at the
--- objective tracker would be wrong twice: the frame is protected, and its width
--- is Blizzard's to decide - the tracker lays its own lines out and re-measures
+-- objective tracker would be wrong: its width is Blizzard's to decide - the
+-- tracker lays its own lines out and re-measures
 -- them. Scale is the lever that makes the whole panel bigger without heroPanel
 -- having an opinion about where any line goes, which is the rule the rest of
 -- the addon is built on. It is the right lever for the options window too, for
@@ -675,9 +678,10 @@ local function GripUpdate(grip)
     local reach = math.max(1, GripReach(drag, x, y))
     local wanted = ns.Snap(ns.Clamp(drag.scale * reach / drag.reach, SCALE_MIN, SCALE_MAX), SCALE_STEP)
 
-    -- Only on a change of the snapped value. Setting a tracker's scale is a
-    -- protected call, so pushing one per frame would queue a few hundred of
-    -- them at the first pull inside a fight.
+    -- Only on a change of the snapped value. A write per frame is a few hundred
+    -- calls a second for a number the player is nudging by hundredths, and if
+    -- anything in the UI refuses those calls it refuses every one of them.
+    -- ns.MatchScale applies the same rule to the three plates.
     if wanted == drag.applied then return end
     drag.applied = wanted
     grip.set(wanted)
@@ -815,12 +819,14 @@ local function BeginDrag(record)
     -- Both trackers stay draggable in combat, which is when you are most
     -- likely to want to move one.
     --
-    -- WatchFrame is protected and a drag was refused in combat on that basis
-    -- once, needlessly: StartMoving / StopMovingOrSizing are not among the calls
-    -- the 3.3.5a client refuses under lockdown, and dragging an unlocked tracker
-    -- through a boss fight produced no taint. ns.RunWhenSafe still guards the
-    -- calls that genuinely are protected - SetPoint, Show, Hide, SetScale,
-    -- EnableMouse.
+    -- A drag was refused in combat once on the belief that WatchFrame is
+    -- protected, needlessly: StartMoving / StopMovingOrSizing are not among the
+    -- calls the 3.3.5a client refuses under lockdown, and dragging an unlocked
+    -- tracker through a boss fight produced no taint. That was the first sign of
+    -- what has since been measured outright - the tracker is not a protected
+    -- frame at all (see Util.lua). ns.RunWhenSafe still guards SetPoint, Show,
+    -- Hide, SetScale and EnableMouse, now as a precaution rather than a known
+    -- requirement.
 
     -- In holder mode the frame under the cursor is the tracker, but the frame
     -- that actually moves is the holder it is docked into.
@@ -843,7 +849,9 @@ local function EndDrag(record)
     local mover = record.movingFrame
     record.movingFrame = nil
 
-    -- Combat can start mid-drag, which blocks the stop on a protected frame.
+    -- Combat can start mid-drag. The pcall stays whatever the frame's protection
+    -- status turns out to be: a refused stop must not take the rest of the drag
+    -- teardown with it.
     if not pcall(mover.StopMovingOrSizing, mover) then
         ns.Debug("could not stop moving %s.", record.key)
         return
@@ -921,9 +929,9 @@ end
 --     drag goes through BeginDrag, which checks the lock first. Whether the
 --     tracker can be dragged is therefore a flag heroPanel reads, not a piece
 --     of frame state it has to rewrite mid-combat.
---   * EnableMouse is the one genuinely protected call left - and a tracker with
---     a drag handle never needs it, because the handle is heroPanel's own frame
---     and turning its mouse on is not protected at all. That is the whole point
+--   * EnableMouse is the last call here that was believed protected - and a
+--     tracker with a drag handle never needs it either way, because the handle
+--     is heroPanel's own frame. That is the whole point
 --     of the handle: the unlocked state lands in combat, and the tracker's own
 --     rectangle stays click-through in every state.
 --
@@ -1244,9 +1252,9 @@ function ns.SetLocked(locked, trackerKey)
     -- normally has nothing protected left to do, and warning anyway told the
     -- player their tracker was stuck when it was in fact draggable.
     if not live then
-        ns.Warn("the %s needs the mouse turned on, which the game refuses in "
-            .. "combat - it will be draggable the moment you leave combat.",
-            pending or "tracker")
+        ns.Warn("the %s needs the mouse turned on, and that call has been held "
+            .. "back until this fight ends - it will be draggable the moment "
+            .. "you leave combat.", pending or "tracker")
     end
     return true
 end
