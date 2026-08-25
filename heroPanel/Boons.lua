@@ -52,8 +52,12 @@
       * Which cells take clicks is therefore the hit rect's job and never
         EnableMouse's. EnableMouse is on that refused list, so a button parked
         with its mouse off is one no mid-fight reveal can rescue; the mouse is
-        turned on once and left on, and SetHitRectInsets does the parking. See
-        the note on SetClickable.
+        turned on once and left on, and SetHitRectInsets does the parking.
+
+        The hit rect turns out to be refused in combat on this client too, so
+        parking cannot change mid-fight either - but it can still be read, and
+        a pass rewriting it fifteen times per restyle for no change is what the
+        refusals were actually made of. See the note on SetClickable.
 
     A boon looted in the middle of a fight therefore lights up straight away,
     takes its hover and its tooltip straight away, and becomes usable when the
@@ -564,10 +568,15 @@ local function ProbeCapabilities()
     -- it would pass that test and fail every real use.
     --
     -- Not in combat, though. Creating a frame from a protected template under
-    -- lockdown is refused, and this particular frame is the only unnamed one
-    -- the addon ever asks for - so the refusal is reported against no name at
-    -- all, as UNKNOWN(), which is a bug report nobody can act on. pcall is no
-    -- help: it catches the Lua error and the client still counts the block.
+    -- lockdown is refused, and pcall is no help: it catches the Lua error and
+    -- the client still counts the block.
+    --
+    -- This used to say that the refusal would surface as UNKNOWN() because the
+    -- probe is the only unnamed frame heroPanel asks for. That was wrong twice
+    -- over - the client names a block from its own knowledge of the call, not
+    -- from the frame, and CoA sends no name for a great many blocks that have
+    -- nothing to do with this line. Core.lua resolves those against the stack
+    -- now, so an UNKNOWN row names a file and a line.
     --
     -- Left unresolved rather than answered "no" when that happens. A false here
     -- is latched for the session and turns the bar into a read-only display for
@@ -1659,9 +1668,10 @@ end
 
 -- Growing the bar around whatever is currently revealed.
 --
--- The bar itself is a plain frame, so its size is not protected and this can
--- run mid-fight - which is the point. A boon revealed by the alpha pass below
--- would otherwise be drawn outside the bar's own rectangle.
+-- This runs mid-fight, which is the point: a boon revealed by the alpha pass
+-- below would otherwise be drawn outside the bar's own rectangle. Whether the
+-- client will take the write mid-fight is a separate question, and not the one
+-- it was assumed to be - see the note on MatchBarSize below.
 --
 -- This is also where Layout finishes, rather than Layout sizing the bar itself
 -- and this second-guessing it afterwards. Two pieces of code measuring the same
@@ -1687,7 +1697,98 @@ end
 -- spent mid-fight would otherwise pull the plate back off the reserve cells and
 -- the bar would breathe in and out for the length of the pull - and with the
 -- quest tracker chained under it, so would that.
-local function SizeBarToRevealed()
+--
+-- The bar's size is not reliably unprotected
+-- ------------------------------------------
+-- The paragraph above used to open by stating that the bar is a plain frame and
+-- so its size is not protected. A bug report from a CoA client says otherwise:
+--
+--     HeroPanelBoonBar:SetWidth()  - in combat, after login (x2)
+--     HeroPanelBoonBar:SetHeight() - in combat, after login (x2)
+--
+-- The frame is created plain, but every button in the pool is parented to it
+-- and every one of those is a SecureActionButtonTemplate. Whatever rule that
+-- client applies, the measured answer is that resizing this particular frame
+-- under lockdown is refused - so "plain frame, therefore safe" was a belief and
+-- is now known to be wrong on at least one client heroPanel runs on.
+--
+-- Three things follow, in the order they cost anything:
+--
+--   * Nothing is written that has not moved. With no boons in the bags the
+--     extent and thickness computed here are the same numbers the bar already
+--     carries, and the pass was asking for both of them anyway - which is the
+--     whole of the reported block. This is ns.MatchScale's rule applied to the
+--     one frame that never got it.
+--   * IsProtected is asked before writing in combat, when the client answers
+--     it. A refusal that is not requested costs nothing at all.
+--   * A write that survives both of those is read back. pcall does not help
+--     here - the client counts the block whether or not Lua sees a throw - so
+--     the only way to learn that this client refuses it is to look at whether
+--     the number took. It is latched for the session on the first refusal and
+--     the sizing is deferred to the end of the fight from then on.
+--
+-- The cost of the latch when it trips is that a boon revealed mid-fight is
+-- drawn on a bar that has not grown around it, until the fight ends. That is
+-- the same picture as before this note existed, minus the error.
+local SIZE_EPSILON = 0.5
+
+local combatSizeRefused = false
+
+local SizeBarToRevealed   -- forward; the deferral below calls back into it
+
+local function MatchBarSize(width, height)
+    local combat = InCombatLockdown()
+    if combat and combatSizeRefused then return false end
+
+    local gotWidth,  haveWidth  = pcall(bar.GetWidth,  bar)
+    local gotHeight, haveHeight = pcall(bar.GetHeight, bar)
+
+    local needWidth  = not (gotWidth  and haveWidth
+                            and math.abs(haveWidth  - width)  <= SIZE_EPSILON)
+    local needHeight = not (gotHeight and haveHeight
+                            and math.abs(haveHeight - height) <= SIZE_EPSILON)
+
+    if not (needWidth or needHeight) then return true end
+
+    local function Defer(why)
+        combatSizeRefused = true
+        ns.Debug("boons: %s - the bar's size is deferred to the end of combat "
+            .. "for the rest of the session.", why)
+        ns.RunWhenSafe(function()
+            if bar then SizeBarToRevealed() end
+        end, "Boons:size")
+        return false
+    end
+
+    -- Asked rather than assumed, and only in combat - out of it the answer
+    -- changes nothing. A client without the call answers nil and falls through
+    -- to the read-back, which is the slower way to the same conclusion.
+    if combat then
+        local asked, protectedNow = pcall(bar.IsProtected, bar)
+        if asked and protectedNow then
+            return Defer("the client reports the bar protected")
+        end
+    end
+
+    if needWidth  then pcall(bar.SetWidth,  bar, width)  end
+    if needHeight then pcall(bar.SetHeight, bar, height) end
+
+    if not combat then return true end
+
+    local okWidth,  nowWidth  = pcall(bar.GetWidth,  bar)
+    local okHeight, nowHeight = pcall(bar.GetHeight, bar)
+
+    local tookWidth  = not needWidth
+        or (okWidth  and nowWidth  and math.abs(nowWidth  - width)  <= SIZE_EPSILON)
+    local tookHeight = not needHeight
+        or (okHeight and nowHeight and math.abs(nowHeight - height) <= SIZE_EPSILON)
+
+    if tookWidth and tookHeight then return true end
+
+    return Defer("the client refused the bar's size")
+end
+
+function SizeBarToRevealed()
     if not (bar and layout.minThickness > 0) then return end
 
     local reach, across = 0, 0
@@ -1710,15 +1811,13 @@ local function SizeBarToRevealed()
     end
 
     if layout.vertical then
-        bar:SetHeight(extent)
-        bar:SetWidth(thickness)
+        MatchBarSize(thickness, extent)
     else
-        bar:SetWidth(extent)
-        bar:SetHeight(thickness)
+        MatchBarSize(extent, thickness)
     end
 end
 
--- Whether a button is in the input path - without touching EnableMouse.
+-- Whether a button is in the input path.
 --
 -- EnableMouse is protected on a SecureActionButtonTemplate, so a button parked
 -- with its mouse off could not get it back until the fight ended. That is
@@ -1729,35 +1828,101 @@ end
 -- eating clicks, the precise failure parking was introduced to prevent.
 --
 -- So the mouse stays on for every placed button and the hit rect does the
--- parking instead. SetHitRectInsets is not one of the calls the client refuses
--- under lockdown, so this lands mid-combat where EnableMouse cannot.
+-- parking instead.
 --
--- If some build does refuse it, the pcall swallows it and the button is left
--- mouse-enabled and clickable. That is the right way round to fail on this bar:
--- the cost is a parked cell eating a click inside the bar's own full-size
--- footprint, and the alternative is a boon that cannot be clicked at all.
+-- Both calls are refused in combat, and both were being made anyway
+-- -----------------------------------------------------------------
+-- This used to state that SetHitRectInsets is not on the refused list and so
+-- lands mid-combat where EnableMouse cannot. A stack off the live CoA client
+-- says otherwise: sixty refusals at a combat login, thirty apiece, at the two
+-- lines below, down this path -
+--
+--     LibSharedMedia callback
+--       -> Media.lua       the ns.After(0) restyle sweep
+--       -> boons.Restyle   its in-combat branch
+--       -> RefreshVisuals  once per button
+--       -> SetClickable    EnableMouse, then SetHitRectInsets
+--
+-- Two things were wrong and only one of them was the belief about the hit
+-- rect. The other is that neither call had anything to do: fifteen buttons
+-- whose mouse was already on and whose hit rect already held the value being
+-- written, on a pass a *font* triggered. A refused call is refused whether or
+-- not it would have changed anything, so writing state that already matches is
+-- the whole cost here - the same mistake, on the same login, as the one
+-- MatchBarSize was written for.
+--
+-- So: read both before writing either, and skip when they already agree. That
+-- is what removes the sixty. What is left is the genuine mid-fight transition,
+-- which this client does refuse; it is tried once, read back, and latched,
+-- and after that parking waits for the fight to end the way the layout does.
+--
+-- The cost of the latch is that a boon revealed mid-fight keeps whatever hit
+-- rect its last layout gave it, so a parked-then-revealed boon is drawn but
+-- takes no hover until the fight ends. It cannot be used mid-fight either way,
+-- because the bag slot behind it cannot be bound under lockdown - so what is
+-- actually lost is the tooltip, and the alternative on this client is not "it
+-- works", it is sixty refusals and the tooltip still missing.
+local HITRECT_EPSILON = 0.5
+
+local hitRectRefused = false
+
 local function SetClickable(button, on)
     if not button then return end
 
     -- Always on, and never turned off again. This is the call that cannot be
     -- taken back in combat, so it is only ever made in the direction that
-    -- leaves the bar working.
-    pcall(button.EnableMouse, button, true)
+    -- leaves the bar working - and now only when it is not already made. The
+    -- pool is built out of combat, so in practice this lands once per button
+    -- per session and every later pass reads true and does nothing.
+    local gotMouse, mouseOn = pcall(button.IsMouseEnabled, button)
+    if not (gotMouse and mouseOn) and not InCombatLockdown() then
+        pcall(button.EnableMouse, button, true)
+    end
 
     if type(button.SetHitRectInsets) ~= "function" then return end
-
-    if on then
-        pcall(button.SetHitRectInsets, button, 0, 0, 0, 0)
-        return
-    end
 
     -- Inset by the button's whole width and height on each side, which leaves
     -- the rect inside out and so catching nothing. Measured off the button
     -- rather than off the icon-size setting, because a reveal in combat has to
     -- work from whatever size the last layout gave it.
-    local width  = tonumber(button:GetWidth())  or 0
-    local height = tonumber(button:GetHeight()) or 0
-    pcall(button.SetHitRectInsets, button, width, width, height, height)
+    local wantSide, wantEnd = 0, 0
+    if not on then
+        wantSide = tonumber(button:GetWidth())  or 0
+        wantEnd  = tonumber(button:GetHeight()) or 0
+    end
+
+    local function Matches()
+        if type(button.GetHitRectInsets) ~= "function" then return false end
+        local got, left, right, top, bottom = pcall(button.GetHitRectInsets, button)
+        if not got then return false end
+        return math.abs((left   or 0) - wantSide) <= HITRECT_EPSILON
+           and math.abs((right  or 0) - wantSide) <= HITRECT_EPSILON
+           and math.abs((top    or 0) - wantEnd)  <= HITRECT_EPSILON
+           and math.abs((bottom or 0) - wantEnd)  <= HITRECT_EPSILON
+    end
+
+    if Matches() then return end
+
+    local combat = InCombatLockdown()
+    if combat and hitRectRefused then return end
+
+    pcall(button.SetHitRectInsets, button, wantSide, wantSide, wantEnd, wantEnd)
+
+    if not combat then return end
+
+    -- Read back rather than trusted. pcall answers "did that throw", and a
+    -- refused call on this client is not a throw - it is a no-op the client
+    -- counts against the addon. Looking at whether the value took is the only
+    -- way to tell, and it is worth one refusal per session to find out rather
+    -- than assuming either answer.
+    --
+    -- Nothing is queued on the way out. Combat ending runs ApplySecure, which
+    -- runs Layout, which calls straight back into here for every button.
+    if Matches() then return end
+
+    hitRectRefused = true
+    ns.Debug("boons: the client refuses a button's hit rect in combat; "
+        .. "parking waits for the fight to end for the rest of the session.")
 end
 
 local function RefreshVisuals()

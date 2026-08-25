@@ -58,6 +58,41 @@ can have either, both or neither.
 * **The three panels stop rewriting a scale that has not changed.** Each one
   re-asserted its scale from the tracker on every redraw - every timer, trash
   and encounter update - for a number that had not moved since login.
+* **The boon bar stops asking the client for things it will not do in combat.**
+  A pull on a CoA realm produced a run of "Interface action failed because of
+  an AddOn" errors: sixty-four refused calls at a single combat login, none of
+  which needed to be made at all.
+
+  Three separate passes were writing values that had not changed. The bar
+  rewrote its own width and height on every refresh - the same two numbers,
+  while you were carrying no boons at all. Every button had its mouse switched
+  on again and its click area rewritten on every restyle, fifteen buttons at a
+  time, on a pass that a *font* change triggered. None of it altered anything
+  on screen, and all of it is refused while you are in combat, which is what
+  turned a redundant call into an error message.
+
+  All three now read the current value first and write only when it has really
+  moved. Two things heroPanel believed about this client turned out to be
+  wrong and are fixed with it: the bar's own size is protected in combat
+  (every button on it is a secure frame), and so is a button's click area -
+  which had been relied on as the one thing that could still be changed
+  mid-fight. Where the client really does refuse, heroPanel now finds out
+  once, stops asking, and waits for the fight to end.
+
+  The one thing given up: a boon looted mid-fight that was hidden by *Hide
+  when you have none* is drawn immediately, as before, but does not take a
+  tooltip until the fight ends. It could never be *used* mid-fight regardless,
+  because the bag slot behind it cannot be bound under lockdown.
+* **Refused calls are reported with a file and a line.** `/hp status` used to
+  fold every refusal the client would not name into one `UNKNOWN()` row, which
+  said how many had happened and nothing about where. The client sends the
+  word "UNKNOWN" itself for most of them, so they are now identified by the
+  heroPanel line nearest the refusal instead - `UNKNOWN() at Boons.lua:1840`.
+  Two refusals from two places take two rows.
+
+  New: **`/hp blocked`** prints every refused call with its whole stack, one
+  line per frame. `/hp status` prints one frame, which is rarely the useful
+  one; this is the command to run when something needs reporting.
 
 ## Also in this release
 

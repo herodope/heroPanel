@@ -669,13 +669,97 @@ end)
 -- worth reading once the function name has failed to settle the question.
 --------------------------------------------------------------------------------
 
--- Enough to see a pattern in, few enough to print into chat unpaged.
-local BLOCKED_KEEP = 5
+-- Enough to see a pattern in, few enough to print into chat unpaged. Eight
+-- rather than five since an unnamed block is now kept per call site: the same
+-- session that used to fold into one UNKNOWN row can now fill several, and
+-- truncating those back down to five would throw away the thing this was
+-- widened to capture.
+local BLOCKED_KEEP = 8
 
 -- Newest last. Read by /hp status.
 ns.blockedCalls = {}
 
 local blockedSeen = {}
+
+--------------------------------------------------------------------------------
+-- Naming a block the client would not name
+--
+-- The client is entitled to fire ADDON_ACTION_BLOCKED with no function string,
+-- and on CoA it frequently does. Everything unnamed then keys on the same
+-- "UNKNOWN" row, so a report comes back reading
+--
+--     16:12:20 UNKNOWN() - in combat, after login (x60)
+--
+-- which says sixty refusals happened and nothing whatever about where. Sixty
+-- blocks at one call site is one bug; sixty at sixty sites is a different one,
+-- and the row cannot tell them apart.
+--
+-- Boons.lua carried a note blaming this on the one unnamed frame the addon
+-- creates. That was a guess and it does not survive arithmetic - there is one
+-- such frame and it is created once, behind a lockdown guard. The name is
+-- missing because the client did not send one, not because the frame had none.
+--
+-- So the stack is read for a heroPanel frame and that becomes the identity.
+-- Frames in this file are skipped while any other frame is available, because
+-- the two closures below and the event dispatcher above them are always on the
+-- stack and never the culprit. When no frame of ours is on it at all the row
+-- stays UNKNOWN, which is now a statement rather than a default: the refusal
+-- happened somewhere with no heroPanel code on the stack.
+--
+-- Whether the stack is the offending call's or the event dispatch's is the
+-- client's business and not knowable from here. It is labelled as a call site
+-- and not as proof, and where it is wrong it is wrong in a way a reader can
+-- see, because it names a file and a line that can be looked at.
+--------------------------------------------------------------------------------
+
+-- Resolving costs a debugstack per unnamed block, before the dedupe can help -
+-- that is the price of keying on the site rather than on the absence of a
+-- name. Capped so a refusal on a per-frame path cannot turn into a debugstack
+-- per frame for the rest of the session.
+local UNNAMED_RESOLVE_CAP = 200
+
+local unnamedResolved = 0
+
+-- The first frame worth naming, and whether it is one of ours.
+--
+-- Walked as frames rather than scanned for heroPanel paths, because the answer
+-- when none of the stack is ours is not "nothing" - it is whichever addon or
+-- FrameXML file *was* on it, and that is a lead where a blank is not.
+--
+-- Core.lua frames are never the answer. RecordBlockedCall, the two closures
+-- that call it and the event dispatcher above them are on every stack this
+-- function ever sees, and naming any of them would be this file reporting
+-- itself. The first report back from the live client did exactly that -
+-- "Core.lua:775: in function <Core.lua:740>" is the recorder looking at its
+-- own feet - which is what says the frame count and the start level were both
+-- wrong and that a fallback onto our own file is worse than no answer at all.
+local function CallSite(stack)
+    if type(stack) ~= "string" then return nil, false end
+
+    local ours, other
+
+    -- %c rather than a class holding the two line-break escapes: the only
+    -- control characters in a stack string are the breaks themselves, and
+    -- writing it this way keeps the pattern free of escapes that Lua 5.1 and
+    -- 5.3 read differently.
+    for line in string.gmatch(stack, "[^%c]+") do
+        -- "Interface\AddOns\heroPanel\Boons.lua:1713: in function <...>"
+        local path, at = string.match(line, "^%s*(.-%.lua):(%d+):")
+        if path then
+            local file = string.match(path, "([%w_%-]+%.lua)$") or path
+            if string.find(path, "heroPanel", 1, true) then
+                if file ~= "Core.lua" and not ours then
+                    ours = file .. ":" .. at
+                end
+            elseif not other then
+                other = file .. ":" .. at
+            end
+        end
+    end
+
+    if ours then return ours, true end
+    return other, false
+end
 
 local function RecordBlockedCall(event, addon, func)
     -- Blocks are broadcast for every addon on the machine; this one only
@@ -684,7 +768,54 @@ local function RecordBlockedCall(event, addon, func)
     -- the wrong place.
     if addon ~= ADDON_NAME then return end
 
-    func = tostring(func or "UNKNOWN")
+    -- debugstack rather than the stack the taint error shows, because this runs
+    -- as the client refuses rather than whenever the error was drawn. Level 2
+    -- skips this function itself. It is still not guaranteed to name heroPanel
+    -- code - a call blocked inside secure code has no frame of ours on the
+    -- stack at all - but when it does, it names the line.
+    --
+    -- Taken before the dedupe when there is no name to key on, because the name
+    -- is what the dedupe keys on and there is not one yet.
+    --
+    -- "No name" is not only nil. CoA sends the literal string "UNKNOWN()" as
+    -- the function, which is the client saying it does not know either - and
+    -- the first pass at this treated that as a name, kept it, and so filed
+    -- sixty refusals from sixty places under one row exactly as before. The
+    -- parentheses in the reported row were the tell: this file writes a bare
+    -- "UNKNOWN" when it has nothing, so a row reading "UNKNOWN()" can only
+    -- have come off the wire.
+    local raw   = func ~= nil and tostring(func) or ""
+    local bare  = string.gsub(string.upper(raw), "[%(%)%s]", "")
+    local named = raw ~= "" and bare ~= "UNKNOWN" and bare ~= "NIL"
+
+    local ok, stack
+
+    if named then
+        func = raw
+    else
+        -- Twenty frames from level 1, not eight from level 2. The pcall puts a
+        -- C frame between this and debugstack, so a start level meant to skip
+        -- RecordBlockedCall skipped nothing and the stack came back with the
+        -- recorder on top of it. Depth is filtered in CallSite by what the
+        -- frames are rather than by counting, which is the part that does not
+        -- go stale when a line moves.
+        if unnamedResolved < UNNAMED_RESOLVE_CAP then
+            unnamedResolved = unnamedResolved + 1
+            ok, stack = pcall(debugstack, 1, 20, 20)
+        end
+
+        local site, mine = CallSite(ok and stack or nil)
+        if site and mine then
+            func = "UNKNOWN() at " .. site
+        elseif site then
+            -- Not heroPanel's own line. Still worth naming: the client blamed
+            -- this addon, so whatever is on the stack is what it was blamed
+            -- through, and "near" rather than "at" says which claim is which.
+            func = "UNKNOWN() near " .. site
+        else
+            func = "UNKNOWN()"
+        end
+    end
 
     local existing = blockedSeen[func]
     if existing then
@@ -692,12 +823,7 @@ local function RecordBlockedCall(event, addon, func)
         return
     end
 
-    -- debugstack rather than the stack the taint error shows, because this runs
-    -- at the moment of the refusal rather than whenever the error was drawn.
-    -- Level 2 skips this function itself. It is still not guaranteed to name
-    -- heroPanel code - a call blocked inside secure code has no frame of ours
-    -- on the stack at all - but when it does, it names the line.
-    local ok, stack = pcall(debugstack, 2, 8, 8)
+    if not ok then ok, stack = pcall(debugstack, 1, 20, 20) end
 
     -- Both of these are pcall'd against the client rather than assumed. This
     -- handler runs at the one moment the information exists and there is no
@@ -733,6 +859,44 @@ end)
 ns:On("ADDON_ACTION_FORBIDDEN", function(addon, func)
     RecordBlockedCall("ADDON_ACTION_FORBIDDEN", addon, func)
 end)
+
+-- The whole record, stacks and all. Printed by /hp blocked.
+--
+-- /hp status prints one frame per block, which is right for a report a player
+-- runs to see whether anything is wrong. It is not enough to fix one: the
+-- frame that matters is rarely the top one, and on the first report back from
+-- the live client the top frame was this file's own recorder. This prints
+-- everything kept, and it is deliberately not part of /hp status - eight lines
+-- per block would bury the rest of it.
+function ns.PrintBlockedStacks()
+    if #ns.blockedCalls == 0 then
+        ns.Print("no protected calls were refused this session.")
+        return
+    end
+
+    ns.Print("|cFFFFAA00%d protected call(s) refused|r, with stacks:", #ns.blockedCalls)
+
+    for i = 1, #ns.blockedCalls do
+        local record = ns.blockedCalls[i]
+        ns.Print("  %s |cFFC2C6D8%s|r - %s, %s%s [%s]",
+            record.when or "--:--:--",
+            record.func,
+            record.combat and "in combat" or "out of combat",
+            record.booted and "after login" or "still starting up",
+            record.count > 1 and string.format(" (x%d)", record.count) or "",
+            tostring(record.event))
+
+        if record.stack then
+            -- One chat line per frame. A stack pasted as a single line is a
+            -- line nobody can read and nobody can quote a part of.
+            for line in string.gmatch(record.stack, "[^%c]+") do
+                ns.Print("    |cFF8B8FA3%s|r", line)
+            end
+        else
+            ns.Print("    |cFF8B8FA3no stack was captured|r")
+        end
+    end
+end
 
 -- Printed by /hp status. Silent when there is nothing to say, so the common
 -- case - no blocked calls at all - costs the report one line of nothing.
@@ -824,6 +988,7 @@ local function PrintUsage()
     ns.Print("  |cFFC2C6D8/hp status|r - report which frames were found and hooked")
     ns.Print("  |cFFC2C6D8/hp store|r - report what this login did to your saved settings")
     ns.Print("  |cFFC2C6D8/hp dump|r - report the geometry the skin measured")
+    ns.Print("  |cFFC2C6D8/hp blocked|r - every protected call the client refused, with stacks")
     ns.Print("  |cFFC2C6D8/hp mplus [preview]|r - report what the Mythic+ panel resolved "
         .. "(|cFF8B8FA3preview draws it outside a key so you can place it|r)")
     ns.Print("  |cFFC2C6D8/hp dungeon [preview]|r - the same for the dungeon panel "
@@ -1058,6 +1223,8 @@ SlashCmdList["HEROPANEL"] = function(input)
         else
             ns.Print("the skin module is not loaded.")
         end
+    elseif cmd == "blocked" then
+        ns.PrintBlockedStacks()
     elseif cmd == "frame" then
         if ns.Skin and ns.Skin.DescribeFrame then
             ns.Skin.DescribeFrame(rawRest)
