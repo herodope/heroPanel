@@ -362,6 +362,7 @@ Everything below is also in the options window, except where noted.
 | `/hp mode <auto\|own\|holder\|yield>` | Who positions the trackers |
 | `/hp skin [on\|off]` | Style the trackers, or hand them back to the game |
 | `/hp status` | Report what heroPanel found and hooked |
+| `/hp blocked` | Every protected call the client refused, with its full stack |
 | `/hp store` | Report what this login did to your saved settings |
 
 ## If something looks wrong
@@ -375,6 +376,12 @@ somewhere you can't reach.
 
 If you want to report a problem, `/hp status` output is the most useful thing to
 include, along with which other UI addons you run.
+
+If you saw **"Interface action failed because of an AddOn"**, run **`/hp
+blocked`** as well and include that. It prints every call the client refused
+with the whole stack behind it, which is what actually locates one — `/hp
+status` prints a single frame per refusal and it is rarely the frame that
+matters.
 
 ## Updating
 
