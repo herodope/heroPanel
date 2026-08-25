@@ -17,18 +17,27 @@ design_handoff_heroPanel/
 
 # Author-side notes and tooling — not part of the distributed addon and of no
 # use to a player installing it. Kept locally, deliberately untracked.
+#
+# tools/* rather than tools/, because git cannot re-include a file whose parent
+# directory is excluded. package.py is the exception: cutting a release has to
+# be reproducible by whoever does it next, so the build script is versioned even
+# though the rest of the directory is not.
 CLAUDE.md
 TESTING.md
-tools/
+tools/*
+!tools/package.py
 
 # Research notes written while building a feature. Working documents: they
 # record where data came from and what was ruled out, which is worth keeping
 # locally and is not part of what a player installs.
 *-research-and-prompt*.md
 
-# Packaging output
+# Packaging output. The zips are build artefacts - derivable from the tag they
+# are attached to, and distributed as release assets rather than from the repo.
+# release/notes.md is deliberately *not* ignored: it is authored prose, the same
+# kind of source as the README, and it wants a history and a diff before it is
+# published.
 /dist/
-/release/
 *.zip
 
 # Test harness dependencies
