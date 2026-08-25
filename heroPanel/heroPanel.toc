@@ -1,7 +1,7 @@
 ## Interface: 30300
 ## Title: heroPanel
 ## Author: herodope
-## Version: 0.2.4
+## Version: 0.2.5
 ## Notes: Skin, mover and lock controls for the objective tracker, the Mythic+ tracker and the dungeon tracker, plus a Mythic+ boon bar.
 ## SavedVariables: HEROPANEL_DB
 ## OptionalDeps: Ascension_MythicPlus, SharedMediaAdditionalFonts, SharedMedia_Causese

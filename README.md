@@ -27,7 +27,7 @@ buried in an inventory slot mid-run. Everything is configured in an in-game
 options window, and changes apply immediately — no reloading to see what a
 setting did.
 
-> **Pre-release (0.2.4).** Feature complete and playable, but still being
+> **Pre-release (0.2.5).** Feature complete and playable, but still being
 > tested. Your settings carry across updates — see
 > [Updating](#updating).
 
@@ -46,14 +46,22 @@ extra — that tracker is part of the client.
 
 ## Installation
 
-1. Download this repository as a ZIP (**Code → Download ZIP**) and unzip it.
-2. Copy the inner **`heroPanel`** folder into your WoW folder's
-   `Interface\AddOns` directory.
-3. Check you ended up with this file:
-   `Interface\AddOns\heroPanel\heroPanel.toc`
-   — if you have `Interface\AddOns\heroPanel\heroPanel\heroPanel.toc`, you
-   copied one folder too many. Move the inner one up a level.
+1. Go to [Releases](https://github.com/herodope/heroPanel/releases) and download
+   **`heroPanel-<version>.zip`** — the file listed under *Assets*, not the
+   *Source code* ones underneath it.
+2. Unzip it. You get a single folder called **`heroPanel`**.
+3. Drop that folder into your WoW folder's `Interface\AddOns` directory.
 4. Restart the game, or type `/reload` if you're already logged in.
+
+You should end up with this file: `Interface\AddOns\heroPanel\heroPanel.toc`
+
+Use the release ZIP rather than **Code → Download ZIP**. GitHub names the folder
+in that one `heroPanel-main`, and WoW will not load an addon whose folder name
+does not match its `.toc`. If you already downloaded it that way, it still
+works — unzip it, and copy the **inner** `heroPanel` folder rather than the
+`heroPanel-main` one around it. If you end up with
+`Interface\AddOns\heroPanel\heroPanel\heroPanel.toc` you copied one folder
+too many; move the inner one up a level.
 
 heroPanel enables itself, so there's nothing to tick on the character screen.
 
@@ -200,6 +208,15 @@ Worth knowing:
   duration* and holding shift while you left-click a boon puts how long that
   boon has left in party chat instead of using it. Your keybinds are unaffected,
   including shift-modified ones.
+* **Call your boons automatically** — two switches that write in party chat on
+  their own. *Announce boons you pick up* names each boon as it lands in your
+  bags, and *Announce boons about to expire* is the expiry glow said out loud.
+  *Call at* picks the thresholds for the second one — 30s, 1 min, 2 min, or any
+  combination of the three, so you can have a two-minute heads-up and a
+  thirty-second last call. Both are off by default, both are silent when you are
+  not in a group, and both only speak while the bar itself is on screen — so
+  with *Only in Mythic dungeons* left on, they speak during a key and nowhere
+  else.
 * Hovering a boon out of combat shows its real item tooltip, with the expiry.
   In combat you get a one-line summary instead, so you are not reading a wall of
   text mid-pull.

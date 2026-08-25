@@ -325,6 +325,50 @@ local EXPIRY_TICK = 0.5
 local EXPIRY_RESYNC = 2
 
 --------------------------------------------------------------------------------
+-- The expiry call
+--
+-- The same warning again, said out loud in party chat instead of drawn on the
+-- icon. It is a separate feature rather than a mode of the glow because the two
+-- answer different people: the glow tells the person holding the boon, and this
+-- tells the four who cannot see their bags.
+--
+-- The thresholds are the glow's, minus its Off row - that one is the toggle's
+-- job here. Derived rather than written out again, so the two cannot drift: a
+-- fourth warning added above becomes a fourth button in both places.
+--
+-- More than one may be picked, which is the difference from the glow. The glow
+-- is a state - an icon is either warning or it is not - and a call is an event,
+-- so "tell me at two minutes and again at thirty seconds" is a thing to want
+-- and "glow from two minutes and also from thirty seconds" is not.
+--------------------------------------------------------------------------------
+
+ns.BOON_ANNOUNCE_THRESHOLDS = {}
+for i = 1, #ns.BOON_EXPIRY_WARNINGS do
+    local entry = ns.BOON_EXPIRY_WARNINGS[i]
+    if entry.key > 0 then
+        table.insert(ns.BOON_ANNOUNCE_THRESHOLDS, entry)
+    end
+end
+
+--------------------------------------------------------------------------------
+-- The pickup call
+--
+-- The other automatic line: a boon landing in the bags, named in party chat.
+-- There is no threshold to pick and nothing to tune, so the whole of its
+-- configuration is the switch - and the only constant it needs is a guard
+-- against the bag scan, not against the player.
+--------------------------------------------------------------------------------
+
+-- How long a boon has to have been out of the bags before landing in them again
+-- counts as a second pickup.
+--
+-- Not a throttle on the message - a pickup is announced once per boon and there
+-- are fifteen of them. It is against the scan: a bag event caught mid-move can
+-- read a slot as empty and then as full again, and without this the party gets
+-- told twice about one boon.
+local GAIN_DEBOUNCE = 3
+
+--------------------------------------------------------------------------------
 -- The chat report
 --
 -- Shift and left-click a boon to say how long it has left in party chat rather
@@ -378,6 +422,9 @@ local DEFAULT_CONFIG = {
     rawTooltip     = false,
     expiryWarn     = 0,
     reportDuration = false,
+    announceGain   = false,
+    announceExpiry = false,
+    announceExpiryAt = { [30] = false, [60] = true, [120] = false },
     scale          = 1.0,
     x              = 0,
     y              = 0,
@@ -410,6 +457,65 @@ end
 
 function boons.IsEnabled()
     return Config().enabled and true or false
+end
+
+--------------------------------------------------------------------------------
+-- Party chat
+--
+-- Three of this module's features end in somebody else's chat window: the
+-- shift-click report, the pickup announcement and the expiry announcement. They
+-- ask the same two questions first - is there a group, and which channel is it -
+-- so they ask them here rather than each their own way.
+--
+-- Declared this early because the two automatic announcements run off the bag
+-- scan and the expiry ticker, both of which are a long way above the click hook
+-- that was the first caller.
+--------------------------------------------------------------------------------
+
+-- The same pair Keys.lua carries, for the same reason and with the same
+-- precedence: a player in a raid is in a party too, and PARTY would reach four
+-- of the forty. Local copies rather than a shared helper because they are three
+-- lines each and the alternative is Boons.lua depending on Keys.lua loading.
+local function GroupSize(fn)
+    if type(fn) ~= "function" then return 0 end
+    local ok, count = pcall(fn)
+    if not ok then return 0 end
+    return tonumber(count) or 0
+end
+
+local function ReplyChannel()
+    if GroupSize(_G.GetNumRaidMembers) > 0 then return "RAID" end
+    return "PARTY"
+end
+
+local function InGroup()
+    return GroupSize(_G.GetNumPartyMembers) > 0
+        or GroupSize(_G.GetNumRaidMembers) > 0
+end
+
+-- Seconds as something a person reads at a glance. Bare seconds under a minute,
+-- because "0:47" is a stopwatch and "47s" is an answer.
+local function FormatSpan(seconds)
+    seconds = math.max(0, math.floor((tonumber(seconds) or 0) + 0.5))
+    if seconds < 60 then return string.format("%ds", seconds) end
+    return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+-- Put a line in the group's chat. Three answers rather than two, because the
+-- callers want different things from the third:
+--
+--   true   it went to the party or the raid
+--   false  there was a channel to send on and the client refused it
+--   nil    there was nobody to tell - solo, or a build with no SendChatMessage
+--
+-- The shift-click report answers locally on nil, because the gesture is also how
+-- you ask yourself. The two automatic announcements say nothing at all on it: a
+-- line nobody asked for, in your own chat window, about a bar you are looking
+-- at, is noise.
+local function SendToGroup(message)
+    if not (InGroup() and type(SendChatMessage) == "function") then return nil end
+    if pcall(SendChatMessage, message, ReplyChannel()) then return true end
+    return false
 end
 
 --------------------------------------------------------------------------------
@@ -957,7 +1063,171 @@ end
 
 boons.RemainingLife = RemainingLife
 
+--------------------------------------------------------------------------------
+-- Announcements
+--
+-- Two automatic party-chat lines, both off by default: one when a boon lands in
+-- the bags, one as a held boon runs down. They are the bar's two facts said out
+-- loud - what you are carrying, and how long you have got - for the four people
+-- who cannot see it.
+--
+-- Both are gated on the bar being on screen rather than merely on their own
+-- checkbox, and that is the whole of what stops them being a nuisance. "Only in
+-- Mythic dungeons" is on by default, so a player who ticks these gets them
+-- during a key and nowhere else - not while sorting bags in a city, and not on
+-- the boon somebody hands them between runs.
+--
+-- Silent outside a group. There is no local fallback the way the shift-click
+-- report has one: that report answers a deliberate gesture, and these two answer
+-- nothing anybody did.
+--------------------------------------------------------------------------------
+
+-- Forward declaration. Both announcements ask whether the bar is up, and that
+-- answer lives with the visibility code a long way below - see the note on the
+-- gate above for why it is that question and not "is the feature ticked".
+local ShouldShow
+
+-- The name to put in chat. BoonData's own, then whatever the item API can be
+-- persuaded to say about a boon this build has never seen - which is the same
+-- pair ClassifyItem asks, and in the same order.
+local function BoonName(itemID)
+    local entry = itemID and ns.BoonData.BY_ID[itemID]
+    if entry and entry.name then return entry.name end
+
+    local name = itemID and GetItemInfo and GetItemInfo(itemID)
+    if not name and itemID and GetSpellInfo then name = GetSpellInfo(itemID) end
+    return name or "Mythical Boon"
+end
+
+-- itemID -> the last time it was announced as picked up. Only ever read against
+-- GAIN_DEBOUNCE, so nothing has to clean it out: fifteen boons is fifteen
+-- entries and every one of them is stale within three seconds of being written.
+local gainAnnounced = {}
+
+-- Whether a bag scan has happened yet.
+--
+-- The first one is not a pickup. It runs at login and after a /reload, and it
+-- finds whatever is already in the bags - which mid-key is every boon the player
+-- is carrying. Announcing that set would put five lines in party chat for a
+-- reload nobody else can see.
+local gainPrimed = false
+
+-- itemID -> { [threshold] = true } for the calls already made about that boon.
+--
+-- Re-armed by the clock going back up rather than by anything watching the bags,
+-- which is what makes it right for the two cases that are not a simple
+-- countdown: a boon spent and looted again jumps from seconds to ten minutes,
+-- and so does one that had a second stack behind it, since the button - and
+-- RemainingLife - always read the oldest.
+local expiryAnnounced = {}
+
+-- What landed in the bags since the last scan.
+--
+-- Called from RebuildOwned with the set as it was before it, because that is the
+-- only moment the two sets both exist. Everything it decides is a comparison of
+-- those two and nothing polls.
+local function NoteGains(before)
+    for itemID in pairs(expiryAnnounced) do
+        if not owned[itemID] then expiryAnnounced[itemID] = nil end
+    end
+
+    if not gainPrimed then
+        gainPrimed = true
+        return
+    end
+
+    if not (Config().announceGain and ShouldShow and ShouldShow()) then return end
+
+    local now, fresh = GetTime(), {}
+    for itemID in pairs(owned) do
+        if not before[itemID] then
+            local at = gainAnnounced[itemID]
+            if not (at and (now - at) < GAIN_DEBOUNCE) then
+                gainAnnounced[itemID] = now
+                fresh[#fresh + 1] = BoonName(itemID)
+            end
+        end
+    end
+
+    if #fresh == 0 then return end
+
+    -- One line for the lot rather than one line each. Opening a chest is one
+    -- moment and can be two boons, and two messages a frame apart read as the
+    -- addon stuttering rather than as two pickups.
+    --
+    -- Sorted so the line does not depend on pairs() order, which is not stable
+    -- between sessions and would make the same two boons read differently twice.
+    table.sort(fresh)
+    SendToGroup("Boons: picked up " .. table.concat(fresh, ", "))
+end
+
+-- The calls due this tick.
+--
+-- Ascending, and the tightest threshold that has just been crossed is the one
+-- announced - the looser ones crossed in the same pass are marked as made
+-- without being said. That is what keeps a player who ticks all three from
+-- getting three lines at once when they turn the feature on partway through a
+-- boon's life, or when a /reload finds one already down to its last thirty
+-- seconds.
+--
+-- A threshold is marked whether or not it was asked for, which is the same idea
+-- from the other end: ticking "2 min" on a boon that is already under a minute
+-- should say nothing, because that moment has been and gone.
+local function NoteExpiries()
+    if not Config().announceExpiry then return end
+    if not (ShouldShow and ShouldShow()) then return end
+
+    local wanted = Config().announceExpiryAt
+    if type(wanted) ~= "table" then return end
+
+    local list = ns.BOON_ANNOUNCE_THRESHOLDS
+    local due  = {}
+
+    for itemID in pairs(owned) do
+        local left = RemainingLife(itemID)
+        if left then
+            local done = expiryAnnounced[itemID]
+            if not done then
+                done = {}
+                expiryAnnounced[itemID] = done
+            end
+
+            local crossed = nil
+            for i = 1, #list do
+                local threshold = list[i].key
+                if left > threshold then
+                    done[threshold] = nil
+                elseif not done[threshold] then
+                    done[threshold] = true
+                    if wanted[threshold] and crossed == nil then crossed = i end
+                end
+            end
+
+            if crossed then
+                due[crossed] = due[crossed] or {}
+                table.insert(due[crossed], BoonName(itemID))
+            end
+        end
+    end
+
+    -- One line per threshold, however many boons crossed it together. The
+    -- threshold's own label rather than the remaining time, because this is a
+    -- warning and not a clock: "expires in 1 min" is what was asked for, where
+    -- "expires in 59s" is a number that was already wrong when it was sent.
+    for i = 1, #list do
+        local names = due[i]
+        if names then
+            table.sort(names)
+            SendToGroup(string.format("Boons: %s %s in %s",
+                table.concat(names, ", "),
+                #names == 1 and "expires" or "expire",
+                list[i].label))
+        end
+    end
+end
+
 local function RebuildOwned()
+    local before = owned
     owned, ownedCount = {}, 0
 
     if caps.inventoryState then
@@ -967,6 +1237,7 @@ local function RebuildOwned()
     end
 
     NoteLifetimes()
+    NoteGains(before)
     return ownedCount
 end
 
@@ -1374,6 +1645,7 @@ local function ExpiryTick()
         ResyncLifetimes()
     end
     UpdateGlow()
+    NoteExpiries()
 end
 
 --------------------------------------------------------------------------------
@@ -1659,7 +1931,7 @@ local function InMythicDungeon()
     return difficulty == 3
 end
 
-local function ShouldShow()
+function ShouldShow()
     if not boons.IsEnabled() then return false end
 
     local cfg = Config()
@@ -2547,35 +2819,6 @@ end
 
 local lastReport = 0
 
--- The same pair Keys.lua carries, for the same reason and with the same
--- precedence: a player in a raid is in a party too, and PARTY would reach four
--- of the forty. Local copies rather than a shared helper because they are three
--- lines each and the alternative is Boons.lua depending on Keys.lua loading.
-local function GroupSize(fn)
-    if type(fn) ~= "function" then return 0 end
-    local ok, count = pcall(fn)
-    if not ok then return 0 end
-    return tonumber(count) or 0
-end
-
-local function ReplyChannel()
-    if GroupSize(_G.GetNumRaidMembers) > 0 then return "RAID" end
-    return "PARTY"
-end
-
-local function InGroup()
-    return GroupSize(_G.GetNumPartyMembers) > 0
-        or GroupSize(_G.GetNumRaidMembers) > 0
-end
-
--- Seconds as something a person reads at a glance. Bare seconds under a minute,
--- because "0:47" is a stopwatch and "47s" is an answer.
-local function FormatSpan(seconds)
-    seconds = math.max(0, math.floor((tonumber(seconds) or 0) + 0.5))
-    if seconds < 60 then return string.format("%ds", seconds) end
-    return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
-end
-
 -- Returns sent, detail - the same shape Keys.Announce uses, so the slash
 -- command and the debug line can both say why nothing happened.
 local function ReportDuration(button)
@@ -2601,10 +2844,10 @@ local function ReportDuration(button)
     end
     lastReport = now
 
-    if InGroup() and type(SendChatMessage) == "function" then
-        if pcall(SendChatMessage, message, ReplyChannel()) then
-            return true, message
-        end
+    local sent = SendToGroup(message)
+    if sent then return true, message end
+
+    if sent == false then
         -- The send refused. Say it locally rather than silently: the player
         -- made a deliberate gesture and got nothing back.
         ns.Print(message)
@@ -3567,6 +3810,31 @@ function boons.Dump()
             or (scanner and "the item tooltip, else first sight" or "first sight"))
     ns.Print("  shift-click reports: %s",
         Config().reportDuration and "|cFF79C68Don|r" or "|cFF8B8FA3off|r")
+
+    -- The two automatic lines, and - when the expiry one is on - which
+    -- thresholds it would actually call. "It said nothing" is the whole of what
+    -- ever goes wrong with these, and the answer is nearly always either the
+    -- group or the gate, so both are on the line beside them.
+    do
+        local cfg      = Config()
+        local wanted   = type(cfg.announceExpiryAt) == "table"
+                         and cfg.announceExpiryAt or {}
+        local at, list = {}, ns.BOON_ANNOUNCE_THRESHOLDS
+        for i = 1, #list do
+            if wanted[list[i].key] then at[#at + 1] = list[i].label end
+        end
+
+        ns.Print("  announces pickups: %s; announces expiry: %s",
+            cfg.announceGain and "|cFF79C68Don|r" or "|cFF8B8FA3off|r",
+            cfg.announceExpiry
+                and (#at > 0
+                     and ("|cFF79C68Don|r at |cFFC2C6D8" .. table.concat(at, ", ") .. "|r")
+                     or  "|cFFFFAA00on, with no thresholds ticked|r")
+                or  "|cFF8B8FA3off|r")
+        ns.Print("    heard by: %s", InGroup()
+            and ("|cFFC2C6D8" .. ReplyChannel() .. "|r")
+            or  "|cFF8B8FA3nobody - you are not in a group|r")
+    end
 
     -- Which boon each key would actually fire. The whole point of the slots is
     -- that the answer changes, so it has to be reportable.

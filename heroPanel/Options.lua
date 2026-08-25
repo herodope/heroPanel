@@ -609,7 +609,19 @@ end
 -- offered because a segment is only as readable as its label fits into:
 -- "Horizontal" and "Vertical" do not go in 78 units at the sizes this window is
 -- set at, and the answer to that is a wider segment rather than a shorter word.
-local function NewSegmented(parent, y, label, entries, get, set, width)
+--
+-- multi turns the row from "pick one" into "pick any", and it changes what the
+-- two callbacks are asked:
+--
+--   single   get() returns the chosen key; set(key) chooses it
+--   multi    get(key) says whether that one is lit; set(key) flips it
+--
+-- One builder with a mode rather than two nearly identical ones, because the
+-- chrome, the geometry and the Sync are the whole of the row and they are the
+-- same in both. The one place the modes genuinely differ is written out as an
+-- if rather than as an `and`/`or`, since a multi-select get() returning false is
+-- exactly the value that trick reads as "no answer".
+local function NewSegmented(parent, y, label, entries, get, set, width, multi)
     local title = NewText(parent, 0, TEXT_BODY, label)
     title:SetPoint("LEFT", parent, "TOPLEFT", PAD_X, -(y + 13))
 
@@ -634,7 +646,12 @@ local function NewSegmented(parent, y, label, entries, get, set, width)
         end)
 
         function button:Refresh()
-            local selected = (get() == entry.key)
+            local selected
+            if multi then
+                selected = get(entry.key) and true or false
+            else
+                selected = (get() == entry.key)
+            end
             ns.StylePlateChrome(self, BoxStyle(selected and "#232640" or "#1C1F2E", 1,
                 selected and ACCENT or "#33364A", 1, 6))
             self.text:SetTextColor(ns.HexToRGB(selected and ACCENT or TEXT_BODY))
@@ -1957,6 +1974,60 @@ local function Build()
                 BoonsSaved().reportDuration = value and true or false
                 BoonsRefresh("boon shift-click reporting toggled")
             end)
+
+        -- The two automatic announcements, under the shift-click one because
+        -- all three end in the same place and the manual one came first.
+        --
+        -- Neither needs BoonsRefresh: they are read at the moment they fire, off
+        -- the bag scan and the expiry ticker, so there is no attribute and no
+        -- layout waiting on a pass. Saved and that is all.
+        --
+        -- Both sublabels say "in party chat" rather than leaving it to the
+        -- heading, because that is the half a player wants to be sure of before
+        -- ticking a box that writes in four other people's windows.
+        y = NewToggle(body, y, "Announce boons you pick up",
+            { "names the boon in party chat as it lands",
+              "only while the bar is up, so only in a key" },
+            function() return BoonsSaved().announceGain end,
+            function(value)
+                BoonsSaved().announceGain = value and true or false
+            end)
+
+        y = NewToggle(body, y, "Announce boons about to expire",
+            { "the expiry warning, said in party chat",
+              "separate from the glow; either, both or neither" },
+            function() return BoonsSaved().announceExpiry end,
+            function(value)
+                BoonsSaved().announceExpiry = value and true or false
+            end)
+
+        -- Which thresholds get called, and the one row in this window where more
+        -- than one segment lights at once.
+        --
+        -- The glow above it is a single choice because an icon is either warning
+        -- or it is not. A call is an event, so all three together is a sensible
+        -- answer - "two minutes to sort yourself out, one minute to commit,
+        -- thirty seconds to use it or lose it" - and it is the answer this row
+        -- exists to make possible.
+        --
+        -- It stays live when the switch above is off. Greying it would be a
+        -- fourth state to draw and to explain on a row whose meaning is already
+        -- plain from the one above it, and picking your thresholds before
+        -- turning the thing on is a reasonable order to do it in.
+        y = NewSegmented(body, y, "Call at",
+            ns.BOON_ANNOUNCE_THRESHOLDS or { { key = 60, label = "1 min" } },
+            function(key)
+                local at = BoonsSaved().announceExpiryAt
+                return type(at) == "table" and at[key] or false
+            end,
+            function(key)
+                local block = BoonsSaved()
+                if type(block.announceExpiryAt) ~= "table" then
+                    block.announceExpiryAt = {}
+                end
+                block.announceExpiryAt[key] = not block.announceExpiryAt[key]
+            end,
+            62, true)
 
         -- The in-combat tooltip is a one-line summary heroPanel writes, because
         -- three of the fifteen live client strings are wrong - BoonData.lua names

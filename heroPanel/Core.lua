@@ -9,7 +9,7 @@
 local ADDON_NAME, ns = ...
 
 ns.name    = ADDON_NAME
-ns.version = "0.2.4"
+ns.version = "0.2.5"
 
 -- Public API surface. Every other file in the addon registers into this table,
 -- and it is what another addon would talk to heroPanel through.
@@ -325,6 +325,30 @@ ns.defaults = {
         -- chat window, and a click that used to fire a boon quietly changing
         -- what it does is not something to do to a player who has not asked.
         reportDuration = false,
+
+        -- The two automatic party-chat lines: one naming the boon that just
+        -- landed in the bags, one as a held boon runs down. Both off, and for
+        -- the same reason the shift-click report is - they write in four other
+        -- people's chat windows, and nothing that does that is a default.
+        --
+        -- Both are gated on the bar being on screen as well as on their own
+        -- switch, so with "only in Mythic dungeons" left on they speak during a
+        -- key and nowhere else. Boons.lua has the note.
+        announceGain   = false,
+        announceExpiry = false,
+
+        -- Which of the expiry warning's thresholds get said out loud. More than
+        -- one may be picked - a call is an event where the glow is a state, so
+        -- "tell me at two minutes and again at thirty seconds" is a thing to
+        -- want. One minute alone is the middle answer, so ticking the switch
+        -- above does something without a second visit to the window.
+        --
+        -- The three keys are ns.BOON_ANNOUNCE_THRESHOLDS, which Boons.lua
+        -- derives from the glow's own list. They are written out here because
+        -- this table is a literal and that list is built at load; a fourth
+        -- threshold added there is a fourth key to add here, or the store will
+        -- prune what nothing claims.
+        announceExpiryAt = { [30] = false, [60] = true, [120] = false },
 
         point = nil, x = 0, y = 0, scale = 1.0,
     },
